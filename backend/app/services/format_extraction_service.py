@@ -54,15 +54,28 @@ class FormatExtractionService:
         if not content:
             raise FormatExtractionError("Client format file is empty")
 
-        text, styling, logos, _header_text, _footer_text = self._extract_document(ext, content)
-        sections = self._infer_sections(text)
+        text, styling, logos, header_text, footer_text = self._extract_document(ext, content)
+        sections, section_labels = self._infer_sections_with_labels(text)
         company_header = self._infer_company_header(text)
-        
-        logger.info(f"Extraction complete: {len(sections)} sections, {len(logos)} logos found")
+
+        # Prefer formal header/footer branding extracted from the template file.
+        header_sign = self._company_sign_from_text(header_text)
+        footer_sign = self._company_sign_from_text(footer_text)
+        if header_sign and not company_header:
+            company_header = header_sign
+        company_footer = footer_sign or company_header
+
+        logger.info(
+            "Extraction complete: %s sections, %s logos, header_branding=%s, footer_branding=%s",
+            len(sections),
+            len(logos),
+            bool(company_header),
+            bool(company_footer),
+        )
         if logos:
             for i, logo in enumerate(logos):
-                data_len = len(logo.get('data', '')) if logo.get('data') else 0
-                logger.info(f"  Logo {i+1}: {logo.get('position')} ({data_len} chars)")
+                data_len = len(logo.get("data", "")) if logo.get("data") else 0
+                logger.info("  Logo %s: %s (%s chars, source=%s)", i + 1, logo.get("position"), data_len, logo.get("source"))
 
         return {
             "source_filename": filename,
@@ -70,21 +83,25 @@ class FormatExtractionService:
             "sections": sections,
             "section_order": list(range(len(sections))),
             "styling": styling,
-            "field_mapping": self._build_field_mapping(sections),
+            "field_mapping": self._build_field_mapping(sections, section_labels),
+            "section_labels": section_labels,
             "layout": {
                 "type": self._infer_layout(text),
                 "logo_position": "top_right",
                 "name_position": "top_left",
                 "company_header": "center" if company_header else None,
+                "company_footer": "center" if company_footer else None,
                 "dates": "right_aligned",
                 "section_dividers": True,
             },
             "company_header": company_header,
+            "company_footer": company_footer,
             "preview_text": "",
-            "logos": logos,  # Extracted logo images as base64
-            "logo_count": len(logos),  # Explicit count for debugging
-            "header_text": "",  # Do not persist sample resume names/header text.
-            "footer_text": "",  # Do not persist sample resume footer text.
+            "logos": logos,
+            "logo_count": len(logos),
+            # Intentionally blank: sample resume candidate names must not be copied.
+            "header_text": "",
+            "footer_text": "",
         }
 
     def _extract_document(self, ext: str, content: bytes) -> tuple[str, dict[str, Any], list[dict], str, str]:
@@ -188,7 +205,7 @@ class FormatExtractionService:
             if len(doc) > 0:
                 page = doc[0]
                 page_h = float(page.rect.height or 0)
-                header_cutoff = page_h * 0.30 if page_h > 0 else 260.0
+                header_cutoff = page_h * 0.45 if page_h > 0 else 320.0
                 images = page.get_images(full=True)
                 logger.info(f"Found {len(images)} images on first page")
                 
@@ -211,14 +228,18 @@ class FormatExtractionService:
                         image_bytes = base_image["image"]
                         image_ext = base_image["ext"]
                         
-                        # Skip very small images (likely icons)
-                        if len(image_bytes) < 500:
+                        # Skip tiny decorative icons / huge backgrounds
+                        if len(image_bytes) < 300:
                             logger.debug(f"Skipping small image {img_index}: {len(image_bytes)} bytes")
                             continue
                             
-                        # Skip very large images (likely full-page backgrounds)
                         if len(image_bytes) > 5_000_000:  # 5MB
                             logger.debug(f"Skipping large image {img_index}: {len(image_bytes)} bytes")
+                            continue
+
+                        # Normalize to PNG for reliable DOCX embedding
+                        image_bytes, image_ext = self._normalize_image_bytes(image_bytes, image_ext)
+                        if not image_bytes:
                             continue
                         
                         logo_b64 = base64.b64encode(image_bytes).decode('utf-8')
@@ -227,12 +248,12 @@ class FormatExtractionService:
                             "position": "header_right",
                             "width": 150,
                             "height": 75,
-                            "source": "pymupdf",
+                            "source": "pymupdf_header",
                             "index": img_index
                         })
                         logger.info(f"Extracted logo {img_index}: {image_ext}, {len(image_bytes)} bytes")
                         
-                        if len(logos) >= 2:
+                        if len(logos) >= 3:
                             break
                     except Exception as img_err:
                         logger.warning(f"Failed to extract image {img_index}: {img_err}")
@@ -450,7 +471,7 @@ class FormatExtractionService:
                         img_data = part.blob
                     except Exception:
                         continue
-                    if not img_data or len(img_data) < 500 or len(img_data) > 5_000_000:
+                    if not img_data or len(img_data) < 300 or len(img_data) > 5_000_000:
                         continue
 
                     ext = "png"
@@ -462,9 +483,16 @@ class FormatExtractionService:
                         if ext == "jpg":
                             ext = "jpeg"
                         aspect_ratio = width / height if height else 0
-                        if aspect_ratio < 0.4 or aspect_ratio > 8:
+                        if aspect_ratio < 0.25 or aspect_ratio > 12:
                             continue
                     except Exception:
+                        normalized, ext = self._normalize_image_bytes(img_data, "png")
+                        if not normalized:
+                            continue
+                        img_data = normalized
+
+                    img_data, ext = self._normalize_image_bytes(img_data, ext)
+                    if not img_data:
                         continue
 
                     logo_b64 = base64.b64encode(img_data).decode("utf-8")
@@ -477,7 +505,7 @@ class FormatExtractionService:
                             "source": "docx_header",
                         }
                     )
-                    if len(logos) >= 2:
+                    if len(logos) >= 3:
                         return logos
         except Exception as exc:
             logger.warning(f"DOCX header logo extraction failed: {exc}")
@@ -512,13 +540,16 @@ class FormatExtractionService:
                 img = Image.open(BytesIO(img_data))
                 width, height = img.size
                 aspect_ratio = width / height if height else 0
-                # Header logos are usually wide-ish, not portraits.
-                if aspect_ratio < 0.35 or aspect_ratio > 10:
+                if aspect_ratio < 0.25 or aspect_ratio > 12:
                     return False
                 ext = str((img.format or "PNG")).lower()
                 if ext == "jpg":
                     ext = "jpeg"
             except Exception:
+                return False
+
+            img_data, ext = self._normalize_image_bytes(img_data, ext)
+            if not img_data:
                 return False
 
             logo_b64 = base64.b64encode(img_data).decode("utf-8")
@@ -531,28 +562,68 @@ class FormatExtractionService:
                     "source": source,
                 }
             )
-            return len(logos) >= 2
+            return len(logos) >= 3
 
         try:
-            top_paragraphs = document.paragraphs[:12]
-            for para in top_paragraphs:
+            for para in list(document.paragraphs)[:12]:
                 blips = para._element.xpath(".//*[local-name()='blip']")  # nosec - trusted DOCX XML
                 for blip in blips:
                     if add_logo_from_blip(blip, "docx_top_body"):
                         return logos
 
-            # Many client templates use a body table to mimic a header.
-            for table in document.tables[:3]:
+            for table in list(document.tables)[:4]:
                 blips = table._element.xpath(".//*[local-name()='blip']")  # nosec - trusted DOCX XML
                 for blip in blips:
                     if add_logo_from_blip(blip, "docx_top_table"):
                         return logos
+
+            if not logos:
+                for rel in document.part.related_parts.values():
+                    content_type = str(getattr(rel, "content_type", "") or "")
+                    if "image" not in content_type:
+                        continue
+                    img_data = getattr(rel, "blob", None)
+                    if not img_data or len(img_data) < 300:
+                        continue
+                    try:
+                        img = Image.open(BytesIO(img_data))
+                        width, height = img.size
+                        if width < 40 or height < 20 or (width > 1200 and height > 1200):
+                            continue
+                        aspect = width / height if height else 0
+                        if aspect < 0.25 or aspect > 12:
+                            continue
+                        ext = str((img.format or "PNG")).lower()
+                        if ext == "jpg":
+                            ext = "jpeg"
+                    except Exception:
+                        continue
+                    img_data, ext = self._normalize_image_bytes(img_data, ext)
+                    if not img_data:
+                        continue
+                    logo_b64 = base64.b64encode(img_data).decode("utf-8")
+                    logos.append(
+                        {
+                            "data": f"data:image/{ext};base64,{logo_b64}",
+                            "position": "header_right",
+                            "width": width,
+                            "height": height,
+                            "source": "docx_package_image",
+                        }
+                    )
+                    break
         except Exception as exc:
             logger.warning(f"DOCX top-body logo extraction failed: {exc}")
         return logos
 
     def _infer_sections(self, text: str) -> list[str]:
+        sections, _labels = self._infer_sections_with_labels(text)
+        return sections
+
+    def _infer_sections_with_labels(self, text: str) -> tuple[list[str], dict[str, str]]:
+        """Detect section order and the exact heading labels used in the template."""
         found: list[str] = []
+        labels: dict[str, str] = {}
         seen = set()
         for raw_line in (text or "").splitlines()[:250]:
             line = re.sub(r"\s+", " ", raw_line).strip()
@@ -566,38 +637,132 @@ class FormatExtractionService:
                 if any(self._heading_matches(normalized, alias) for alias in aliases):
                     found.append(canonical)
                     seen.add(canonical)
+                    clean_label = re.sub(r"[:：]+$", "", line).strip()
+                    if clean_label:
+                        labels[canonical] = clean_label.upper()
 
         if "header" not in seen:
             found.insert(0, "header")
             seen.add("header")
 
-        return found or DEFAULT_SECTIONS
+        if not found:
+            return list(DEFAULT_SECTIONS), {}
+        return found, labels
 
     def _heading_matches(self, line: str, alias: str) -> bool:
         alias_norm = re.sub(r"[^a-z0-9 ]+", "", alias.lower()).strip()
         return line == alias_norm or line.startswith(f"{alias_norm} ")
 
-    def _build_field_mapping(self, sections: list[str]) -> dict[str, str]:
-        mapping = {
-            "name": "header.name",
-            "email": "header.contact.email",
-            "phone": "header.contact.phone",
-            "location": "header.contact.location",
+    def _build_field_mapping(
+        self,
+        sections: list[str],
+        section_labels: dict[str, str] | None = None,
+    ) -> dict[str, str]:
+        """Map canonical sections to human-readable titles for the generated DOCX."""
+        defaults = {
+            "summary": "PROFESSIONAL SUMMARY",
+            "experience": "PROFESSIONAL EXPERIENCE",
+            "education": "EDUCATION",
+            "skills": "TECHNICAL SKILLS",
+            "projects": "PROJECTS",
+            "certifications": "CERTIFICATIONS",
+            "achievements": "ACHIEVEMENTS",
+            "languages": "LANGUAGES",
         }
+        mapping = {
+            "name": "Name",
+            "email": "Email",
+            "phone": "Phone",
+            "location": "Location",
+        }
+        labels = section_labels or {}
         for section in sections:
-            if section == "summary":
-                mapping["summary"] = "summary.text"
-            elif section == "experience":
-                mapping["experience"] = "experience.items"
-            elif section == "education":
-                mapping["education"] = "education.items"
-            elif section == "skills":
-                mapping["skills"] = "skills.items"
-            elif section == "projects":
-                mapping["projects"] = "projects.items"
-            elif section == "certifications":
-                mapping["certifications"] = "certifications.items"
+            if section == "header":
+                continue
+            label = labels.get(section) or defaults.get(section) or section.replace("_", " ").title()
+            if "." in str(label):
+                label = defaults.get(section) or section.replace("_", " ").title()
+            mapping[section] = label
         return mapping
+
+    def _company_sign_from_text(self, text: str | None) -> dict[str, Any] | None:
+        """Build company footer/header sign from extracted header/footer text."""
+        raw = (text or "").strip()
+        if not raw:
+            return None
+
+        parts = [re.sub(r"\s+", " ", p).strip() for p in re.split(r"\s*\|\s*|\n+", raw) if p.strip()]
+        if not parts:
+            return None
+
+        joined = " ".join(parts).lower()
+        if any(marker in joined for marker in ("professional summary", "work experience", "education")):
+            return None
+
+        company_markers = (
+            "inc",
+            "llc",
+            "ltd",
+            "corp",
+            "company",
+            "pvt",
+            "solutions",
+            "technologies",
+            "consulting",
+            "www.",
+            "http",
+            "@",
+            "email",
+            "blvd",
+            "suite",
+            "street",
+            "avenue",
+            "road",
+        )
+        looks_branded = any(m in joined for m in company_markers) or len(parts) >= 2
+        if not looks_branded:
+            return None
+
+        lines = parts[:3]
+        return {
+            "name": lines[0],
+            "address": lines[1] if len(lines) > 1 else "",
+            "contact": lines[2] if len(lines) > 2 else "",
+            "lines": lines,
+        }
+
+    def _normalize_image_bytes(self, image_bytes: bytes, ext: str | None = None) -> tuple[bytes | None, str]:
+        """Convert embedded images to PNG/JPEG suitable for python-docx."""
+        from io import BytesIO
+
+        try:
+            from PIL import Image
+        except Exception:
+            return image_bytes, (ext or "png").lower().replace("jpg", "jpeg")
+
+        try:
+            img = Image.open(BytesIO(image_bytes))
+            fmt = str((img.format or ext or "PNG")).upper()
+            if fmt == "JPG":
+                fmt = "JPEG"
+            if fmt in {"PNG", "JPEG"}:
+                buffer = BytesIO()
+                save_fmt = fmt
+                if save_fmt == "JPEG" and img.mode in {"RGBA", "P"}:
+                    img = img.convert("RGB")
+                img.save(buffer, format=save_fmt)
+                return buffer.getvalue(), save_fmt.lower()
+
+            buffer = BytesIO()
+            if img.mode not in {"RGB", "RGBA"}:
+                img = img.convert("RGBA")
+            img.save(buffer, format="PNG")
+            return buffer.getvalue(), "png"
+        except Exception:
+            cleaned_ext = (ext or "png").lower().replace("jpg", "jpeg")
+            if cleaned_ext in {"png", "jpeg", "gif"}:
+                return image_bytes, cleaned_ext
+            return None, "png"
 
     def _infer_layout(self, text: str) -> str:
         lines = [line for line in (text or "").splitlines() if line.strip()]

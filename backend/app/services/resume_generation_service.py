@@ -828,13 +828,28 @@ class ResumeGenerationService:
             "achievements": "ACHIEVEMENTS:",
             "languages": "LANGUAGES:",
         }
+
+        # Prefer human labels detected from the uploaded template; never use path-like
+        # keys such as "summary.text" / "experience.items" as visible titles.
+        section_labels = (metadata or {}).get("section_labels") or {}
         field_mapping = (metadata or {}).get("field_mapping") or {}
+        label_sources: list[tuple[str, Any]] = []
+        if isinstance(section_labels, dict):
+            label_sources.extend(section_labels.items())
         if isinstance(field_mapping, dict):
-            for key, label in field_mapping.items():
-                canonical_key = self._canonical_resume_section(key)
-                if canonical_key in section_titles and label:
-                    titled = str(label).strip().upper()
-                    section_titles[canonical_key] = titled if titled.endswith(":") else f"{titled}:"
+            label_sources.extend(field_mapping.items())
+        for key, label in label_sources:
+            canonical_key = self._canonical_resume_section(key)
+            if canonical_key not in section_titles or not label:
+                continue
+            titled = str(label).strip()
+            if not titled or "." in titled:
+                continue
+            # Skip contact field keys accidentally present in field_mapping.
+            if canonical_key in {"header", "name", "email", "phone", "location"}:
+                continue
+            titled = titled.upper()
+            section_titles[canonical_key] = titled if titled.endswith(":") else f"{titled}:"
 
         cleaned_sections: list[dict[str, Any]] = []
         seen_sections: set[str] = set()
@@ -1428,6 +1443,7 @@ class ResumeGenerationService:
             "section_order",
             "styling",
             "field_mapping",
+            "section_labels",
             "layout",
             "company_header",
             "company_footer",
@@ -1462,11 +1478,15 @@ class ResumeGenerationService:
             return []
         # Prefer explicit header-extracted sources and larger payloads.
         def _rank(item: dict) -> tuple[int, int]:
-            source = str(item.get("source") or "")
+            source = str(item.get("source") or "").lower()
             source_rank = 0
-            if "header" in source:
+            if "docx_header" in source or "pymupdf_header" in source:
+                source_rank = 4
+            elif "header" in source:
+                source_rank = 3
+            elif "top_body" in source or "top_table" in source:
                 source_rank = 2
-            elif "top_body" in source:
+            elif "package" in source or "pdf2image" in source:
                 source_rank = 1
             return (source_rank, len(str(item.get("data") or "")))
 
@@ -2459,7 +2479,8 @@ class ResumeGenerationService:
         if not logo_data.startswith("data:image") or "," not in logo_data:
             return None
         try:
-            logo_bytes = base64.b64decode(logo_data.split(",", 1)[1])
+            header, encoded = logo_data.split(",", 1)
+            logo_bytes = base64.b64decode(encoded)
             from PIL import Image as PILImage
             from io import BytesIO
 
@@ -2477,6 +2498,14 @@ class ResumeGenerationService:
             return out.getvalue()
         except Exception as exc:
             logger.warning("logo_decode_failed", error=str(exc))
+            # Fallback: if payload is already a common raster format, use raw bytes.
+            try:
+                raw = base64.b64decode(logo_data.split(",", 1)[1])
+                mime = logo_data.split(";", 1)[0].lower()
+                if any(kind in mime for kind in ("png", "jpeg", "jpg", "gif")) and len(raw) >= 300:
+                    return raw
+            except Exception:
+                pass
             return None
 
     def _clear_table_borders(self, table: Any) -> None:
