@@ -20,6 +20,8 @@ services:
         value: "16384"
       - key: RESUME_TARGET_PAGES
         value: "3"
+      - key: RESUME_LLM_CONDENSE
+        value: "true"
       - key: RESUME_LLM_POLISH
         value: "false"
       - key: MAX_FILE_SIZE_MB

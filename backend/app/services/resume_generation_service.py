@@ -40,6 +40,7 @@ from app.services.structured_resume_store import (
     is_large_resume,
 )
 from app.services.resume_page_fitter import estimate_pages, fit_store_to_pages, needs_page_fit
+from app.services.resume_llm_condense import condense_store_with_llm
 from app.core.config import settings
 from app.core.logging import logger
 
@@ -729,10 +730,16 @@ class ResumeGenerationService:
         pages_full = estimate_pages(full_store)
         target_pages = float(getattr(settings, "RESUME_TARGET_PAGES", 3.0) or 3.0)
 
-        # 2) Keep 2–3 page resumes intact; fit oversized ones by selecting real content only.
+        # 2) Keep 2–3 page resumes intact; fit oversized ones, then LLM-polish bullets genuinely.
         if needs_page_fit(full_store, target_pages=target_pages):
             render_store = fit_store_to_pages(full_store, target_pages=target_pages)
             mode = "store_page_fit"
+            # Grounded LLM condensation: professional bullets/summary without inventing facts.
+            if bool(getattr(settings, "RESUME_LLM_CONDENSE", True)):
+                condensed = condense_store_with_llm(render_store, target_pages=target_pages)
+                if condensed:
+                    render_store = condensed
+                    mode = "store_page_fit_llm"
         else:
             render_store = full_store
             mode = "store_keep_all"
@@ -760,19 +767,21 @@ class ResumeGenerationService:
             experience_count=(render_store.get("stats") or {}).get("experience_count"),
             experience_bullets=(render_store.get("stats") or {}).get("experience_bullets"),
             skills_count=(render_store.get("stats") or {}).get("skills_count"),
+            education_count=len(render_store.get("education") or []),
             fit=render_store.get("fit"),
         )
 
-        # Fast path (default): store → DOCX. No multi-minute LLM rewrite loops.
-        use_llm = bool(getattr(settings, "RESUME_LLM_POLISH", False)) and not is_large_resume(full_store)
-        if not use_llm:
+        # Fast path (default): store/fit/(optional condense) → DOCX.
+        # Full-document LLM rewrite loops stay off unless RESUME_LLM_POLISH=true on small resumes.
+        use_full_llm = bool(getattr(settings, "RESUME_LLM_POLISH", False)) and not is_large_resume(full_store)
+        if not use_full_llm:
             logger.info(
                 "resume_quality_document_selected",
                 mode=mode,
                 baseline_issues=len(draft_issues),
                 final_issues=len(draft_issues),
                 critical_remaining=self._has_critical_quality_issues(draft_issues),
-                llm_compose_used=False,
+                llm_compose_used=mode.endswith("_llm"),
             )
             return self._enforce_document_reliability(draft_document, candidate_data, metadata)
 
@@ -3339,7 +3348,10 @@ class ResumeGenerationService:
 
         elif section_type in {"experience", "education", "projects"}:
             for item in self._as_list(content):
-                self._add_docx_record(doc, item, body_size, font_family, usable_width)
+                if section_type == "education":
+                    self._add_docx_education(doc, item, body_size, font_family, usable_width)
+                else:
+                    self._add_docx_record(doc, item, body_size, font_family, usable_width)
 
         else:
             for item in self._as_list(content):
@@ -3351,6 +3363,86 @@ class ResumeGenerationService:
                 run = p.add_run(clean_item)
                 run.font.name = font_family
                 run.font.size = Pt(body_size)
+
+    def _add_docx_education(
+        self,
+        doc: Any,
+        item: Any,
+        body_size: float,
+        font_family: str = "Calibri",
+        usable_width: Any = None,
+    ) -> None:
+        """Render education clearly: Degree (bold), Institution, Year right-aligned."""
+        from docx.shared import Pt, RGBColor, Inches
+        from docx.enum.text import WD_TAB_ALIGNMENT
+
+        if not isinstance(item, dict):
+            text = self._clean_inline_text(item)
+            if text:
+                p = doc.add_paragraph()
+                run = p.add_run(text)
+                run.font.name = font_family
+                run.font.size = Pt(body_size)
+            return
+
+        degree = self._clean_inline_text(item.get("degree") or item.get("qualification") or "")
+        institution = self._clean_inline_text(
+            item.get("institution") or item.get("school") or item.get("university") or ""
+        )
+        year = self._clean_inline_text(
+            item.get("year") or item.get("duration") or item.get("dates") or item.get("graduation_date") or ""
+        )
+        location = self._clean_inline_text(item.get("location") or "")
+        if not degree and not institution:
+            return
+
+        # Line 1: Degree ........................ Year
+        line = doc.add_paragraph()
+        line.paragraph_format.space_before = Pt(6)
+        line.paragraph_format.space_after = Pt(0)
+        tab_pos = usable_width if usable_width is not None else Inches(6.5)
+        try:
+            line.paragraph_format.tab_stops.add_tab_stop(tab_pos, WD_TAB_ALIGNMENT.RIGHT)
+        except Exception:
+            pass
+        primary = degree or institution
+        run = line.add_run(primary)
+        run.bold = True
+        run.font.name = font_family
+        run.font.size = Pt(body_size)
+        run.font.color.rgb = RGBColor(0x00, 0x00, 0x00)
+        if year:
+            line.add_run("\t")
+            date_run = line.add_run(year)
+            date_run.font.name = font_family
+            date_run.font.size = Pt(body_size)
+            date_run.font.color.rgb = RGBColor(0x33, 0x33, 0x33)
+
+        # Line 2: Institution, Location
+        secondary_parts = [p for p in (institution if degree else "", location) if p]
+        # If degree was missing and institution was primary, don't repeat institution.
+        if degree and institution:
+            secondary_parts = [institution] + ([location] if location and location.lower() not in institution.lower() else [])
+        elif not degree and location:
+            secondary_parts = [location]
+        else:
+            secondary_parts = []
+        if secondary_parts:
+            inst_line = doc.add_paragraph()
+            inst_line.paragraph_format.space_before = Pt(0)
+            inst_line.paragraph_format.space_after = Pt(2)
+            inst_run = inst_line.add_run(", ".join(secondary_parts))
+            inst_run.italic = True
+            inst_run.font.name = font_family
+            inst_run.font.size = Pt(body_size)
+            inst_run.font.color.rgb = RGBColor(0x00, 0x00, 0x00)
+
+        if item.get("cgpa"):
+            gpa_line = doc.add_paragraph(style="List Bullet")
+            gpa_line.paragraph_format.space_after = Pt(1)
+            gpa_run = gpa_line.add_run(f"CGPA: {item['cgpa']}")
+            gpa_run.font.name = font_family
+            gpa_run.font.size = Pt(body_size)
 
     def _add_docx_record(
         self,

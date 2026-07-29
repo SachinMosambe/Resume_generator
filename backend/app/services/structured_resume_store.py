@@ -20,8 +20,9 @@ def build_structured_resume(candidate_data: dict[str, Any]) -> dict[str, Any]:
     experience = [_normalize_experience(item) for item in _as_list(candidate_data.get("experience"))]
     experience = [item for item in experience if item.get("company") or item.get("title")]
 
-    education = [_normalize_education(item) for item in _as_list(candidate_data.get("education"))]
-    education = [item for item in education if item.get("degree") or item.get("institution")]
+    education = normalize_education_entries(
+        [_normalize_education(item) for item in _as_list(candidate_data.get("education"))]
+    )
 
     projects = [_normalize_project(item) for item in _as_list(candidate_data.get("projects"))]
     projects = [item for item in projects if item.get("name")]
@@ -90,13 +91,130 @@ def apply_store_to_candidate_data(candidate_data: dict[str, Any], store: dict[st
     merged["skills"] = store.get("skills") or merged.get("skills") or []
     merged["skills_by_category"] = store.get("skills_by_category") or {}
     merged["experience"] = store.get("experience") or []
-    merged["education"] = store.get("education") or []
+    merged["education"] = normalize_education_entries(store.get("education") or [])
     merged["projects"] = store.get("projects") or []
     merged["certifications"] = store.get("certifications") or []
     merged["achievements"] = store.get("achievements") or []
     merged["languages"] = store.get("languages") or []
     merged["structured_resume"] = store
     merged["structured_resume_json"] = store
+    return merged
+
+
+def normalize_education_entries(entries: Any) -> list[dict[str, Any]]:
+    """
+    Clean education into clear Degree / Institution / Year rows.
+    Dedupes Dice short forms like 'Bachelors @ School' against full degree lines.
+    """
+    import re
+
+    noise = re.compile(
+        r"(?i)\b(preferred|desired work|willing to relocate|work authorization|visa sponsorship|"
+        r"profile source|profile downloaded|employment type|authorized to work)\b"
+    )
+    at_re = re.compile(
+        r"(?i)^\s*((?:bachelor|master|masters|bachelors|phd|mba|b\.?tech|m\.?tech|ms|bs|ba|ma|"
+        r"bachelor of[\w\s]+|master of[\w\s]+)[^@]{0,80}?)\s*@\s*(.+?)\s*$"
+    )
+
+    cleaned: list[dict[str, Any]] = []
+    for item in entries or []:
+        if not isinstance(item, dict):
+            text = str(item or "").strip()
+            if not text or noise.search(text):
+                continue
+            item = {"degree": text, "institution": "", "year": "", "location": "", "details": []}
+
+        degree = str(item.get("degree") or item.get("qualification") or "").strip()
+        institution = str(
+            item.get("institution") or item.get("school") or item.get("university") or ""
+        ).strip()
+        year = str(item.get("year") or item.get("graduation_year") or item.get("dates") or "").strip()
+        location = str(item.get("location") or "").strip()
+        details = [str(d).strip() for d in (item.get("details") or []) if str(d).strip() and not noise.search(str(d))]
+
+        if noise.search(degree) or noise.search(institution):
+            continue
+
+        # Split "Bachelors @ Delhi Technological University"
+        at_match = at_re.match(degree) if degree and not institution else None
+        if at_match:
+            degree = at_match.group(1).strip(" :-")
+            institution = at_match.group(2).strip(" :-")
+
+        # If degree still contains university phrase, peel it out.
+        if degree and not institution:
+            uni = re.search(
+                r"((?:[A-Z][A-Za-z.&'\-]+\s+){0,6}(?:University|College|Institute|School)(?:\s+of\s+[A-Za-z][A-Za-z.&'\-\s]+)?)",
+                degree,
+            )
+            if uni:
+                institution = uni.group(1).strip()
+                degree = degree.replace(uni.group(1), "").strip(" ,|-")
+
+        degree = re.sub(r"\s+", " ", degree).strip(" ,|-")
+        institution = re.sub(r"\s+", " ", institution).strip(" ,|-")
+        # Normalize short labels
+        degree = re.sub(r"(?i)^bachelors?\b", "Bachelor", degree)
+        degree = re.sub(r"(?i)^masters?\b", "Master", degree)
+        if re.fullmatch(r"(?i)bachelor", degree):
+            degree = "Bachelor's Degree"
+        if re.fullmatch(r"(?i)master", degree):
+            degree = "Master's Degree"
+
+        if not degree and not institution:
+            continue
+
+        cleaned.append(
+            {
+                "degree": degree,
+                "institution": institution,
+                "location": location,
+                "year": year,
+                "cgpa": str(item.get("cgpa") or "").strip(),
+                "details": details[:2],
+            }
+        )
+
+    # Dedupe: prefer longer/more specific degree for same institution.
+    by_inst: dict[str, dict[str, Any]] = {}
+    extras: list[dict[str, Any]] = []
+    for row in cleaned:
+        inst_key = re.sub(r"[^a-z0-9]+", "", (row.get("institution") or "").lower())
+        deg_key = re.sub(r"[^a-z0-9]+", "", (row.get("degree") or "").lower())
+        if not inst_key:
+            extras.append(row)
+            continue
+        # Group bachelor vs master separately per institution
+        if "master" in deg_key or "mba" in deg_key or deg_key.startswith("ms") or deg_key.startswith("msc"):
+            level = "master"
+        elif "bachelor" in deg_key or "btech" in deg_key or deg_key.startswith("bs") or deg_key.startswith("bsc"):
+            level = "bachelor"
+        else:
+            level = deg_key[:16] or "other"
+        key = f"{inst_key}|{level}"
+        prev = by_inst.get(key)
+        if not prev:
+            by_inst[key] = row
+            continue
+        # Keep the richer degree string / year.
+        prev_score = len(prev.get("degree") or "") + (5 if prev.get("year") else 0)
+        new_score = len(row.get("degree") or "") + (5 if row.get("year") else 0)
+        if new_score > prev_score:
+            by_inst[key] = row
+
+    # Stable order: masters first then bachelors then others, by year desc if present.
+    merged = list(by_inst.values()) + extras
+
+    def sort_key(row: dict[str, Any]) -> tuple:
+        deg = (row.get("degree") or "").lower()
+        level = 0 if "master" in deg or "mba" in deg else (1 if "bachelor" in deg else 2)
+        year = str(row.get("year") or "")
+        m = re.search(r"(19|20)\d{2}", year)
+        year_num = int(m.group(0)) if m else 0
+        return (level, -year_num)
+
+    merged.sort(key=sort_key)
     return merged
 
 

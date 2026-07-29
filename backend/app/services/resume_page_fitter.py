@@ -14,6 +14,7 @@ import re
 from typing import Any
 
 from app.core.logging import logger
+from app.services.structured_resume_store import normalize_education_entries
 
 # Approximate DOCX density for Calibri ~10–11pt client templates.
 _CHARS_PER_PAGE = 3200
@@ -310,40 +311,7 @@ def _fit_projects(projects: list[Any], keep: int = 2, bullets: int = 3) -> list[
 
 def _fit_education(education: list[Any]) -> list[dict[str, Any]]:
     """Keep real degrees only; drop Dice/profile noise details."""
-    out: list[dict[str, Any]] = []
-    seen: set[str] = set()
-    noise = re.compile(
-        r"(?i)\b(preferred|desired work|willing to relocate|work authorization|visa|profile source|employment type)\b"
-    )
-    for item in education:
-        if not isinstance(item, dict):
-            continue
-        degree = str(item.get("degree") or "").strip()
-        institution = str(item.get("institution") or "").strip()
-        if not degree and not institution:
-            continue
-        if noise.search(degree) or noise.search(institution):
-            continue
-        key = f"{degree.casefold()}|{institution.casefold()}"
-        if key in seen:
-            continue
-        seen.add(key)
-        details = [
-            d
-            for d in (item.get("details") or [])
-            if str(d).strip() and not noise.search(str(d)) and len(str(d)) < 120
-        ]
-        out.append(
-            {
-                "degree": degree,
-                "institution": institution,
-                "location": item.get("location") or "",
-                "year": item.get("year") or "",
-                "cgpa": item.get("cgpa") or "",
-                "details": details[:2],
-            }
-        )
-    return out
+    return normalize_education_entries(education)
 
 
 def _fit_spoken_languages(values: list[Any]) -> list[str]:
