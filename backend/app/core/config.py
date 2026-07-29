@@ -15,6 +15,10 @@ class Settings(BaseSettings):
     LLM_MAX_TOKENS: int = 2048
     # Full multi-role resumes need large JSON output; 4096/8192 truncates mid-word.
     RESUME_GENERATION_MAX_TOKENS: int = 16384
+    # Target client resume length (pages). Oversized stores are fitted genuinely.
+    RESUME_TARGET_PAGES: float = 3.0
+    # When false (default), skip slow full-document LLM polish — store + page-fit only.
+    RESUME_LLM_POLISH: bool = False
     INTERVIEW_FALLBACK_MODELS: str = ""
     AWS_BEARER_TOKEN_BEDROCK: str | None = None
     AWS_REGION: str = "ap-south-1"

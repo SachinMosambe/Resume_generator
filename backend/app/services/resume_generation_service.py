@@ -39,6 +39,7 @@ from app.services.structured_resume_store import (
     document_from_store,
     is_large_resume,
 )
+from app.services.resume_page_fitter import estimate_pages, fit_store_to_pages, needs_page_fit
 from app.core.config import settings
 from app.core.logging import logger
 
@@ -720,46 +721,54 @@ class ResumeGenerationService:
         candidate_data: dict[str, Any],
         format_metadata: dict[str, Any] | None,
     ) -> dict[str, Any]:
-        """Generate a client-formatted resume from the section store (any length)."""
+        """Generate a client-formatted resume from the section store (fast, genuine)."""
         metadata = self._metadata_for_generation(format_metadata or {})
 
-        # Canonical section store is the source of truth for body content.
-        store = build_structured_resume(candidate_data)
-        candidate_data = apply_store_to_candidate_data(candidate_data, store)
+        # 1) Full section store — source of truth, no mixing across sections.
+        full_store = build_structured_resume(candidate_data)
+        pages_full = estimate_pages(full_store)
+        target_pages = float(getattr(settings, "RESUME_TARGET_PAGES", 3.0) or 3.0)
+
+        # 2) Keep 2–3 page resumes intact; fit oversized ones by selecting real content only.
+        if needs_page_fit(full_store, target_pages=target_pages):
+            render_store = fit_store_to_pages(full_store, target_pages=target_pages)
+            mode = "store_page_fit"
+        else:
+            render_store = full_store
+            mode = "store_keep_all"
+
+        candidate_data = apply_store_to_candidate_data(candidate_data, render_store)
         if isinstance(candidate_data.get("extracted_data"), dict):
             candidate_data["extracted_data"] = {
                 **candidate_data["extracted_data"],
-                "structured_resume": store,
+                "structured_resume": full_store,
+                "structured_resume_render": render_store,
             }
 
-        draft_document = document_from_store(store, metadata)
+        draft_document = document_from_store(render_store, metadata)
         draft_document = normalize_resume_document(draft_document, candidate_data)
         draft_document["client_name"] = candidate_data.get("client_name", "")
         draft_document = self._enforce_document_reliability(draft_document, candidate_data, metadata)
         draft_issues = self._resume_quality_feedback(candidate_data, draft_document)
 
-        large = is_large_resume(store)
         logger.info(
             "resume_generation_store_ready",
-            large_resume=large,
-            experience_count=store["stats"]["experience_count"],
-            experience_bullets=store["stats"]["experience_bullets"],
-            skills_count=store["stats"]["skills_count"],
+            mode=mode,
+            pages_full=round(pages_full, 2),
+            pages_render=round(estimate_pages(render_store), 2),
+            target_pages=target_pages,
+            experience_count=(render_store.get("stats") or {}).get("experience_count"),
+            experience_bullets=(render_store.get("stats") or {}).get("experience_bullets"),
+            skills_count=(render_store.get("stats") or {}).get("skills_count"),
+            fit=render_store.get("fit"),
         )
 
-        # Large / multi-page resumes: render from store (LLM must not shrink body).
-        if large:
-            polished_summary = self._polish_summary_only(candidate_data, store.get("summary") or "")
-            if polished_summary:
-                for section in draft_document.get("sections") or []:
-                    if isinstance(section, dict) and self._canonical_resume_section(
-                        section.get("title") or section.get("type")
-                    ) == "summary":
-                        section["content"] = polished_summary
-                        break
+        # Fast path (default): store → DOCX. No multi-minute LLM rewrite loops.
+        use_llm = bool(getattr(settings, "RESUME_LLM_POLISH", False)) and not is_large_resume(full_store)
+        if not use_llm:
             logger.info(
                 "resume_quality_document_selected",
-                mode="store_first_large",
+                mode=mode,
                 baseline_issues=len(draft_issues),
                 final_issues=len(draft_issues),
                 critical_remaining=self._has_critical_quality_issues(draft_issues),
@@ -767,7 +776,7 @@ class ResumeGenerationService:
             )
             return self._enforce_document_reliability(draft_document, candidate_data, metadata)
 
-        # Small resumes: optional LLM compose/polish with thinness guards.
+        # Optional slow path for small resumes only when RESUME_LLM_POLISH=true.
         generated_document = self._compose_document_with_llm(
             candidate_data=candidate_data,
             metadata=metadata,
@@ -777,7 +786,6 @@ class ResumeGenerationService:
         if generated_document:
             generated_document = self._enforce_document_reliability(generated_document, candidate_data, metadata)
             generated_issues = self._resume_quality_feedback(candidate_data, generated_document)
-            # Prefer grounded baseline when the LLM returned a thin/truncated body.
             if self._document_is_substantially_thinner(generated_document, draft_document, candidate_data):
                 logger.warning(
                     "resume_generation_llm_compose_too_thin",

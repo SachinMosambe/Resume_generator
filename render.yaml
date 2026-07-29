@@ -18,6 +18,10 @@ services:
         value: "2048"
       - key: RESUME_GENERATION_MAX_TOKENS
         value: "16384"
+      - key: RESUME_TARGET_PAGES
+        value: "3"
+      - key: RESUME_LLM_POLISH
+        value: "false"
       - key: MAX_FILE_SIZE_MB
         value: "10"
       - key: UPLOAD_DIR
