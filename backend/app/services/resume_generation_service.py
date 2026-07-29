@@ -708,6 +708,11 @@ class ResumeGenerationService:
         qa_feedback = list(best_issues) if best_issues else [
             "Perform a final senior resume-editor QA pass. Make the skills section grouped and client-ready."
         ]
+        if self._has_critical_quality_issues(best_issues):
+            qa_feedback = [
+                "CRITICAL: Fix hallucinations, invalid section titles, and section-mixed content before polishing style.",
+                *qa_feedback,
+            ]
         polished_document = self._rewrite_document(
             draft_document=best_document,
             candidate_data=candidate_data,
@@ -720,40 +725,82 @@ class ResumeGenerationService:
             if self._document_is_better(polished_document, polished_issues, best_document, best_issues, candidate_data):
                 best_document = polished_document
                 best_issues = polished_issues
+            elif self._has_critical_quality_issues(best_issues) and not self._has_critical_quality_issues(polished_issues):
+                best_document = polished_document
+                best_issues = polished_issues
         elif not generated_document:
             logger.info("resume_quality_rewrite_skipped", reason="rewrite_failed_or_unavailable")
             logger.warning("resume_generation_without_llm_polish", reason="llm_rewrite_unavailable")
             return self._enforce_document_reliability(draft_document, candidate_data, metadata)
 
         # If issues remain, run targeted correction passes and keep best version.
-        max_polish_passes = 2
+        # Critical grounding/section issues get extra regeneration attempts.
+        max_polish_passes = 3 if self._has_critical_quality_issues(best_issues) else 2
         for pass_idx in range(max_polish_passes):
             if not best_issues:
+                break
+            # Soft style issues can stop early; critical issues must keep regenerating.
+            if pass_idx > 0 and not self._has_critical_quality_issues(best_issues) and len(best_issues) <= 1:
                 break
             logger.info(
                 "resume_quality_additional_polish_pass",
                 pass_number=pass_idx + 2,
                 issue_count=len(best_issues),
+                critical=self._has_critical_quality_issues(best_issues),
                 issues=best_issues[:8],
             )
+            feedback = list(best_issues)
+            if self._has_critical_quality_issues(best_issues):
+                feedback = [
+                    "CRITICAL REGENERATION REQUIRED:",
+                    "- Do NOT invent employers, schools, skills, dates, or metrics.",
+                    "- Section titles must be canonical (PROFESSIONAL SUMMARY, TECHNICAL SKILLS, PROFESSIONAL EXPERIENCE, etc).",
+                    "- Never use a company/role name as a section title.",
+                    "- Keep content strictly inside the correct section.",
+                    *feedback,
+                ]
             next_document = self._rewrite_document(
                 draft_document=best_document,
                 candidate_data=candidate_data,
                 metadata=metadata,
-                feedback=best_issues,
+                feedback=feedback,
             )
             if not next_document:
-                continue
+                # Hard regenerate from baseline when rewrite fails and critical issues remain.
+                if self._has_critical_quality_issues(best_issues):
+                    next_document = self._compose_document_with_llm(
+                        candidate_data=candidate_data,
+                        metadata=metadata,
+                        baseline_document=draft_document,
+                    )
+                if not next_document:
+                    continue
             next_document = self._enforce_document_reliability(next_document, candidate_data, metadata)
             next_issues = self._resume_quality_feedback(candidate_data, next_document)
             if self._document_is_better(next_document, next_issues, best_document, best_issues, candidate_data):
                 best_document = next_document
                 best_issues = next_issues
+            elif self._has_critical_quality_issues(best_issues) and not self._has_critical_quality_issues(next_issues):
+                best_document = next_document
+                best_issues = next_issues
+
+        # Final safety: if critical hallucinations/title issues remain, prefer grounded baseline.
+        if self._has_critical_quality_issues(best_issues):
+            logger.warning(
+                "resume_quality_falling_back_to_grounded_baseline",
+                remaining_issues=best_issues[:8],
+            )
+            baseline_clean = self._enforce_document_reliability(draft_document, candidate_data, metadata)
+            baseline_issues = self._resume_quality_feedback(candidate_data, baseline_clean)
+            if not self._has_critical_quality_issues(baseline_issues) or len(baseline_issues) <= len(best_issues):
+                best_document = baseline_clean
+                best_issues = baseline_issues
 
         logger.info(
             "resume_quality_document_selected",
             baseline_issues=len(draft_issues),
             final_issues=len(best_issues),
+            critical_remaining=self._has_critical_quality_issues(best_issues),
             llm_compose_used=bool(generated_document),
         )
         return self._enforce_document_reliability(best_document, candidate_data, metadata)
@@ -775,7 +822,12 @@ class ResumeGenerationService:
         current_issues: list[str],
         candidate_data: dict[str, Any],
     ) -> bool:
-        """Prefer fewer quality issues, then more complete experience coverage."""
+        """Prefer grounded output: fewer critical issues, then completeness, then fewer issues."""
+        cand_critical = self._has_critical_quality_issues(candidate_issues)
+        curr_critical = self._has_critical_quality_issues(current_issues)
+        if cand_critical != curr_critical:
+            return not cand_critical
+
         src_count = len(self._as_list(candidate_data.get("experience")))
         cand_roles = self._experience_role_count(candidate_doc)
         curr_roles = self._experience_role_count(current_doc)
@@ -864,22 +916,14 @@ class ResumeGenerationService:
             sec_type = str(section.get("type") or "").strip().lower()
             title = str(section.get("title") or "").strip()
             content = section.get("content")
-            canonical = self._canonical_resume_section(title or sec_type)
-            if canonical not in {
-                "summary",
-                "skills",
-                "experience",
-                "education",
-                "projects",
-                "certifications",
-                "achievements",
-                "languages",
-            }:
+            canonical = self._resolve_section_canonical(title, sec_type)
+            if not self._is_known_resume_section(canonical):
                 continue
             if canonical in seen_sections and canonical in {"summary", "skills", "experience", "education"}:
                 continue
 
-            styled_title = section_titles.get(canonical) or (title.upper() if title else canonical.upper())
+            # Always use validated canonical titles — never company/role names as headings.
+            styled_title = section_titles.get(canonical) or f"{canonical.replace('_', ' ').upper()}:"
             if styled_title and not styled_title.endswith(":"):
                 styled_title += ":"
             forced_type = self._canonical_section_type(canonical)
@@ -897,7 +941,6 @@ class ResumeGenerationService:
                     desc = clone.get("description") or clone.get("details") or clone.get("responsibilities") or clone.get("achievements") or []
                     desc_list = self._repair_bullet_sentences(self._as_list(desc), header_contact)
                     if desc_list:
-                        # Preserve all bullets from parsed data (do not truncate roles/details).
                         clone["description"] = desc_list
                     for key in ("company", "institution", "organization", "school", "university", "title", "role", "position", "degree"):
                         if clone.get(key):
@@ -905,10 +948,15 @@ class ResumeGenerationService:
                             clone[key] = clean_val if not self._is_resume_noise_line(clean_val, header_contact) else ""
                     cleaned_items.append(clone)
                 if forced_type == "experience":
-                    cleaned_items = self._restore_missing_roles(
+                    cleaned_items = self._filter_grounded_experience(
                         cleaned_items,
                         candidate_data.get("experience") or [],
                         header_contact,
+                    )
+                elif forced_type == "education":
+                    cleaned_items = self._filter_grounded_education(
+                        cleaned_items,
+                        candidate_data.get("education") or [],
                     )
                 if cleaned_items:
                     cleaned_sections.append({"type": forced_type, "title": styled_title, "content": cleaned_items})
@@ -916,11 +964,7 @@ class ResumeGenerationService:
                 continue
 
             if forced_type == "skills":
-                grouped = self._clean_skill_groups(content)
-                if not grouped:
-                    grouped = self._group_skills_for_resume(self._clean_skill_list(content))
-                if not grouped:
-                    grouped = self._group_skills_for_resume(candidate_data.get("skills"))
+                grouped = self._filter_grounded_skills(content, candidate_data)
                 if grouped:
                     cleaned_sections.append({"type": forced_type, "title": styled_title, "content": grouped})
                     seen_sections.add(canonical)
@@ -1035,24 +1079,261 @@ class ResumeGenerationService:
         return None
 
     def _canonical_resume_section(self, section_name: Any) -> str:
-        normalized = re.sub(r"[^a-z ]+", " ", str(section_name or "").lower()).strip()
-        if "experience" in normalized or "employment" in normalized or "work" in normalized:
+        normalized = re.sub(r"[^a-z0-9 ]+", " ", str(section_name or "").lower()).strip()
+        normalized = re.sub(r"\s+", " ", normalized)
+        if not normalized:
+            return ""
+        # Word-aware matching avoids false hits (e.g. "network" containing "work").
+        if re.search(r"\b(experience|employment|work history|work experience|professional experience)\b", normalized):
             return "experience"
-        if "education" in normalized or "academic" in normalized or "qualification" in normalized:
+        if re.search(r"\b(education|academic|qualification|academics)\b", normalized):
             return "education"
-        if "skill" in normalized or "competenc" in normalized or "expertise" in normalized:
+        if re.search(r"\b(skills?|competenc\w*|expertise|technical skills)\b", normalized):
             return "skills"
-        if "project" in normalized:
+        if re.search(r"\b(projects?|selected projects|project experience)\b", normalized):
             return "projects"
-        if "cert" in normalized or "license" in normalized:
+        if re.search(r"\b(certifications?|certificates?|licenses?)\b", normalized):
             return "certifications"
-        if "summary" in normalized or "objective" in normalized or "profile" in normalized:
+        if re.search(r"\b(summary|objective|profile summary|professional summary|about me)\b", normalized):
             return "summary"
-        if "achievement" in normalized or "award" in normalized or "honor" in normalized:
+        if re.search(r"\b(achievements?|awards?|honors?)\b", normalized):
             return "achievements"
-        if "language" in normalized:
+        if re.search(r"\b(languages?)\b", normalized) and "programming" not in normalized:
             return "languages"
-        return normalized or "summary"
+        return normalized
+
+    def _is_known_resume_section(self, canonical: str) -> bool:
+        return canonical in {
+            "summary",
+            "skills",
+            "experience",
+            "education",
+            "projects",
+            "certifications",
+            "achievements",
+            "languages",
+        }
+
+    def _looks_like_section_heading(self, title: Any) -> bool:
+        """True only for real section headings — not company, role, or person names."""
+        raw = str(title or "").strip()
+        if not raw:
+            return False
+        clean = raw[:-1].strip() if raw.endswith(":") else raw
+        if not clean or len(clean) > 55:
+            return False
+        low = clean.lower()
+        if "@" in low or "http" in low or re.search(r"\d{3}[-.\s]?\d{3}", low):
+            return False
+        # Reject obvious employer / role shaped titles.
+        if re.search(r"\b(inc|llc|ltd|corp|pvt|gmbh|technologies|solutions|consulting)\b", low):
+            return False
+        if re.search(r"\b(senior|junior|lead|principal|engineer|developer|manager|analyst|architect|intern)\b", low):
+            # Allow only if also contains a section keyword ("Professional Experience").
+            if not re.search(
+                r"\b(experience|education|skills?|summary|projects?|certifications?|achievements?|languages?)\b",
+                low,
+            ):
+                return False
+        canonical = self._canonical_resume_section(clean)
+        if not self._is_known_resume_section(canonical):
+            return False
+        # Must contain a recognizable section keyword, not just map via weak alias.
+        keyword_map = {
+            "summary": ("summary", "objective", "profile"),
+            "skills": ("skill", "competenc", "expertise"),
+            "experience": ("experience", "employment", "work history"),
+            "education": ("education", "academic", "qualification"),
+            "projects": ("project",),
+            "certifications": ("certif", "license"),
+            "achievements": ("achievement", "award", "honor"),
+            "languages": ("language",),
+        }
+        return any(token in low for token in keyword_map.get(canonical, ()))
+
+    def _resolve_section_canonical(self, title: Any, sec_type: Any) -> str:
+        """Prefer validated heading text; fall back to section type when title is a company/role."""
+        title_canon = self._canonical_resume_section(title)
+        type_canon = self._canonical_resume_section(sec_type)
+        if self._looks_like_section_heading(title) and self._is_known_resume_section(title_canon):
+            return title_canon
+        if self._is_known_resume_section(type_canon):
+            return type_canon
+        if self._is_known_resume_section(title_canon):
+            return title_canon
+        return ""
+
+    def _normalize_entity_name(self, value: Any) -> str:
+        text = re.sub(r"[^a-z0-9 ]+", " ", str(value or "").lower())
+        text = re.sub(r"\s+", " ", text).strip()
+        for noise in (" inc", " llc", " ltd", " corp", " pvt", " limited", " company"):
+            if text.endswith(noise):
+                text = text[: -len(noise)].strip()
+        return text
+
+    def _entity_matches(self, left: Any, right: Any) -> bool:
+        a = self._normalize_entity_name(left)
+        b = self._normalize_entity_name(right)
+        if not a or not b:
+            return False
+        if a == b:
+            return True
+        if a in b or b in a:
+            return True
+        a_tokens = {t for t in a.split() if len(t) > 2}
+        b_tokens = {t for t in b.split() if len(t) > 2}
+        if not a_tokens or not b_tokens:
+            return False
+        overlap = len(a_tokens & b_tokens) / max(1, min(len(a_tokens), len(b_tokens)))
+        return overlap >= 0.6
+
+    def _source_experience_names(self, candidate_data: dict[str, Any]) -> set[str]:
+        names: set[str] = set()
+        for item in self._as_list(candidate_data.get("experience")):
+            if not isinstance(item, dict):
+                continue
+            for key in ("company", "organization", "employer", "client"):
+                val = self._normalize_entity_name(item.get(key))
+                if val:
+                    names.add(val)
+            for key in ("title", "role", "position", "job_title"):
+                val = self._normalize_entity_name(item.get(key))
+                if val:
+                    names.add(val)
+        return names
+
+    def _source_education_names(self, candidate_data: dict[str, Any]) -> set[str]:
+        names: set[str] = set()
+        for item in self._as_list(candidate_data.get("education")):
+            if not isinstance(item, dict):
+                continue
+            for key in ("institution", "school", "university", "college", "organization"):
+                val = self._normalize_entity_name(item.get(key))
+                if val:
+                    names.add(val)
+            for key in ("degree", "field", "major"):
+                val = self._normalize_entity_name(item.get(key))
+                if val:
+                    names.add(val)
+        return names
+
+    def _source_skill_names(self, candidate_data: dict[str, Any]) -> set[str]:
+        return {self._normalize_entity_name(s) for s in self._clean_skill_list(candidate_data.get("skills")) if self._normalize_entity_name(s)}
+
+    def _filter_grounded_experience(
+        self,
+        generated_items: list[dict[str, Any]],
+        source_items: list[Any],
+        header_contact: str = "",
+    ) -> list[dict[str, Any]]:
+        """Keep only experience entries grounded in candidate data; drop invented employers/roles."""
+        source_list = [item for item in self._as_list(source_items) if isinstance(item, dict)]
+        if not source_list:
+            return []
+        source_ids = {self._experience_identity(item) for item in source_list}
+        grounded: list[dict[str, Any]] = []
+        for item in generated_items:
+            if not isinstance(item, dict):
+                continue
+            identity = self._experience_identity(item)
+            if identity in source_ids and identity not in {"", "||"}:
+                grounded.append(item)
+                continue
+            company = item.get("company") or item.get("organization") or item.get("employer") or ""
+            title = item.get("title") or item.get("role") or item.get("position") or ""
+            matched = False
+            for src in source_list:
+                src_company = src.get("company") or src.get("organization") or src.get("employer") or ""
+                src_title = src.get("title") or src.get("role") or src.get("position") or ""
+                if self._entity_matches(company, src_company) or (
+                    self._entity_matches(title, src_title) and self._entity_matches(company, src_company)
+                ):
+                    matched = True
+                    break
+                if self._entity_matches(title, src_title) and not company:
+                    matched = True
+                    break
+            if matched:
+                grounded.append(item)
+        return self._restore_missing_roles(grounded, source_list, header_contact)
+
+    def _filter_grounded_education(
+        self,
+        generated_items: list[dict[str, Any]],
+        source_items: list[Any],
+    ) -> list[dict[str, Any]]:
+        source_list = [item for item in self._as_list(source_items) if isinstance(item, dict)]
+        if not source_list:
+            return []
+        grounded: list[dict[str, Any]] = []
+        for item in generated_items:
+            if not isinstance(item, dict):
+                continue
+            institution = (
+                item.get("institution")
+                or item.get("school")
+                or item.get("university")
+                or item.get("college")
+                or item.get("organization")
+                or ""
+            )
+            degree = item.get("degree") or item.get("field") or ""
+            for src in source_list:
+                src_inst = (
+                    src.get("institution")
+                    or src.get("school")
+                    or src.get("university")
+                    or src.get("college")
+                    or src.get("organization")
+                    or ""
+                )
+                src_degree = src.get("degree") or src.get("field") or ""
+                if self._entity_matches(institution, src_inst) or (
+                    self._entity_matches(degree, src_degree) and institution
+                ):
+                    grounded.append(item)
+                    break
+        if not grounded:
+            return [dict(item) for item in source_list]
+        # Backfill any missing source schools.
+        present = {
+            self._normalize_entity_name(
+                item.get("institution") or item.get("school") or item.get("university") or ""
+            )
+            for item in grounded
+        }
+        for src in source_list:
+            key = self._normalize_entity_name(
+                src.get("institution") or src.get("school") or src.get("university") or ""
+            )
+            if key and key not in present:
+                grounded.append(dict(src))
+                present.add(key)
+        return grounded
+
+    def _filter_grounded_skills(self, content: Any, candidate_data: dict[str, Any]) -> dict[str, list[str]]:
+        """Keep skills that appear in source data; drop invented skill names."""
+        source = self._source_skill_names(candidate_data)
+        grouped = self._clean_skill_groups(content)
+        if not grouped:
+            grouped = self._group_skills_for_resume(self._clean_skill_list(content))
+        if not source:
+            return grouped or self._group_skills_for_resume(candidate_data.get("skills"))
+
+        cleaned: dict[str, list[str]] = {}
+        for category, values in (grouped or {}).items():
+            kept: list[str] = []
+            for skill in self._clean_skill_list(values):
+                norm = self._normalize_entity_name(skill)
+                if not norm:
+                    continue
+                if any(self._entity_matches(norm, src) for src in source):
+                    kept.append(skill)
+            if kept:
+                cleaned[category] = kept
+        if not cleaned:
+            return self._group_skills_for_resume(candidate_data.get("skills"))
+        return self._compact_skill_groups(cleaned)
 
     def _normalize_summary_text(self, value: Any) -> str:
         text = str(value or "")
@@ -1167,7 +1448,8 @@ class ResumeGenerationService:
                     continue
                 sec_type = str(sec.get("type") or "").lower().strip()
                 title = str(sec.get("title") or "").lower().strip()
-                if canonical in sec_type or canonical in title:
+                resolved = self._resolve_section_canonical(sec.get("title"), sec.get("type"))
+                if resolved == canonical or canonical in sec_type or canonical in title:
                     return sec
             return None
 
@@ -1239,6 +1521,7 @@ class ResumeGenerationService:
 
         # Format consistency: client style expects uppercase section titles with colon.
         invalid_titles = 0
+        bad_heading_titles: list[str] = []
         for section in sections:
             if not isinstance(section, dict):
                 continue
@@ -1248,8 +1531,102 @@ class ResumeGenerationService:
             normalized = title[:-1] if title.endswith(":") else title
             if normalized and normalized != normalized.upper():
                 invalid_titles += 1
+            sec_type = str(section.get("type") or "").strip()
+            canonical = self._resolve_section_canonical(title, sec_type)
+            if not self._looks_like_section_heading(title) and self._is_known_resume_section(canonical):
+                # Title may still be wrong even if type is correct (company/role used as heading).
+                if not re.search(
+                    r"\b(summary|experience|education|skills?|projects?|certifications?|achievements?|languages?)\b",
+                    title.lower(),
+                ):
+                    bad_heading_titles.append(title)
         if invalid_titles >= 2:
             issues.append("Section titles are not consistently formatted in client style (UPPERCASE with colon).")
+        if bad_heading_titles:
+            issues.append(
+                "Invalid section title(s) look like company/role names instead of section headings "
+                f"({', '.join(bad_heading_titles[:3])}); use PROFESSIONAL EXPERIENCE / EDUCATION / etc."
+            )
+
+        # Hallucination / grounding checks for experience employers.
+        source_exp_names = self._source_experience_names(candidate_data)
+        if source_exp_names and isinstance(exp_sec, dict):
+            invented = []
+            for item in self._as_list(exp_sec.get("content")):
+                if not isinstance(item, dict):
+                    continue
+                company = item.get("company") or item.get("organization") or item.get("employer") or ""
+                title = item.get("title") or item.get("role") or item.get("position") or ""
+                company_norm = self._normalize_entity_name(company)
+                title_norm = self._normalize_entity_name(title)
+                company_ok = (not company_norm) or any(self._entity_matches(company_norm, src) for src in source_exp_names)
+                title_ok = (not title_norm) or any(self._entity_matches(title_norm, src) for src in source_exp_names)
+                if company_norm and not company_ok:
+                    invented.append(str(company))
+                elif title_norm and not title_ok and not company_ok:
+                    invented.append(str(title))
+            if invented:
+                issues.append(
+                    "Hallucinated experience entries detected "
+                    f"({', '.join(invented[:3])}); use only employers/roles from candidate data."
+                )
+
+        # Hallucinated schools
+        source_edu_names = self._source_education_names(candidate_data)
+        if source_edu_names and isinstance(edu_sec, dict):
+            invented_schools = []
+            for item in self._as_list(edu_sec.get("content")):
+                if not isinstance(item, dict):
+                    continue
+                institution = (
+                    item.get("institution")
+                    or item.get("school")
+                    or item.get("university")
+                    or item.get("college")
+                    or ""
+                )
+                inst_norm = self._normalize_entity_name(institution)
+                if inst_norm and not any(self._entity_matches(inst_norm, src) for src in source_edu_names):
+                    invented_schools.append(str(institution))
+            if invented_schools:
+                issues.append(
+                    "Hallucinated education institutions detected "
+                    f"({', '.join(invented_schools[:3])}); use only schools from candidate data."
+                )
+
+        # Cross-section contamination
+        if isinstance(skills_sec, dict):
+            skill_blob = json.dumps(skills_sec.get("content") or "", ensure_ascii=True).lower()
+            if re.search(r"\b(responsible for|led a team|managed project|years of experience)\b", skill_blob):
+                issues.append(
+                    "Section mix: Skills section contains experience-style sentences; keep skills as atomic skill names only."
+                )
+        if isinstance(exp_sec, dict):
+            for item in self._as_list(exp_sec.get("content")):
+                if not isinstance(item, dict):
+                    continue
+                # Company field accidentally set to a section heading.
+                company = str(item.get("company") or "")
+                if self._looks_like_section_heading(company):
+                    issues.append(
+                        "Section mix: Experience company field contains a section heading; keep employer names only."
+                    )
+                    break
+                # Title field used as section name.
+                role_title = str(item.get("title") or item.get("role") or "")
+                if role_title and self._looks_like_section_heading(role_title) and "experience" in role_title.lower():
+                    issues.append(
+                        "Invalid section/role mix: experience role title looks like a section heading."
+                    )
+                    break
+        if isinstance(edu_sec, dict):
+            for item in self._as_list(edu_sec.get("content")):
+                text_blob = json.dumps(item, ensure_ascii=True).lower() if isinstance(item, dict) else str(item).lower()
+                if re.search(r"\b(developed|implemented|deployed|optimized microservices)\b", text_blob):
+                    issues.append(
+                        "Section mix: Education contains experience-style work bullets; keep academic details only."
+                    )
+                    break
 
         # Bullet quality: check for very short bullets (signals over-summarization)
         if isinstance(exp_sec, dict):
@@ -1287,6 +1664,22 @@ class ResumeGenerationService:
                     )
 
         return issues
+
+    def _has_critical_quality_issues(self, issues: list[str]) -> bool:
+        critical_markers = (
+            "hallucinated",
+            "invalid section title",
+            "section mix",
+            "invented",
+            "incomplete",
+            "missing in the resume",
+            "no sections",
+        )
+        for issue in issues or []:
+            low = str(issue).lower()
+            if any(marker in low for marker in critical_markers):
+                return True
+        return False
 
     @traceable(run_type="llm", tags=["resume", "llm-compose", "client-ready"])
     def _compose_document_with_llm(
@@ -1395,6 +1788,40 @@ class ResumeGenerationService:
             if source_count >= 8 and not isinstance(skills_section.get("content"), dict):
                 errors.append("Technical skills should be a categorized JSON object, not one flat paragraph.")
 
+        for section in sections:
+            if not isinstance(section, dict):
+                continue
+            title = str(section.get("title") or "").strip()
+            sec_type = str(section.get("type") or "").strip()
+            if title and not self._looks_like_section_heading(title):
+                # Allow type-backed sections only when title is empty-ish; otherwise reject bad headings.
+                if not re.search(
+                    r"\b(summary|experience|education|skills?|projects?|certifications?|achievements?|languages?)\b",
+                    title.lower(),
+                ):
+                    errors.append(
+                        f"Invalid section title '{title}'. Use canonical headings like PROFESSIONAL EXPERIENCE, not company/role names."
+                    )
+
+            canonical = self._resolve_section_canonical(title, sec_type)
+            content = section.get("content")
+            if canonical == "experience" and isinstance(content, list):
+                source_names = self._source_experience_names(candidate_data)
+                if source_names:
+                    for item in content:
+                        if not isinstance(item, dict):
+                            continue
+                        company = item.get("company") or item.get("organization") or item.get("employer") or ""
+                        if company and not any(self._entity_matches(company, src) for src in source_names):
+                            errors.append(
+                                f"Hallucinated employer '{company}' is not in candidate data. Use only real employers."
+                            )
+                            break
+            if canonical == "skills":
+                blob = json.dumps(content or "", ensure_ascii=True).lower()
+                if re.search(r"\b(responsible for|led a team|managed project)\b", blob):
+                    errors.append("Section mix: skills content must not include experience sentences.")
+
         return errors
 
     @traceable(run_type="chain", tags=["resume", "llm-polish", "quality-gate"])
@@ -1421,7 +1848,9 @@ class ResumeGenerationService:
                     draft_resume=draft_payload,
                     review_feedback=review_feedback,
                 ),
+                validate=lambda data: self._validate_resume_document_json(data, candidate_data),
                 repair_attempts=1,
+                validation_attempts=1,
                 max_tokens=max(settings.RESUME_GENERATION_MAX_TOKENS, settings.LLM_MAX_TOKENS),
             )
             logger.info(
