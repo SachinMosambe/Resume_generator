@@ -176,16 +176,24 @@ def normalize_education_entries(entries: Any) -> list[dict[str, Any]]:
             }
         )
 
-    # Dedupe: prefer longer/more specific degree for same institution.
+    # Dedupe: prefer longer/more specific degree for same institution+level.
     by_inst: dict[str, dict[str, Any]] = {}
     extras: list[dict[str, Any]] = []
+
+    def _inst_key(name: str) -> str:
+        text = (name or "").lower()
+        text = re.sub(r"\bat\s+[a-z].*$", "", text)  # drop "at Springfield"
+        text = re.sub(r",\s*[a-z].*$", "", text)  # drop ", Delhi, India"
+        text = re.sub(r"\(.*?\)", "", text)
+        text = re.sub(r"formerly.*$", "", text)
+        return re.sub(r"[^a-z0-9]+", "", text)
+
     for row in cleaned:
-        inst_key = re.sub(r"[^a-z0-9]+", "", (row.get("institution") or "").lower())
+        inst_key = _inst_key(row.get("institution") or "")
         deg_key = re.sub(r"[^a-z0-9]+", "", (row.get("degree") or "").lower())
         if not inst_key:
             extras.append(row)
             continue
-        # Group bachelor vs master separately per institution
         if "master" in deg_key or "mba" in deg_key or deg_key.startswith("ms") or deg_key.startswith("msc"):
             level = "master"
         elif "bachelor" in deg_key or "btech" in deg_key or deg_key.startswith("bs") or deg_key.startswith("bsc"):
@@ -197,11 +205,26 @@ def normalize_education_entries(entries: Any) -> list[dict[str, Any]]:
         if not prev:
             by_inst[key] = row
             continue
-        # Keep the richer degree string / year.
-        prev_score = len(prev.get("degree") or "") + (5 if prev.get("year") else 0)
-        new_score = len(row.get("degree") or "") + (5 if row.get("year") else 0)
+        # Keep the richer degree string / year / more complete institution.
+        prev_score = (
+            len(prev.get("degree") or "")
+            + (8 if prev.get("year") else 0)
+            + len(prev.get("institution") or "")
+            + (10 if "of " in (prev.get("degree") or "").lower() else 0)
+        )
+        new_score = (
+            len(row.get("degree") or "")
+            + (8 if row.get("year") else 0)
+            + len(row.get("institution") or "")
+            + (10 if "of " in (row.get("degree") or "").lower() else 0)
+        )
         if new_score > prev_score:
+            # Preserve year if the richer row lacks it.
+            if not row.get("year") and prev.get("year"):
+                row["year"] = prev["year"]
             by_inst[key] = row
+        elif not prev.get("year") and row.get("year"):
+            prev["year"] = row["year"]
 
     # Stable order: masters first then bachelors then others, by year desc if present.
     merged = list(by_inst.values()) + extras
