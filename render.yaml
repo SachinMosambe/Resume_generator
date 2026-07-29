@@ -1,0 +1,26 @@
+services:
+  - type: web
+    name: resume-generator-api
+    runtime: python
+    rootDir: backend
+    plan: free
+    buildCommand: pip install -r requirements.txt
+    startCommand: uvicorn app.main:app --host 0.0.0.0 --port $PORT
+    healthCheckPath: /api/health
+    envVars:
+      - key: AWS_BEARER_TOKEN_BEDROCK
+        sync: false
+      - key: AWS_REGION
+        value: ap-south-1
+      - key: BEDROCK_MODEL
+        value: google.gemma-3-27b-it
+      - key: LLM_MAX_TOKENS
+        value: "2048"
+      - key: RESUME_GENERATION_MAX_TOKENS
+        value: "4096"
+      - key: MAX_FILE_SIZE_MB
+        value: "10"
+      - key: UPLOAD_DIR
+        value: uploads
+      - key: CORS_ORIGINS
+        sync: false
