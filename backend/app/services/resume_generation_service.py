@@ -33,6 +33,12 @@ from app.services.aptino_template import get_aptino_company_footer_lines, is_apt
 from app.services.s3_service import download_to_local_path, sanitize_filename, upload_bytes_to_key
 from app.services.detailed_resume_parser import parse_resume_detailed
 from app.services.pdf_parser import extract_text_from_document
+from app.services.structured_resume_store import (
+    apply_store_to_candidate_data,
+    build_structured_resume,
+    document_from_store,
+    is_large_resume,
+)
 from app.core.config import settings
 from app.core.logging import logger
 
@@ -54,12 +60,24 @@ class ResumeGenerationService:
         
         # Use detailed parser for comprehensive resume data
         detailed_data = self._get_detailed_resume_data(candidate)
+        # Persist section store on the candidate for reuse / debugging.
+        store = build_structured_resume(detailed_data)
+        detailed_data = apply_store_to_candidate_data(detailed_data, store)
+        existing = dict(candidate.extracted_data or {})
+        candidate.extracted_data = {
+            **existing,
+            "structured_resume": store,
+            "raw_text": existing.get("raw_text") or detailed_data.get("raw_resume_text") or "",
+            "resume_text": existing.get("resume_text") or detailed_data.get("raw_resume_text") or "",
+        }
         logger.info(
             "resume_data_prepared",
             candidate_id=str(candidate.id),
             experience_count=len(detailed_data.get("experience", [])),
             education_count=len(detailed_data.get("education", [])),
             skills_count=len(detailed_data.get("skills", [])),
+            experience_bullets=(store.get("stats") or {}).get("experience_bullets"),
+            large_resume=is_large_resume(store),
         )
         
         document = self._generate_professional_document(detailed_data, client_format.format_metadata)
@@ -286,7 +304,16 @@ class ResumeGenerationService:
             skills = all_skills
 
         skills = self._clean_skill_list(skills)
-        skills_by_category = self._group_skills_for_resume(skills)
+        # Prefer parser category labels (Tools / Platforms / ...) over heuristic regrouping.
+        parser_categories = detailed_data.get("skills_by_category")
+        if isinstance(parser_categories, dict) and parser_categories:
+            skills_by_category = {
+                str(k).strip(): self._clean_skill_list(v)
+                for k, v in parser_categories.items()
+                if str(k).strip() and self._clean_skill_list(v)
+            }
+        else:
+            skills_by_category = self._group_skills_for_resume(skills)
         summary = (
             detailed_data.get("summary")
             or detailed_data.get("professional_summary")
@@ -693,18 +720,54 @@ class ResumeGenerationService:
         candidate_data: dict[str, Any],
         format_metadata: dict[str, Any] | None,
     ) -> dict[str, Any]:
-        """Generate a client-formatted resume with the LLM as the primary composer."""
+        """Generate a client-formatted resume from the section store (any length)."""
         metadata = self._metadata_for_generation(format_metadata or {})
-        draft_document = build_resume_document(candidate_data, metadata)
+
+        # Canonical section store is the source of truth for body content.
+        store = build_structured_resume(candidate_data)
+        candidate_data = apply_store_to_candidate_data(candidate_data, store)
+        if isinstance(candidate_data.get("extracted_data"), dict):
+            candidate_data["extracted_data"] = {
+                **candidate_data["extracted_data"],
+                "structured_resume": store,
+            }
+
+        draft_document = document_from_store(store, metadata)
         draft_document = normalize_resume_document(draft_document, candidate_data)
         draft_document["client_name"] = candidate_data.get("client_name", "")
-
-        # Build a safe deterministic baseline, then ask the LLM to compose the
-        # client-ready resume from candidate facts instead of merely polishing a
-        # rough section copy.
         draft_document = self._enforce_document_reliability(draft_document, candidate_data, metadata)
         draft_issues = self._resume_quality_feedback(candidate_data, draft_document)
 
+        large = is_large_resume(store)
+        logger.info(
+            "resume_generation_store_ready",
+            large_resume=large,
+            experience_count=store["stats"]["experience_count"],
+            experience_bullets=store["stats"]["experience_bullets"],
+            skills_count=store["stats"]["skills_count"],
+        )
+
+        # Large / multi-page resumes: render from store (LLM must not shrink body).
+        if large:
+            polished_summary = self._polish_summary_only(candidate_data, store.get("summary") or "")
+            if polished_summary:
+                for section in draft_document.get("sections") or []:
+                    if isinstance(section, dict) and self._canonical_resume_section(
+                        section.get("title") or section.get("type")
+                    ) == "summary":
+                        section["content"] = polished_summary
+                        break
+            logger.info(
+                "resume_quality_document_selected",
+                mode="store_first_large",
+                baseline_issues=len(draft_issues),
+                final_issues=len(draft_issues),
+                critical_remaining=self._has_critical_quality_issues(draft_issues),
+                llm_compose_used=False,
+            )
+            return self._enforce_document_reliability(draft_document, candidate_data, metadata)
+
+        # Small resumes: optional LLM compose/polish with thinness guards.
         generated_document = self._compose_document_with_llm(
             candidate_data=candidate_data,
             metadata=metadata,
@@ -720,7 +783,7 @@ class ResumeGenerationService:
                     "resume_generation_llm_compose_too_thin",
                     llm_roles=self._experience_role_count(generated_document),
                     baseline_roles=self._experience_role_count(draft_document),
-                    fallback="grounded_baseline",
+                    fallback="structured_store",
                 )
                 best_document = draft_document
                 best_issues = draft_issues
@@ -728,7 +791,7 @@ class ResumeGenerationService:
                 best_document = generated_document
                 best_issues = generated_issues
         else:
-            logger.warning("resume_generation_llm_compose_unavailable", fallback="rewrite_baseline")
+            logger.warning("resume_generation_llm_compose_unavailable", fallback="structured_store")
             best_document = draft_document
             best_issues = draft_issues
 
@@ -843,6 +906,31 @@ class ResumeGenerationService:
             llm_compose_used=bool(generated_document),
         )
         return self._enforce_document_reliability(best_document, candidate_data, metadata)
+
+    def _polish_summary_only(self, candidate_data: dict[str, Any], summary: str) -> str:
+        """Optional light polish for summary text only — never touches experience/skills."""
+        text = str(summary or "").strip()
+        if len(text) < 80:
+            return text
+        try:
+            from app.agents.tools.llm_client import llm_call
+
+            polished = llm_call(
+                "You polish professional resume summaries. Preserve all facts, technologies, "
+                "domains, and years of experience. Do not invent content. Return plain text only.",
+                (
+                    "Polish this professional summary for clarity and impact while keeping EVERY fact:\n\n"
+                    f"{text[:5000]}\n\n"
+                    f"Target role: {candidate_data.get('job_role') or candidate_data.get('job_title') or ''}"
+                ),
+                max_tokens=1200,
+            )
+            cleaned = re.sub(r"\s+", " ", str(polished or "").strip())
+            if cleaned and len(cleaned) >= max(120, int(len(text) * 0.55)):
+                return cleaned
+        except Exception as exc:
+            logger.warning("summary_polish_failed", error=str(exc))
+        return text
 
     def _experience_bullet_count(self, document: dict[str, Any]) -> int:
         total = 0
@@ -1417,11 +1505,9 @@ class ResumeGenerationService:
         parts = self._dedupe_text(parts)
         if not parts:
             return ""
-        # Preserve substantive summaries; polish happens in LLM, not by hard clipping.
+        # Preserve substantive summaries; polish happens optionally, not by hard clipping.
         joined = " ".join(parts)
         joined = re.sub(r"\s+", " ", joined).strip()
-        if len(joined) > 2500:
-            joined = joined[:2500].rsplit(" ", 1)[0].strip()
         return joined
 
     def _repair_bullet_sentences(self, values: list[Any], header_contact: str = "") -> list[str]:
@@ -2306,14 +2392,15 @@ class ResumeGenerationService:
             skills = self._dedupe_text([self._normalize_skill_name(value) for value in values])
             skills = [skill for skill in skills if skill and not self._is_bad_skill_name(skill)]
             if skills:
-                compacted[category] = skills[:22]
+                compacted[category] = skills
         return compacted
 
     def _clean_skill_list(self, source: Any) -> list[str]:
         raw_items = self._extract_skill_items(source)
         skills = [self._normalize_skill_name(item) for item in raw_items]
         skills = [skill for skill in skills if skill and not self._is_bad_skill_name(skill)]
-        return self._dedupe_text(skills)[:120]
+        # No hard cap — large resumes can list 100+ skills across categories.
+        return self._dedupe_text(skills)
 
     def _normalize_skill_name(self, value: Any) -> str:
         skill = self._clean_inline_text(value)

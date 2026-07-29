@@ -297,6 +297,28 @@ def _summary(candidate_data: dict[str, Any]) -> str:
 def _skills(candidate_data: dict[str, Any]) -> list[str] | dict[str, list[str]]:
     """Extract and categorize skills for professional resume display."""
     extracted = candidate_data.get("extracted_data") or {}
+    # Prefer stored category labels from the section store / parser.
+    grouped = candidate_data.get("skills_by_category")
+    if isinstance(grouped, dict) and grouped:
+        cleaned = {
+            str(k).strip(): _dedupe([str(s).strip() for s in _list(v) if str(s).strip()])
+            for k, v in grouped.items()
+            if str(k).strip()
+        }
+        cleaned = {k: v for k, v in cleaned.items() if v}
+        if cleaned:
+            return cleaned
+    store = extracted.get("structured_resume") if isinstance(extracted, dict) else None
+    if isinstance(store, dict) and isinstance(store.get("skills_by_category"), dict):
+        cleaned = {
+            str(k).strip(): _dedupe([str(s).strip() for s in _list(v) if str(s).strip()])
+            for k, v in store["skills_by_category"].items()
+            if str(k).strip()
+        }
+        cleaned = {k: v for k, v in cleaned.items() if v}
+        if cleaned:
+            return cleaned
+
     skills = _list(candidate_data.get("skills"))
     if not skills:
         skills = _list(candidate_data.get("skills_matched"))
@@ -304,14 +326,13 @@ def _skills(candidate_data: dict[str, Any]) -> list[str] | dict[str, list[str]]:
         skills = _list(extracted.get("skills"))
     if not skills:
         skills = _list(candidate_data.get("skills_not_matched"))
-    
+
     skills = _dedupe([str(skill).strip() for skill in skills if str(skill).strip()])
-    
-    # Try to categorize skills for better presentation
+
     categorized = _categorize_skills(skills)
     if categorized:
         return categorized
-    
+
     return skills
 
 

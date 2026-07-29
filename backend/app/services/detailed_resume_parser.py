@@ -231,35 +231,59 @@ def _extract_summary(text: str) -> str:
             current.append(line)
     if current:
         paragraphs.append(" ".join(current))
-    summary = " ".join(paragraphs).strip()
-    # Keep a full professional summary; generation may polish but must not lose substance.
-    return summary[:2500] if len(summary) > 2500 else summary
+    # No hard truncate — store keeps full summary for any-length resumes.
+    return " ".join(paragraphs).strip()
+
+
+def _extract_skills_by_category(text: str) -> dict[str, list[str]]:
+    """Preserve category labels from lines like 'Tools: Git, Jenkins, Docker'."""
+    lines = _find_section(text, _SECTION_HEADINGS["skills"])
+    if not lines:
+        return {}
+    grouped: dict[str, list[str]] = {}
+    pending_category = "Technical Skills"
+    for raw in lines:
+        line = raw.strip()
+        if not line or _DICE_NOISE_RE.search(line):
+            continue
+        category = pending_category
+        payload = line
+        if ":" in line and not line.lower().startswith("http"):
+            left, _, right = line.partition(":")
+            left_clean = left.strip()
+            # Category headers are short; long left sides are not categories.
+            if right.strip() and len(left_clean.split()) <= 8 and len(left_clean) <= 60:
+                category = left_clean
+                payload = right.strip()
+            elif not right.strip() and len(left_clean.split()) <= 8:
+                pending_category = left_clean
+                continue
+        parts = re.split(r"[,;|•\*]+", payload)
+        bucket = grouped.setdefault(category, [])
+        for part in parts:
+            skill = re.sub(r"^[\-\*\u2022\s]+", "", part).strip()
+            if len(skill) < 2 or len(skill) > 100 or len(skill.split()) > 14:
+                continue
+            if skill.casefold() not in {s.casefold() for s in bucket}:
+                bucket.append(skill)
+        pending_category = category
+    return {k: v for k, v in grouped.items() if v}
 
 
 def _extract_skills(text: str) -> list[str]:
-    lines = _find_section(text, _SECTION_HEADINGS["skills"])
-    if not lines:
-        return []
-    skills: list[str] = []
-    for line in lines:
-        line = line.strip()
-        if not line or _DICE_NOISE_RE.search(line):
-            continue
-        # Keep "Category: a, b, c" items after the colon
-        if ":" in line and not line.strip().startswith("http"):
-            _, _, rest = line.partition(":")
-            line = rest.strip() if rest.strip() else line
-        parts = re.split(r"[,;|•\-\*\n\r]+", line)
-        for p in parts:
-            s = p.strip()
-            if not s:
-                continue
-            s = re.sub(r"^[\-\*\u2022\s]+", "", s).strip()
-            # Allow multi-word tech phrases (e.g. "Continuous Integration (CI)").
-            if len(s.split()) > 12 or len(s) > 80 or len(s) < 2:
-                continue
-            skills.append(s)
-    return _dedupe(skills)
+    grouped = _extract_skills_by_category(text)
+    if grouped:
+        flat: list[str] = []
+        seen: set[str] = set()
+        for values in grouped.values():
+            for skill in values:
+                key = skill.casefold()
+                if key in seen:
+                    continue
+                seen.add(key)
+                flat.append(skill)
+        return flat
+    return []
 
 
 def _parse_job_header_line(line: str, date_match: re.Match) -> dict[str, str]:
@@ -398,9 +422,16 @@ def _extract_experience(text: str) -> list[dict[str, Any]]:
             if _is_section_heading_line(line):
                 i += 1
                 continue
-            # Stop collecting when we hit education/skills-like blocks mid-pass.
             norm = _normalize_heading(line)
-            if norm in {"environment", "environment used"} or norm.startswith("environment "):
+            # Environment: Java, Spring Boot, ... → technologies for this role
+            if norm.startswith("environment") or line.lower().startswith("environment:"):
+                env_payload = line.split(":", 1)[1].strip() if ":" in line else ""
+                if env_payload:
+                    techs = [t.strip() for t in re.split(r"[,;|]+", env_payload) if t.strip()]
+                    existing = current_job.setdefault("technologies", [])
+                    for tech in techs:
+                        if tech.casefold() not in {str(x).casefold() for x in existing}:
+                            existing.append(tech)
                 i += 1
                 continue
             clean = _clean_bullet_text(line)
@@ -410,7 +441,6 @@ def _extract_experience(text: str) -> list[dict[str, Any]]:
                 elif current_bullets and not clean[:1].isupper():
                     current_bullets[-1] = f"{current_bullets[-1]} {clean}".strip()
                 elif current_bullets and len(clean.split()) < 8 and not clean.endswith("."):
-                    # Likely a short role/domain subtitle — attach as context bullet if useful
                     current_bullets.append(clean)
                 elif current_bullets:
                     current_bullets[-1] = f"{current_bullets[-1]} {clean}".strip()
@@ -688,7 +718,7 @@ def _empty_resume_data() -> dict[str, Any]:
     return {
         "name": "", "email": "", "phone": "", "location": "",
         "linkedin": "", "portfolio": "", "summary": "",
-        "skills": [], "experience": [], "education": [],
+        "skills": [], "skills_by_category": {}, "experience": [], "education": [],
         "projects": [], "certifications": [], "achievements": [], "languages": [],
     }
 
@@ -706,6 +736,13 @@ def parse_resume_detailed(resume_path: str | None, resume_text: str | None = Non
         logger.warning("detailed_parser_no_text", resume_path=resume_path)
         return _empty_resume_data()
 
+    skills_by_category = _extract_skills_by_category(resume_text)
+    skills = []
+    for values in skills_by_category.values():
+        skills.extend(values)
+    if not skills:
+        skills = _extract_skills(resume_text)
+
     result = {
         "name": _extract_name(resume_text),
         "email": _extract_email(resume_text),
@@ -714,7 +751,8 @@ def parse_resume_detailed(resume_path: str | None, resume_text: str | None = Non
         "linkedin": _extract_linkedin(resume_text),
         "portfolio": _extract_portfolio(resume_text),
         "summary": _extract_summary(resume_text),
-        "skills": _extract_skills(resume_text),
+        "skills": _dedupe(skills),
+        "skills_by_category": skills_by_category,
         "experience": _extract_experience(resume_text),
         "education": _extract_education(resume_text),
         "projects": _extract_projects(resume_text),
@@ -728,6 +766,7 @@ def parse_resume_detailed(resume_path: str | None, resume_text: str | None = Non
         experience_count=len(result.get("experience", [])),
         education_count=len(result.get("education", [])),
         skills_count=len(result.get("skills", [])),
+        skill_categories=len(result.get("skills_by_category") or {}),
         projects_count=len(result.get("projects", [])),
     )
     return result
