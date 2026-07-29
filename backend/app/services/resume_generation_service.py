@@ -677,13 +677,13 @@ class ResumeGenerationService:
                 compressed["skills_by_category"] = grouped_skills
 
         summary = compressed.get("summary", "")
-        if len(summary) > 2000:
-            compressed["summary"] = summary[:2000]
+        if len(summary) > 2500:
+            compressed["summary"] = summary[:2500]
 
-        # Keep more raw text as fallback so older roles can still be recovered.
+        # Keep ample raw text so long multi-role resumes can still be recovered.
         raw_text = str(compressed.get("raw_resume_text") or "")
         if raw_text:
-            compressed["raw_resume_text"] = raw_text[:14000]
+            compressed["raw_resume_text"] = raw_text[:40000]
 
         return compressed
 
@@ -714,8 +714,19 @@ class ResumeGenerationService:
         if generated_document:
             generated_document = self._enforce_document_reliability(generated_document, candidate_data, metadata)
             generated_issues = self._resume_quality_feedback(candidate_data, generated_document)
-            best_document = generated_document
-            best_issues = generated_issues
+            # Prefer grounded baseline when the LLM returned a thin/truncated body.
+            if self._document_is_substantially_thinner(generated_document, draft_document, candidate_data):
+                logger.warning(
+                    "resume_generation_llm_compose_too_thin",
+                    llm_roles=self._experience_role_count(generated_document),
+                    baseline_roles=self._experience_role_count(draft_document),
+                    fallback="grounded_baseline",
+                )
+                best_document = draft_document
+                best_issues = draft_issues
+            else:
+                best_document = generated_document
+                best_issues = generated_issues
         else:
             logger.warning("resume_generation_llm_compose_unavailable", fallback="rewrite_baseline")
             best_document = draft_document
@@ -814,6 +825,16 @@ class ResumeGenerationService:
                 best_document = baseline_clean
                 best_issues = baseline_issues
 
+        # Also fall back when polish left the body thinner than the deterministic parse.
+        if self._document_is_substantially_thinner(best_document, draft_document, candidate_data):
+            logger.warning(
+                "resume_quality_falling_back_to_richer_baseline",
+                best_roles=self._experience_role_count(best_document),
+                baseline_roles=self._experience_role_count(draft_document),
+            )
+            best_document = self._enforce_document_reliability(draft_document, candidate_data, metadata)
+            best_issues = self._resume_quality_feedback(candidate_data, best_document)
+
         logger.info(
             "resume_quality_document_selected",
             baseline_issues=len(draft_issues),
@@ -822,6 +843,40 @@ class ResumeGenerationService:
             llm_compose_used=bool(generated_document),
         )
         return self._enforce_document_reliability(best_document, candidate_data, metadata)
+
+    def _experience_bullet_count(self, document: dict[str, Any]) -> int:
+        total = 0
+        for section in document.get("sections") or []:
+            if not isinstance(section, dict):
+                continue
+            if self._canonical_resume_section(section.get("title") or section.get("type")) != "experience":
+                continue
+            for item in self._as_list(section.get("content")):
+                if not isinstance(item, dict):
+                    continue
+                desc = item.get("description") or item.get("bullets") or item.get("responsibilities") or []
+                total += len(self._as_list(desc))
+        return total
+
+    def _document_is_substantially_thinner(
+        self,
+        candidate_doc: dict[str, Any],
+        baseline_doc: dict[str, Any],
+        candidate_data: dict[str, Any],
+    ) -> bool:
+        """True when LLM output dropped most roles/bullets vs grounded baseline."""
+        src_roles = len(self._as_list(candidate_data.get("experience")))
+        base_roles = self._experience_role_count(baseline_doc)
+        cand_roles = self._experience_role_count(candidate_doc)
+        expected_roles = max(src_roles, base_roles)
+        if expected_roles >= 3 and cand_roles < max(2, int(expected_roles * 0.6)):
+            return True
+
+        base_bullets = self._experience_bullet_count(baseline_doc)
+        cand_bullets = self._experience_bullet_count(candidate_doc)
+        if base_bullets >= 12 and cand_bullets < max(6, int(base_bullets * 0.45)):
+            return True
+        return False
 
     def _experience_role_count(self, document: dict[str, Any]) -> int:
         for section in document.get("sections") or []:
@@ -1362,11 +1417,11 @@ class ResumeGenerationService:
         parts = self._dedupe_text(parts)
         if not parts:
             return ""
-        # Keep concise professional summary text.
+        # Preserve substantive summaries; polish happens in LLM, not by hard clipping.
         joined = " ".join(parts)
         joined = re.sub(r"\s+", " ", joined).strip()
-        if len(joined) > 900:
-            joined = joined[:900].rsplit(" ", 1)[0].strip()
+        if len(joined) > 2500:
+            joined = joined[:2500].rsplit(" ", 1)[0].strip()
         return joined
 
     def _repair_bullet_sentences(self, values: list[Any], header_contact: str = "") -> list[str]:
@@ -1708,9 +1763,9 @@ class ResumeGenerationService:
     ) -> dict[str, Any] | None:
         """Compose the resume JSON directly with the LLM using candidate facts."""
         compressed = self._compress_candidate_data(candidate_data)
-        candidate_payload = json.dumps(compressed, ensure_ascii=True)[:55000]
+        candidate_payload = json.dumps(compressed, ensure_ascii=True)[:70000]
         metadata_payload = json.dumps(metadata, ensure_ascii=True)[:9000]
-        baseline_payload = json.dumps(baseline_document, ensure_ascii=True)[:22000]
+        baseline_payload = json.dumps(baseline_document, ensure_ascii=True)[:45000]
         format_preview = str(metadata.get("preview_text") or "")[:3500]
 
         prompts = [
@@ -1743,6 +1798,15 @@ class ResumeGenerationService:
                     validation_attempts=1,
                     max_tokens=max(settings.RESUME_GENERATION_MAX_TOKENS, settings.LLM_MAX_TOKENS),
                 )
+                normalized = normalize_resume_document(llm_result.data, candidate_data)
+                if self._document_is_substantially_thinner(normalized, baseline_document, candidate_data):
+                    logger.warning(
+                        "resume_llm_compose_rejected_thin",
+                        attempt=attempt_index,
+                        truncated=llm_result.metrics.get("truncated_output", False),
+                        output_tokens_est=llm_result.metrics.get("output_tokens_est", 0),
+                    )
+                    continue
                 logger.info(
                     "resume_llm_compose_complete",
                     attempt=attempt_index,
@@ -1751,8 +1815,9 @@ class ResumeGenerationService:
                     validation_retry_count=llm_result.metrics.get("validation_retry_count", 0),
                     input_tokens_est=llm_result.metrics.get("input_tokens_est", 0),
                     output_tokens_est=llm_result.metrics.get("output_tokens_est", 0),
+                    truncated_output=llm_result.metrics.get("truncated_output", False),
                 )
-                return normalize_resume_document(llm_result.data, candidate_data)
+                return normalized
             except Exception as exc:
                 logger.warning("resume_llm_compose_failed", attempt=attempt_index, error=str(exc))
 
@@ -1853,9 +1918,9 @@ class ResumeGenerationService:
         """One-pass rewrite using the rewriter prompt to improve completeness."""
         try:
             compressed = self._compress_candidate_data(candidate_data)
-            candidate_payload = json.dumps(compressed, ensure_ascii=True)[:35000]
+            candidate_payload = json.dumps(compressed, ensure_ascii=True)[:50000]
             metadata_payload = json.dumps(metadata, ensure_ascii=True)[:6000]
-            draft_payload = json.dumps(draft_document, ensure_ascii=True)[:20000]
+            draft_payload = json.dumps(draft_document, ensure_ascii=True)[:45000]
             review_feedback = "\n".join(f"- {item}" for item in feedback)[:2500]
 
             llm_result = llm_call_json_with_metrics(
@@ -1871,6 +1936,14 @@ class ResumeGenerationService:
                 validation_attempts=1,
                 max_tokens=max(settings.RESUME_GENERATION_MAX_TOKENS, settings.LLM_MAX_TOKENS),
             )
+            normalized = normalize_resume_document(llm_result.data, candidate_data)
+            if self._document_is_substantially_thinner(normalized, draft_document, candidate_data):
+                logger.warning(
+                    "resume_rewrite_rejected_thin",
+                    truncated=llm_result.metrics.get("truncated_output", False),
+                    output_tokens_est=llm_result.metrics.get("output_tokens_est", 0),
+                )
+                return None
             logger.info(
                 "resume_llm_polish_complete",
                 retry_count=llm_result.metrics.get("retry_count", 0),
@@ -1878,8 +1951,9 @@ class ResumeGenerationService:
                 validation_retry_count=llm_result.metrics.get("validation_retry_count", 0),
                 input_tokens_est=llm_result.metrics.get("input_tokens_est", 0),
                 output_tokens_est=llm_result.metrics.get("output_tokens_est", 0),
+                truncated_output=llm_result.metrics.get("truncated_output", False),
             )
-            return normalize_resume_document(llm_result.data, candidate_data)
+            return normalized
         except Exception as exc:
             logger.warning("resume_rewrite_failed", error=str(exc))
             return None

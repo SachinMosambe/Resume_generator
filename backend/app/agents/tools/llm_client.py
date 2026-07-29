@@ -174,18 +174,40 @@ def _parse_json_text(raw: str) -> dict:
     return parsed
 
 
+def _looks_truncated_json(raw: str) -> bool:
+    """Heuristic: truncated model output often ends mid-string / with unbalanced braces."""
+    text = _clean_json_text(raw)
+    if len(text) < 40:
+        return True
+    # Unbalanced braces/brackets strongly suggest max_tokens cut the response.
+    if text.count("{") > text.count("}"):
+        return True
+    if text.count("[") > text.count("]"):
+        return True
+    # Cut mid-word / mid-escape (common when stopReason=max_tokens).
+    stripped = text.rstrip()
+    if stripped and stripped[-1] not in "{}],\"'":
+        # Allow trailing digits/letters only if JSON already balanced (checked above).
+        if stripped[-1].isalnum() or stripped[-1] in "\\":
+            return True
+    return False
+
+
 def _repair_json_prompt(raw: str, validation_errors: list[str] | None = None) -> tuple[str, str]:
     system_prompt = (
         "You repair JSON for a production API. Return ONLY one valid JSON object. "
-        "Do not add markdown, commentary, or extra keys unless needed to satisfy errors."
+        "Do not add markdown, commentary, or extra keys unless needed to satisfy errors. "
+        "Preserve ALL resume sections, roles, and bullets from the input — never shrink content."
     )
     error_block = ""
     if validation_errors:
         error_block = "VALIDATION ERRORS:\n" + "\n".join(f"- {e}" for e in validation_errors) + "\n\n"
+    # Keep almost the full payload; clipping to 6k was destroying long resumes.
+    payload = (raw or "")[:48000]
     user_prompt = (
         f"{error_block}"
         "Repair this response into valid JSON while preserving the intended data:\n"
-        f"{raw[:6000]}"
+        f"{payload}"
     )
     return system_prompt, user_prompt
 
@@ -211,12 +233,20 @@ def llm_call_json_with_metrics(
         "output_chars": 0,
         "input_tokens_est": _estimate_tokens(len(system_prompt or "") + len(user_prompt or "")),
         "output_tokens_est": 0,
+        "truncated_output": False,
     }
 
     raw = llm_call(
         system_prompt, user_prompt, max_tokens=max_tokens, model=model, provider=provider
     )
     metrics["output_chars"] += len(raw or "")
+    if _looks_truncated_json(raw):
+        metrics["truncated_output"] = True
+        logger.warning(
+            "llm_json_truncated_output_detected",
+            output_chars=len(raw or ""),
+            max_tokens=max_tokens,
+        )
 
     last_error: Exception | None = None
     for attempt in range(max(0, repair_attempts) + 1):
@@ -225,6 +255,16 @@ def llm_call_json_with_metrics(
             break
         except Exception as exc:
             last_error = exc
+            # Do not "repair" heavily truncated resume JSON into a tiny valid stub.
+            if metrics.get("truncated_output") and len(raw or "") > 2000:
+                logger.error(
+                    "llm_json_parse_failed_truncated",
+                    raw=(raw or "")[:300],
+                    error=str(exc),
+                )
+                raise ValueError(
+                    f"LLM output truncated (likely max_tokens); refusing lossy repair: {(raw or '')[:200]}"
+                ) from exc
             if attempt >= repair_attempts:
                 logger.error("llm_json_parse_failed", raw=(raw or "")[:300], error=str(exc))
                 raise ValueError(f"LLM returned non-JSON: {(raw or '')[:200]}") from exc
@@ -236,6 +276,8 @@ def llm_call_json_with_metrics(
                 repair_system, repair_user, max_tokens=max_tokens, model=model, provider=provider
             )
             metrics["output_chars"] += len(raw or "")
+            if _looks_truncated_json(raw):
+                metrics["truncated_output"] = True
     else:  # pragma: no cover - loop always breaks or raises
         raise ValueError(f"LLM returned non-JSON: {last_error}")
 

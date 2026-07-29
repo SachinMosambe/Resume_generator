@@ -145,7 +145,20 @@ def _extract_docx(path: str) -> str:
         # DOCX headers/footers are not included in `document.paragraphs`, but
         # many resumes repeat name/contact at the top of each page inside body
         # content. Apply a light de-duplication of repeated leading/trailing lines.
-        text = "\n".join([p.text for p in document.paragraphs if p.text])
+        parts: list[str] = [p.text for p in document.paragraphs if p.text and str(p.text).strip()]
+        # Many client/candidate resumes store experience/skills in tables — include them.
+        for table in getattr(document, "tables", []) or []:
+            for row in table.rows:
+                cells = []
+                for cell in row.cells:
+                    cell_text = " ".join(
+                        p.text.strip() for p in cell.paragraphs if p.text and p.text.strip()
+                    ).strip()
+                    if cell_text:
+                        cells.append(cell_text)
+                if cells:
+                    parts.append(" | ".join(cells))
+        text = "\n".join(parts)
         pages = [text]
         pages = _strip_repeated_header_footer(pages, min_repeats=999)  # no-op for single "page"
         return pages[0] if pages else text

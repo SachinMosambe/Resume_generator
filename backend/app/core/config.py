@@ -13,7 +13,8 @@ class Settings(BaseSettings):
     # LLM — AWS Bedrock
     BEDROCK_MODEL: str = "google.gemma-3-27b-it"
     LLM_MAX_TOKENS: int = 2048
-    RESUME_GENERATION_MAX_TOKENS: int = 8192
+    # Full multi-role resumes need large JSON output; 4096/8192 truncates mid-word.
+    RESUME_GENERATION_MAX_TOKENS: int = 16384
     INTERVIEW_FALLBACK_MODELS: str = ""
     AWS_BEARER_TOKEN_BEDROCK: str | None = None
     AWS_REGION: str = "ap-south-1"

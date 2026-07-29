@@ -450,6 +450,9 @@ CLIENT_RESUME_GENERATOR_PROMPT = "\n".join(
         "24) Mirror the template's section heading wording when preview headings are provided, without copying sample person content.",
         "25) SECTION INTEGRITY: Summary=summary only; Skills=skills only; Experience=jobs only; Education=schools/degrees only; Projects=projects only. Never mix content across sections.",
         "26) Experience item fields: company/role/dates/description only. Do not place section headings inside those fields.",
+        "27) Never truncate mid-sentence. If output space is limited, keep ALL roles with fewer bullets each rather than dropping roles or cutting words mid-spelling.",
+        "28) Preserve candidate spelling of proper nouns (companies, products, tools). Do not invent or garble names.",
+        "29) Prefer copying baseline experience/skills content verbatim when unsure how to rewrite — never replace a rich baseline with a short stub.",
         "",
         "Return JSON with this schema:",
         "{{",
@@ -505,6 +508,7 @@ CLIENT_RESUME_GENERATOR_PROMPT_COMPACT = "\n".join(
         "9. Experience: include ALL roles present; keep bullets detailed (do not keep only recent roles).",
         "10. Do not use ATS-style matched/missing skill groups.",
         "11. Keep section content strict: no experience text in skills/education and no education text in experience.",
+        "12. Never cut words mid-spelling. Prefer baseline content over a short incomplete rewrite.",
         "",
         "Return JSON:",
         "{{",
@@ -522,7 +526,8 @@ CLIENT_RESUME_REWRITER_SYSTEM = "\n".join(
         "Section titles must be canonical headings only — never company or role names.",
         "Keep each section's content strictly inside that section.",
         "If feedback reports hallucination or section mix, remove invented content and restore grounded candidate facts.",
-        "Return ONLY valid JSON.",
+        "Never shrink a detailed draft into a short stub. Preserve ALL roles and meaningful bullets.",
+        "Never cut words mid-spelling. Return ONLY valid JSON.",
     ]
 )
 

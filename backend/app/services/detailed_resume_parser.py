@@ -171,7 +171,8 @@ def _extract_summary(text: str) -> str:
     if current:
         paragraphs.append(" ".join(current))
     summary = " ".join(paragraphs).strip()
-    return summary[:900] if len(summary) > 900 else summary
+    # Keep a full professional summary; generation may polish but must not lose substance.
+    return summary[:2500] if len(summary) > 2500 else summary
 
 
 def _extract_skills(text: str) -> list[str]:
@@ -186,7 +187,8 @@ def _extract_skills(text: str) -> list[str]:
         if not s:
             continue
         s = re.sub(r'^[\-\*\u2022\s]+', '', s).strip()
-        if len(s.split()) > 6 or len(s) > 50 or len(s) < 2:
+        # Allow multi-word tech phrases (e.g. "Continuous Integration (CI)").
+        if len(s.split()) > 12 or len(s) > 80 or len(s) < 2:
             continue
         skills.append(s)
     return _dedupe(skills)
