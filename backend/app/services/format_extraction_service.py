@@ -60,8 +60,38 @@ class FormatExtractionService:
         # Prefer formal header/footer branding; fall back to body heuristics.
         header_sign = self._company_sign_from_text(header_text)
         footer_sign = self._company_sign_from_text(footer_text)
-        company_header = header_sign or self._infer_company_header(text)
-        company_footer = footer_sign or company_header
+        body_sign = self._infer_company_header(text)
+        company_header = header_sign or body_sign
+        company_footer = footer_sign or header_sign or body_sign
+
+        # If branding text mentions Aptino but no logo was extracted, inject built-in Aptino logo.
+        logos = list(logos or [])
+        branding_text = " ".join(
+            [
+                header_text or "",
+                footer_text or "",
+                " ".join((company_footer or {}).get("lines") or []) if isinstance(company_footer, dict) else "",
+                " ".join((company_header or {}).get("lines") or []) if isinstance(company_header, dict) else "",
+            ]
+        ).lower()
+        if not logos and "aptino" in branding_text:
+            try:
+                from app.services.aptino_template import get_aptino_default_metadata
+
+                fallback_logos = get_aptino_default_metadata().get("logos") or []
+                if fallback_logos:
+                    logos = list(fallback_logos)
+                    logger.info("Injected built-in Aptino logo because branding text matched Aptino")
+            except Exception as exc:
+                logger.debug("Aptino logo fallback failed: %s", exc)
+        if not company_footer and "aptino" in branding_text:
+            try:
+                from app.services.aptino_template import get_aptino_default_metadata
+
+                company_footer = get_aptino_default_metadata().get("company_footer")
+                company_header = company_header or company_footer
+            except Exception:
+                pass
 
         preview_text = self._build_format_preview(text, sections, section_labels)
 
@@ -209,7 +239,7 @@ class FormatExtractionService:
                         image_bytes = base_image["image"]
                         image_ext = base_image["ext"]
 
-                        if len(image_bytes) < 300:
+                        if len(image_bytes) < 200:
                             logger.debug(f"Skipping small image {img_index}: {len(image_bytes)} bytes")
                             continue
                         if len(image_bytes) > 5_000_000:
@@ -364,54 +394,36 @@ class FormatExtractionService:
     def _extract_docx(self, path: Path) -> tuple[str, dict[str, Any], list[dict], str, str]:
         try:
             import docx
-            from docx.oxml import parse_xml
-            import base64
-            from io import BytesIO
-            from PIL import Image
         except ImportError as exc:
             raise FormatExtractionError("python-docx and Pillow are required to extract DOCX formats") from exc
 
         logger.info(f"Extracting DOCX format from: {path}")
         document = docx.Document(str(path))
         lines = [p.text.strip() for p in document.paragraphs if p.text.strip()]
-        logos: list[dict] = self._extract_docx_header_logos(document)
-        footer_logos = self._extract_docx_footer_logos(document)
-        if footer_logos:
-            logos.extend(footer_logos)
+
+        # Collect logos from every header/footer variant, then body/package fallbacks.
+        logos: list[dict] = []
+        logos.extend(self._extract_docx_container_images(document, region="header"))
+        logos.extend(self._extract_docx_container_images(document, region="footer"))
+        if not any(str(logo.get("position") or "").startswith("header") for logo in logos):
+            logos.extend(self._extract_docx_top_body_logos(document))
         if not logos:
-            # Some templates place logo in top body area (not formal header part).
-            logos = self._extract_docx_top_body_logos(document)
+            logos.extend(self._extract_docx_package_images(document, limit=3))
+
+        # Deduplicate by payload fingerprint while preserving order.
+        logos = self._dedupe_logos(logos)
 
         if logos:
-            logger.info(f"Extracted {len(logos)} logo(s) from DOCX")
+            logger.info("Extracted %s logo(s) from DOCX", len(logos))
         else:
             logger.warning("No logos found in DOCX")
 
-        # Extract header text from DOCX headers
-        header_text = ""
-        try:
-            for section in document.sections:
-                if section.header:
-                    header_paras = [p.text.strip() for p in section.header.paragraphs if p.text.strip()]
-                    if header_paras:
-                        header_text = " | ".join(header_paras[:3])
-                        logger.info(f"Extracted DOCX header: {header_text[:100]}...")
-                        break
-        except Exception as header_err:
-            logger.debug(f"Could not extract DOCX header: {header_err}")
-
-        # Extract footer text from DOCX footers
-        footer_text = ""
-        try:
-            for section in document.sections:
-                if section.footer:
-                    footer_paras = [p.text.strip() for p in section.footer.paragraphs if p.text.strip()]
-                    if footer_paras:
-                        footer_text = " | ".join(footer_paras[:3])
-                        logger.info(f"Extracted DOCX footer: {footer_text[:100]}...")
-                        break
-        except Exception as footer_err:
-            logger.debug(f"Could not extract DOCX footer: {footer_err}")
+        header_text = self._extract_docx_container_text(document, region="header")
+        footer_text = self._extract_docx_container_text(document, region="footer")
+        if header_text:
+            logger.info("Extracted DOCX header text: %s...", header_text[:120])
+        if footer_text:
+            logger.info("Extracted DOCX footer text: %s...", footer_text[:120])
 
         # If no header/footer branding, carefully infer company block from body top lines.
         if not header_text and not footer_text and lines:
@@ -428,244 +440,355 @@ class FormatExtractionService:
             "font_size_header": max(14, font_size + 3),
             "font_size_body": font_size,
             "font_size_name": max(18, font_size + 8),
-            "margin_inches": 0.7,
+            "margin_inches": 0.65,
         }
-        logger.info(f"DOCX extraction complete: {len(lines)} text lines, {len(logos)} logos, header={bool(header_text)}, footer={bool(footer_text)}")
+        logger.info(
+            "DOCX extraction complete: %s text lines, %s logos, header=%s, footer=%s",
+            len(lines),
+            len(logos),
+            bool(header_text),
+            bool(footer_text),
+        )
         return "\n".join(lines), styling, logos, header_text, footer_text
 
-    def _extract_docx_header_logos(self, document: Any) -> list[dict]:
-        """Extract only images referenced from DOCX header parts."""
-        logos: list[dict] = []
-        try:
-            import base64
-            from io import BytesIO
-            from PIL import Image
-        except Exception:
-            return logos
-
-        seen_rids: set[str] = set()
-        try:
-            for section in document.sections:
-                header = section.header
-                if not header:
+    def _docx_region_containers(self, document: Any, region: str) -> list[Any]:
+        """Return header/footer containers including first/even page variants."""
+        containers: list[Any] = []
+        seen_ids: set[int] = set()
+        for section in document.sections:
+            candidates: list[Any] = []
+            if region == "header":
+                candidates = [section.header]
+                try:
+                    if section.different_first_page_header_footer:
+                        candidates.append(section.first_page_header)
+                except Exception:
+                    pass
+                try:
+                    candidates.append(section.even_page_header)
+                except Exception:
+                    pass
+            else:
+                candidates = [section.footer]
+                try:
+                    if section.different_first_page_header_footer:
+                        candidates.append(section.first_page_footer)
+                except Exception:
+                    pass
+                try:
+                    candidates.append(section.even_page_footer)
+                except Exception:
+                    pass
+            for container in candidates:
+                if container is None:
                     continue
-                blips = header._element.xpath(".//*[local-name()='blip']")  # nosec - trusted DOCX XML
-                for blip in blips:
-                    rid = blip.get("{http://schemas.openxmlformats.org/officeDocument/2006/relationships}embed")
-                    if not rid or rid in seen_rids:
+                cid = id(container)
+                if cid in seen_ids:
+                    continue
+                seen_ids.add(cid)
+                containers.append(container)
+        return containers
+
+    def _extract_docx_container_text(self, document: Any, region: str) -> str:
+        """Extract visible text from header/footer paragraphs and tables."""
+        parts: list[str] = []
+        for container in self._docx_region_containers(document, region):
+            try:
+                for para in container.paragraphs:
+                    text = re.sub(r"\s+", " ", str(para.text or "")).strip()
+                    if text:
+                        parts.append(text)
+                for table in getattr(container, "tables", []) or []:
+                    for row in table.rows:
+                        cells = [
+                            re.sub(r"\s+", " ", str(cell.text or "")).strip()
+                            for cell in row.cells
+                            if str(cell.text or "").strip()
+                        ]
+                        # Unique adjacent cell duplicates from merged cells.
+                        uniq: list[str] = []
+                        for cell in cells:
+                            if not uniq or uniq[-1] != cell:
+                                uniq.append(cell)
+                        if uniq:
+                            parts.append(" | ".join(uniq))
+            except Exception as exc:
+                logger.debug("DOCX %s text extract failed: %s", region, exc)
+        # Keep short branding-like lines preferentially later via _pick_branding_lines.
+        cleaned: list[str] = []
+        seen: set[str] = set()
+        for part in parts:
+            key = part.casefold()
+            if key in seen:
+                continue
+            seen.add(key)
+            cleaned.append(part)
+        if not cleaned:
+            return ""
+        # Prefer company-like branding lines when available.
+        branded = self._pick_branding_lines(cleaned, region=region)
+        if branded:
+            return branded
+        return " | ".join(cleaned[:4])
+
+    def _extract_docx_container_images(self, document: Any, region: str) -> list[dict]:
+        """Extract images from header or footer parts (blips, VML, and related image parts)."""
+        logos: list[dict] = []
+        seen_rids: set[str] = set()
+        position = "header_right" if region == "header" else "footer_center"
+        source = f"docx_{region}"
+
+        for container in self._docx_region_containers(document, region):
+            try:
+                element = container._element
+            except Exception:
+                continue
+
+            # DrawingML blips (modern Word images).
+            try:
+                blips = element.xpath(".//*[local-name()='blip']")  # nosec - trusted DOCX XML
+            except Exception:
+                blips = []
+            for blip in blips:
+                rid = (
+                    blip.get("{http://schemas.openxmlformats.org/officeDocument/2006/relationships}embed")
+                    or blip.get("{http://schemas.openxmlformats.org/officeDocument/2006/relationships}link")
+                    or blip.get("r:embed")
+                    or blip.get("r:link")
+                )
+                if not rid or rid in seen_rids:
+                    continue
+                seen_rids.add(rid)
+                logo = self._logo_from_docx_rid(
+                    document,
+                    container,
+                    rid,
+                    position=position,
+                    source=source,
+                )
+                if logo:
+                    logos.append(logo)
+
+            # Legacy VML imagedata.
+            try:
+                imagedata_nodes = element.xpath(".//*[local-name()='imagedata']")  # nosec
+            except Exception:
+                imagedata_nodes = []
+            for node in imagedata_nodes:
+                rid = (
+                    node.get("{http://schemas.openxmlformats.org/officeDocument/2006/relationships}id")
+                    or node.get("r:id")
+                    or node.get("id")
+                )
+                if not rid or rid in seen_rids:
+                    continue
+                seen_rids.add(rid)
+                logo = self._logo_from_docx_rid(
+                    document,
+                    container,
+                    rid,
+                    position=position,
+                    source=f"{source}_vml",
+                )
+                if logo:
+                    logos.append(logo)
+
+            # Direct image relationships on the header/footer part (covers missed XML refs).
+            try:
+                part = container.part
+                related = getattr(part, "related_parts", {}) or {}
+                for rid, rel_part in related.items():
+                    if rid in seen_rids:
+                        continue
+                    content_type = str(getattr(rel_part, "content_type", "") or "").lower()
+                    if "image" not in content_type:
                         continue
                     seen_rids.add(rid)
-                    try:
-                        part = header.part.related_parts[rid]
-                        img_data = part.blob
-                    except Exception:
-                        continue
-                    if not img_data or len(img_data) < 300 or len(img_data) > 5_000_000:
-                        continue
-
-                    ext = "png"
-                    width, height = 150, 75
-                    try:
-                        img = Image.open(BytesIO(img_data))
-                        width, height = img.size
-                        ext = str((img.format or "PNG")).lower()
-                        if ext == "jpg":
-                            ext = "jpeg"
-                        aspect_ratio = width / height if height else 0
-                        if aspect_ratio < 0.25 or aspect_ratio > 12:
-                            continue
-                    except Exception:
-                        normalized, ext = self._normalize_image_bytes(img_data, "png")
-                        if not normalized:
-                            continue
-                        img_data = normalized
-
-                    img_data, ext = self._normalize_image_bytes(img_data, ext)
-                    if not img_data:
-                        continue
-
-                    logo_b64 = base64.b64encode(img_data).decode("utf-8")
-                    logos.append(
-                        {
-                            "data": f"data:image/{ext};base64,{logo_b64}",
-                            "position": "header_right",
-                            "width": width,
-                            "height": height,
-                            "source": "docx_header",
-                        }
+                    logo = self._logo_from_image_bytes(
+                        getattr(rel_part, "blob", None),
+                        position=position,
+                        source=f"{source}_part",
+                        preferred_ext=content_type.split("/")[-1] if "/" in content_type else "png",
                     )
-                    if len(logos) >= 3:
-                        return logos
-        except Exception as exc:
-            logger.warning(f"DOCX header logo extraction failed: {exc}")
+                    if logo:
+                        logos.append(logo)
+            except Exception as exc:
+                logger.debug("DOCX %s related image scan failed: %s", region, exc)
+
+            if len(logos) >= 4:
+                break
         return logos
+
+    def _logo_from_docx_rid(
+        self,
+        document: Any,
+        container: Any,
+        rid: str,
+        position: str,
+        source: str,
+    ) -> dict | None:
+        img_data = None
+        preferred_ext = "png"
+        for part_owner in (container, document):
+            try:
+                part = part_owner.part
+                related = getattr(part, "related_parts", {}) or {}
+                if rid not in related:
+                    continue
+                rel_part = related[rid]
+                img_data = getattr(rel_part, "blob", None)
+                content_type = str(getattr(rel_part, "content_type", "") or "")
+                if "/" in content_type:
+                    preferred_ext = content_type.split("/")[-1]
+                break
+            except Exception:
+                continue
+        if not img_data:
+            # Last-chance package lookup by relationship id on the main document.
+            try:
+                package_related = getattr(document.part, "related_parts", {}) or {}
+                if rid in package_related:
+                    rel_part = package_related[rid]
+                    img_data = getattr(rel_part, "blob", None)
+            except Exception:
+                return None
+        return self._logo_from_image_bytes(
+            img_data,
+            position=position,
+            source=source,
+            preferred_ext=preferred_ext,
+        )
+
+    def _logo_from_image_bytes(
+        self,
+        img_data: bytes | None,
+        position: str,
+        source: str,
+        preferred_ext: str = "png",
+    ) -> dict | None:
+        import base64
+        from io import BytesIO
+
+        if not img_data or len(img_data) < 200 or len(img_data) > 5_000_000:
+            return None
+
+        width, height = 150, 75
+        ext = (preferred_ext or "png").lower().replace("jpg", "jpeg")
+        try:
+            from PIL import Image
+
+            img = Image.open(BytesIO(img_data))
+            width, height = img.size
+            detected = str((img.format or ext or "PNG")).lower().replace("jpg", "jpeg")
+            ext = detected or ext
+            aspect = width / height if height else 0
+            # Keep permissive bounds so wide Aptino wordmarks still pass.
+            if width < 24 or height < 16:
+                return None
+            if aspect and (aspect < 0.15 or aspect > 20):
+                return None
+        except Exception:
+            # EMF/WMF or odd formats — still try normalize.
+            pass
+
+        normalized, ext = self._normalize_image_bytes(img_data, ext)
+        if not normalized:
+            return None
+        logo_b64 = base64.b64encode(normalized).decode("utf-8")
+        return {
+            "data": f"data:image/{ext};base64,{logo_b64}",
+            "position": position,
+            "width": width,
+            "height": height,
+            "source": source,
+        }
+
+    def _extract_docx_package_images(self, document: Any, limit: int = 3) -> list[dict]:
+        """Fallback: any package-embedded image likely used as branding."""
+        logos: list[dict] = []
+        try:
+            related = getattr(document.part, "related_parts", {}) or {}
+            for rel in related.values():
+                content_type = str(getattr(rel, "content_type", "") or "").lower()
+                if "image" not in content_type:
+                    continue
+                logo = self._logo_from_image_bytes(
+                    getattr(rel, "blob", None),
+                    position="header_right",
+                    source="docx_package",
+                    preferred_ext=content_type.split("/")[-1] if "/" in content_type else "png",
+                )
+                if logo:
+                    logos.append(logo)
+                if len(logos) >= limit:
+                    break
+        except Exception as exc:
+            logger.warning("DOCX package image extraction failed: %s", exc)
+        return logos
+
+    def _dedupe_logos(self, logos: list[dict]) -> list[dict]:
+        deduped: list[dict] = []
+        seen: set[str] = set()
+        for logo in logos:
+            data = str(logo.get("data") or "")
+            if not data:
+                continue
+            # Fingerprint on payload tail to avoid giant set memory; enough for uniqueness.
+            key = f"{logo.get('position')}|{len(data)}|{data[-64:]}"
+            if key in seen:
+                continue
+            seen.add(key)
+            deduped.append(logo)
+        return deduped
+
+    def _extract_docx_header_logos(self, document: Any) -> list[dict]:
+        """Backward-compatible wrapper."""
+        return self._extract_docx_container_images(document, region="header")
 
     def _extract_docx_footer_logos(self, document: Any) -> list[dict]:
-        """Extract images from DOCX footer parts (company stamp / signature mark)."""
-        logos: list[dict] = []
-        try:
-            import base64
-            from io import BytesIO
-            from PIL import Image
-        except Exception:
-            return logos
-
-        seen_rids: set[str] = set()
-        try:
-            for section in document.sections:
-                footer = section.footer
-                if not footer:
-                    continue
-                blips = footer._element.xpath(".//*[local-name()='blip']")  # nosec - trusted DOCX XML
-                for blip in blips:
-                    rid = blip.get("{http://schemas.openxmlformats.org/officeDocument/2006/relationships}embed")
-                    if not rid or rid in seen_rids:
-                        continue
-                    seen_rids.add(rid)
-                    try:
-                        part = footer.part.related_parts[rid]
-                        img_data = part.blob
-                    except Exception:
-                        try:
-                            part = document.part.related_parts[rid]
-                            img_data = part.blob
-                        except Exception:
-                            continue
-                    if not img_data or len(img_data) < 300 or len(img_data) > 5_000_000:
-                        continue
-                    try:
-                        img = Image.open(BytesIO(img_data))
-                        width, height = img.size
-                        aspect = width / height if height else 0
-                        if aspect < 0.2 or aspect > 14:
-                            continue
-                        ext = str((img.format or "PNG")).lower()
-                        if ext == "jpg":
-                            ext = "jpeg"
-                    except Exception:
-                        continue
-                    img_data, ext = self._normalize_image_bytes(img_data, ext)
-                    if not img_data:
-                        continue
-                    logo_b64 = base64.b64encode(img_data).decode("utf-8")
-                    logos.append(
-                        {
-                            "data": f"data:image/{ext};base64,{logo_b64}",
-                            "position": "footer_center",
-                            "width": width,
-                            "height": height,
-                            "source": "docx_footer",
-                        }
-                    )
-                    if len(logos) >= 2:
-                        return logos
-        except Exception as exc:
-            logger.warning(f"DOCX footer logo extraction failed: {exc}")
-        return logos
+        """Backward-compatible wrapper."""
+        return self._extract_docx_container_images(document, region="footer")
 
     def _extract_docx_top_body_logos(self, document: Any) -> list[dict]:
         """Fallback: extract images in top body content (header-like area)."""
         logos: list[dict] = []
-        try:
-            import base64
-            from io import BytesIO
-            from PIL import Image
-        except Exception:
-            return logos
-
         seen_rids: set[str] = set()
 
-        def add_logo_from_blip(blip: Any, source: str) -> bool:
-            rid = blip.get("{http://schemas.openxmlformats.org/officeDocument/2006/relationships}embed")
-            if not rid or rid in seen_rids:
-                return False
-            seen_rids.add(rid)
+        def add_from_element(element: Any, source: str) -> None:
             try:
-                part = document.part.related_parts[rid]
-                img_data = part.blob
+                blips = element.xpath(".//*[local-name()='blip']")  # nosec - trusted DOCX XML
             except Exception:
-                return False
-            if not img_data or len(img_data) < 300 or len(img_data) > 5_000_000:
-                return False
-
-            try:
-                img = Image.open(BytesIO(img_data))
-                width, height = img.size
-                aspect_ratio = width / height if height else 0
-                if aspect_ratio < 0.25 or aspect_ratio > 12:
-                    return False
-                ext = str((img.format or "PNG")).lower()
-                if ext == "jpg":
-                    ext = "jpeg"
-            except Exception:
-                return False
-
-            img_data, ext = self._normalize_image_bytes(img_data, ext)
-            if not img_data:
-                return False
-
-            logo_b64 = base64.b64encode(img_data).decode("utf-8")
-            logos.append(
-                {
-                    "data": f"data:image/{ext};base64,{logo_b64}",
-                    "position": "header_right",
-                    "width": width,
-                    "height": height,
-                    "source": source,
-                }
-            )
-            return len(logos) >= 3
+                return
+            for blip in blips:
+                rid = (
+                    blip.get("{http://schemas.openxmlformats.org/officeDocument/2006/relationships}embed")
+                    or blip.get("{http://schemas.openxmlformats.org/officeDocument/2006/relationships}link")
+                    or blip.get("r:embed")
+                )
+                if not rid or rid in seen_rids:
+                    continue
+                seen_rids.add(rid)
+                logo = self._logo_from_docx_rid(
+                    document,
+                    document,
+                    rid,
+                    position="header_right",
+                    source=source,
+                )
+                if logo:
+                    logos.append(logo)
 
         try:
-            for para in list(document.paragraphs)[:12]:
-                blips = para._element.xpath(".//*[local-name()='blip']")  # nosec - trusted DOCX XML
-                for blip in blips:
-                    if add_logo_from_blip(blip, "docx_top_body"):
-                        return logos
-
-            for table in list(document.tables)[:4]:
-                blips = table._element.xpath(".//*[local-name()='blip']")  # nosec - trusted DOCX XML
-                for blip in blips:
-                    if add_logo_from_blip(blip, "docx_top_table"):
-                        return logos
-
-            if not logos:
-                for rel in document.part.related_parts.values():
-                    content_type = str(getattr(rel, "content_type", "") or "")
-                    if "image" not in content_type:
-                        continue
-                    img_data = getattr(rel, "blob", None)
-                    if not img_data or len(img_data) < 300:
-                        continue
-                    try:
-                        img = Image.open(BytesIO(img_data))
-                        width, height = img.size
-                        if width < 40 or height < 20 or (width > 1200 and height > 1200):
-                            continue
-                        aspect = width / height if height else 0
-                        if aspect < 0.25 or aspect > 12:
-                            continue
-                        ext = str((img.format or "PNG")).lower()
-                        if ext == "jpg":
-                            ext = "jpeg"
-                    except Exception:
-                        continue
-                    img_data, ext = self._normalize_image_bytes(img_data, ext)
-                    if not img_data:
-                        continue
-                    logo_b64 = base64.b64encode(img_data).decode("utf-8")
-                    logos.append(
-                        {
-                            "data": f"data:image/{ext};base64,{logo_b64}",
-                            "position": "header_right",
-                            "width": width,
-                            "height": height,
-                            "source": "docx_package_image",
-                        }
-                    )
-                    break
+            for para in list(document.paragraphs)[:20]:
+                add_from_element(para._element, "docx_top_body")
+                if len(logos) >= 3:
+                    return logos
+            for table in list(document.tables)[:6]:
+                add_from_element(table._element, "docx_top_table")
+                if len(logos) >= 3:
+                    return logos
         except Exception as exc:
-            logger.warning(f"DOCX top-body logo extraction failed: {exc}")
+            logger.warning("DOCX top-body logo extraction failed: %s", exc)
         return logos
 
     def _infer_sections(self, text: str) -> list[str]:
@@ -790,19 +913,30 @@ class FormatExtractionService:
         try:
             from PIL import Image
         except Exception:
-            return image_bytes, (ext or "png").lower().replace("jpg", "jpeg")
+            cleaned_ext = (ext or "png").lower().replace("jpg", "jpeg")
+            if cleaned_ext in {"png", "jpeg", "gif"}:
+                return image_bytes, cleaned_ext
+            return None, "png"
 
+        cleaned_ext = (ext or "png").lower().replace("jpg", "jpeg").replace("image/", "")
         try:
             img = Image.open(BytesIO(image_bytes))
-            fmt = str((img.format or ext or "PNG")).upper()
+            # Force load so truncated streams fail here.
+            img.load()
+            fmt = str((img.format or cleaned_ext or "PNG")).upper()
             if fmt == "JPG":
                 fmt = "JPEG"
-            if fmt in {"PNG", "JPEG"}:
+            if fmt in {"PNG", "JPEG", "GIF", "WEBP", "BMP", "TIFF"}:
                 buffer = BytesIO()
-                save_fmt = fmt
-                if save_fmt == "JPEG" and img.mode in {"RGBA", "P"}:
-                    img = img.convert("RGB")
-                img.save(buffer, format=save_fmt)
+                if fmt in {"JPEG", "BMP", "TIFF", "WEBP"} and img.mode in {"RGBA", "P", "LA"}:
+                    background = Image.new("RGB", img.size, (255, 255, 255))
+                    rgba = img.convert("RGBA")
+                    background.paste(rgba, mask=rgba.split()[-1])
+                    background.save(buffer, format="PNG")
+                    return buffer.getvalue(), "png"
+                save_fmt = "PNG" if fmt in {"GIF", "BMP", "TIFF", "WEBP"} else fmt
+                out_img = img.convert("RGB") if save_fmt == "JPEG" and img.mode != "RGB" else img
+                out_img.save(buffer, format=save_fmt)
                 return buffer.getvalue(), save_fmt.lower()
 
             buffer = BytesIO()
@@ -811,7 +945,6 @@ class FormatExtractionService:
             img.save(buffer, format="PNG")
             return buffer.getvalue(), "png"
         except Exception:
-            cleaned_ext = (ext or "png").lower().replace("jpg", "jpeg")
             if cleaned_ext in {"png", "jpeg", "gif"}:
                 return image_bytes, cleaned_ext
             return None, "png"

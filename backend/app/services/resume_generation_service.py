@@ -64,14 +64,32 @@ class ResumeGenerationService:
         
         document = self._generate_professional_document(detailed_data, client_format.format_metadata)
         
-        # Reuse only visual logo assets from the client format. The source format
-        # may be a real person's sample resume, so never copy header/footer text.
+        # Reuse visual branding from the uploaded client format (logo + company sign).
+        # Never copy sample candidate body text from the template.
         format_metadata = dict(client_format.format_metadata or {})
         logos = self._valid_logos(format_metadata.get("logos", []))
-        if not logos and is_aptino_template(format_metadata):
-            from app.services.aptino_template import get_aptino_default_metadata
+        if not logos:
+            # Built-in Aptino assets when using Aptino template OR uploaded Aptino-branded format
+            # where image extraction failed (common with some DOCX header embeddings).
+            branding_blob = " ".join(
+                [
+                    str(format_metadata.get("template_id") or ""),
+                    str(format_metadata.get("template_name") or ""),
+                    str((format_metadata.get("company_footer") or {}).get("name") or ""),
+                    str((format_metadata.get("company_header") or {}).get("name") or ""),
+                    " ".join(str(x) for x in ((format_metadata.get("company_footer") or {}).get("lines") or [])),
+                    " ".join(str(x) for x in ((format_metadata.get("company_header") or {}).get("lines") or [])),
+                ]
+            ).lower()
+            if is_aptino_template(format_metadata) or "aptino" in branding_blob:
+                from app.services.aptino_template import get_aptino_default_metadata
 
-            logos = self._valid_logos(get_aptino_default_metadata().get("logos", []))
+                logos = self._valid_logos(get_aptino_default_metadata().get("logos", []))
+                logger.info(
+                    "logo_fallback_aptino_assets",
+                    reason="missing_extracted_logos",
+                    aptino_template=is_aptino_template(format_metadata),
+                )
 
         # Persist company sign for the DOCX footer (never place in page header).
         company_footer = format_metadata.get("company_footer")
@@ -1902,10 +1920,12 @@ class ResumeGenerationService:
             if not data.startswith("data:image") or "," not in data:
                 continue
             try:
-                decoded = base64.b64decode(data.split(",", 1)[1], validate=True)
+                payload = data.split(",", 1)[1]
+                # Padding-tolerant decode — many DOCX-extracted payloads lack strict padding.
+                decoded = base64.b64decode(payload + "===", validate=False)
             except Exception:
                 continue
-            if 300 <= len(decoded) <= 5_000_000:
+            if 200 <= len(decoded) <= 5_000_000:
                 valid.append(logo)
         if not valid:
             return []
