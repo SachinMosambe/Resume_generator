@@ -79,12 +79,29 @@ def extract_text_from_document(path: str) -> str:
         return _extract_pdf(path).strip()
     if ext == ".docx":
         return _extract_docx(path).strip()
+    if ext == ".doc":
+        return _extract_doc(path).strip()
     return ""
 
 
 def extract_text_from_pdf(path: str) -> str:
     """Backward-compatible alias for PDF text extraction."""
     return extract_text_from_document(path)
+
+
+def _extract_doc(path: str) -> str:
+    """Extract text from legacy .doc by converting to .docx first."""
+    try:
+        from app.services.doc_converter import DocConversionError, convert_doc_to_docx
+    except Exception:
+        return ""
+    try:
+        converted = convert_doc_to_docx(Path(path), output_dir=Path(path).parent)
+        return _extract_docx(str(converted)).strip()
+    except DocConversionError:
+        return ""
+    except Exception:
+        return ""
 
 
 def _extract_pdf(path: str) -> str:

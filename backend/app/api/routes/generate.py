@@ -22,7 +22,7 @@ from app.services.s3_service import sanitize_filename
 
 router = APIRouter()
 
-ALLOWED_EXTENSIONS = {".pdf", ".docx"}
+ALLOWED_EXTENSIONS = {".pdf", ".docx", ".doc"}
 
 
 def _suffix(filename: str | None) -> str:
@@ -34,7 +34,7 @@ def _validate_upload(file: UploadFile, label: str) -> None:
     if ext not in ALLOWED_EXTENSIONS:
         raise HTTPException(
             status_code=status.HTTP_415_UNSUPPORTED_MEDIA_TYPE,
-            detail=f"{label} must be a PDF or DOCX file",
+            detail=f"{label} must be a PDF, DOC, or DOCX file",
         )
     if file.size and file.size > settings.max_file_bytes:
         raise HTTPException(

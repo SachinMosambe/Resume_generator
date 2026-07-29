@@ -179,9 +179,9 @@ export default function HomePage() {
         >
           <FilePicker
             label="Candidate resume"
-            hint="PDF or DOCX up to 10 MB"
+            hint="PDF, DOC, or DOCX up to 10 MB"
             file={resumeFile}
-            accept=".pdf,.docx,application/pdf,application/vnd.openxmlformats-officedocument.wordprocessingml.document"
+            accept=".pdf,.doc,.docx,application/pdf,application/msword,application/vnd.openxmlformats-officedocument.wordprocessingml.document"
             onChange={setResumeFile}
             onClear={() => setResumeFile(null)}
           />
@@ -246,9 +246,9 @@ export default function HomePage() {
           {templateMode === "client_format" && (
             <FilePicker
               label="Client format template"
-              hint="PDF or DOCX sample to extract style and logos"
+              hint="PDF, DOC, or DOCX sample to extract style and logos"
               file={templateFile}
-              accept=".pdf,.docx,application/pdf,application/vnd.openxmlformats-officedocument.wordprocessingml.document"
+              accept=".pdf,.doc,.docx,application/pdf,application/msword,application/vnd.openxmlformats-officedocument.wordprocessingml.document"
               onChange={setTemplateFile}
               onClear={() => setTemplateFile(null)}
             />

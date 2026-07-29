@@ -42,7 +42,7 @@ DEFAULT_SECTIONS = [
 
 
 class FormatExtractionService:
-    allowed_extensions = {".pdf", ".docx"}
+    allowed_extensions = {".pdf", ".docx", ".doc"}
 
     @traceable(run_type="retriever", tags=["format", "extraction", "client-template"])
     def extract(self, filename: str, content: bytes) -> dict[str, Any]:
@@ -50,7 +50,7 @@ class FormatExtractionService:
         
         ext = Path(filename or "").suffix.lower()
         if ext not in self.allowed_extensions:
-            raise FormatExtractionError("Client format must be a PDF or DOCX file")
+            raise FormatExtractionError("Client format must be a PDF, DOC, or DOCX file")
         if not content:
             raise FormatExtractionError("Client format file is empty")
 
@@ -147,10 +147,29 @@ class FormatExtractionService:
                 return self._extract_pdf(tmp_path)
             if ext == ".docx":
                 return self._extract_docx(tmp_path)
+            if ext == ".doc":
+                return self._extract_doc(tmp_path)
             return "", self._default_styling(), [], "", ""
         finally:
             if tmp_path:
                 tmp_path.unlink(missing_ok=True)
+
+    def _extract_doc(self, path: Path) -> tuple[str, dict[str, Any], list[dict], str, str]:
+        """Convert legacy .doc → .docx, then reuse the DOCX extractor (logos/header/footer)."""
+        from app.services.doc_converter import DocConversionError, convert_doc_to_docx
+
+        try:
+            converted = convert_doc_to_docx(path, output_dir=path.parent)
+        except DocConversionError as exc:
+            raise FormatExtractionError(str(exc)) from exc
+        try:
+            return self._extract_docx(converted)
+        finally:
+            try:
+                if converted.exists() and converted != path:
+                    converted.unlink(missing_ok=True)
+            except Exception:
+                pass
 
     def _extract_pdf(self, path: Path) -> tuple[str, dict[str, Any], list[dict], str, str]:
         try:
