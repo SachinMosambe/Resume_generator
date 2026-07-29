@@ -23,9 +23,24 @@ _SECTION_HEADINGS = {
     "languages": ["languages", "language proficiency", "spoken languages"],
 }
 
+# Supports: Aug 2025 - April 2026 | Aug 2025 to April 2026 | 2021–2022 | Jan 2021 – Present
+_MONTH = (
+    r"(?:Jan(?:uary)?|Feb(?:ruary)?|Mar(?:ch)?|Apr(?:il)?|May|Jun(?:e)?|"
+    r"Jul(?:y)?|Aug(?:ust)?|Sep(?:t(?:ember)?)?|Oct(?:ober)?|Nov(?:ember)?|Dec(?:ember)?)"
+)
+_DATE_SEP = r"(?:[-–—/]|to)"
 _DATE_PATTERN = re.compile(
-    r'(?:Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec)[a-z]*\s+\d{4}\s*[-–]\s*(?:Present|(?:Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec)[a-z]*\s+\d{4}|\d{4})|\d{4}\s*[-–]\s*(?:Present|\d{4})',
+    rf"(?:{_MONTH}\s+\d{{4}}\s*{_DATE_SEP}\s*(?:Present|Current|{_MONTH}\s+\d{{4}}|\d{{4}})"
+    rf"|\d{{4}}\s*{_DATE_SEP}\s*(?:Present|Current|\d{{4}}))",
     re.IGNORECASE,
+)
+
+_DICE_NOISE_RE = re.compile(
+    r"(?i)\b("
+    r"preferred|desired work|willing to relocate|work authorization|employment type|"
+    r"profile source|profile downloaded|total experience|visa sponsorship|"
+    r"authorized to work|contract\s*-\s*corp|now or in the future"
+    r")\b"
 )
 
 _DEGREE_KEYWORDS = [
@@ -39,6 +54,52 @@ _DEGREE_KEYWORDS = [
 
 def _normalize_heading(line: str) -> str:
     return re.sub(r"[^a-z0-9 ]+", "", line.lower()).strip()
+
+
+def _is_known_heading(normalized: str, headings: set[str]) -> bool:
+    """True when a line is a section heading, not body text that starts with a heading word."""
+    if not normalized:
+        return False
+    if normalized in headings:
+        return True
+    # Long lines with lists/content are never headings (e.g. "Languages & Frameworks: Java, ...").
+    if len(normalized.split()) > 6 or "," in normalized:
+        return False
+    for heading in headings:
+        if normalized.startswith(f"{heading} "):
+            rest = normalized[len(heading) :].strip()
+            if len(rest.split()) <= 3 and len(rest) <= 40:
+                return True
+    return False
+
+
+def _find_all_sections(text: str, target_keys: list[str]) -> list[str]:
+    """Collect lines from every matching section heading (not just the first)."""
+    all_normalized = set()
+    for aliases in _SECTION_HEADINGS.values():
+        all_normalized.update(_normalize_heading(a) for a in aliases)
+
+    target_normalized = {_normalize_heading(k) for k in target_keys}
+    captured: list[str] = []
+    in_section = False
+
+    for raw_line in (text or "").splitlines():
+        line = raw_line.strip()
+        normalized = _normalize_heading(line)
+        if not line:
+            if in_section:
+                captured.append("")
+            continue
+        if _is_known_heading(normalized, target_normalized):
+            in_section = True
+            captured.append("")  # separate blocks
+            continue
+        if in_section and _is_known_heading(normalized, all_normalized):
+            in_section = False
+            continue
+        if in_section:
+            captured.append(line)
+    return captured
 
 
 def _find_section(text: str, target_keys: list[str]) -> list[str]:
@@ -58,10 +119,10 @@ def _find_section(text: str, target_keys: list[str]) -> list[str]:
             if in_section:
                 captured.append("")
             continue
-        if normalized in target_normalized or any(normalized.startswith(f"{t} ") for t in target_normalized):
+        if _is_known_heading(normalized, target_normalized):
             in_section = True
             continue
-        if in_section and (normalized in all_normalized or any(normalized.startswith(f"{h} ") for h in all_normalized)):
+        if in_section and _is_known_heading(normalized, all_normalized):
             break
         if in_section:
             captured.append(line)
@@ -76,7 +137,7 @@ def _is_section_heading_line(line: str) -> bool:
     all_normalized = set()
     for aliases in _SECTION_HEADINGS.values():
         all_normalized.update(_normalize_heading(a) for a in aliases)
-    return normalized in all_normalized
+    return _is_known_heading(normalized, all_normalized)
 
 
 # ─── Contact extractors ────────────────────────────────────────
@@ -179,25 +240,83 @@ def _extract_skills(text: str) -> list[str]:
     lines = _find_section(text, _SECTION_HEADINGS["skills"])
     if not lines:
         return []
-    raw = " ".join(lines)
-    parts = re.split(r'[,;|•\-\*\n\r]+', raw)
-    skills = []
-    for p in parts:
-        s = p.strip()
-        if not s:
+    skills: list[str] = []
+    for line in lines:
+        line = line.strip()
+        if not line or _DICE_NOISE_RE.search(line):
             continue
-        s = re.sub(r'^[\-\*\u2022\s]+', '', s).strip()
-        # Allow multi-word tech phrases (e.g. "Continuous Integration (CI)").
-        if len(s.split()) > 12 or len(s) > 80 or len(s) < 2:
-            continue
-        skills.append(s)
+        # Keep "Category: a, b, c" items after the colon
+        if ":" in line and not line.strip().startswith("http"):
+            _, _, rest = line.partition(":")
+            line = rest.strip() if rest.strip() else line
+        parts = re.split(r"[,;|•\-\*\n\r]+", line)
+        for p in parts:
+            s = p.strip()
+            if not s:
+                continue
+            s = re.sub(r"^[\-\*\u2022\s]+", "", s).strip()
+            # Allow multi-word tech phrases (e.g. "Continuous Integration (CI)").
+            if len(s.split()) > 12 or len(s) > 80 or len(s) < 2:
+                continue
+            skills.append(s)
     return _dedupe(skills)
+
+
+def _parse_job_header_line(line: str, date_match: re.Match) -> dict[str, str]:
+    """Parse headers like: Company, Loc (Aug 2025 to April 2026) | Title | Project."""
+    duration = date_match.group(0).strip()
+    before = line[: date_match.start()].strip(" ,|(-–—")
+    after = line[date_match.end() :].strip(" ,|)-–—")
+
+    title = ""
+    company = before
+    location = ""
+
+    # Pipe-separated: Company ... (dates) | Title | Project/Domain
+    if "|" in after:
+        parts = [p.strip() for p in after.split("|") if p.strip()]
+        if parts:
+            title = parts[0]
+    elif after and not _DATE_PATTERN.fullmatch(after):
+        # Trailing title on same line without pipes
+        title = after
+
+    # "Title at Company" before the date
+    if " at " in before.lower() and not title:
+        left, right = re.split(r"\s+at\s+", before, maxsplit=1, flags=re.IGNORECASE)
+        title = left.strip()
+        company = right.strip()
+
+    # Company, City, ST  → split location from trailing city/state
+    if "," in company:
+        bits = [b.strip() for b in company.split(",") if b.strip()]
+        if len(bits) >= 2:
+            # Keep first chunk(s) as company; last 1–2 short chunks as location.
+            loc_bits: list[str] = []
+            while bits and len(bits) > 1 and len(bits[-1].split()) <= 3 and len(bits[-1]) <= 40:
+                candidate = bits[-1]
+                if re.search(r"(?i)\b(inc|llc|ltd|corp|technologies|systems|services|group)\b", candidate):
+                    break
+                loc_bits.insert(0, bits.pop())
+                if len(loc_bits) >= 2:
+                    break
+            if loc_bits:
+                company = ", ".join(bits).strip()
+                location = ", ".join(loc_bits).strip()
+
+    return {
+        "title": _clean_text(title),
+        "company": _clean_text(company),
+        "location": _clean_text(location),
+        "duration": _clean_text(duration),
+    }
 
 
 def _extract_experience(text: str) -> list[dict[str, Any]]:
     lines = _find_section(text, _SECTION_HEADINGS["experience"])
-    if not lines:
-        return []
+    # Fallback: whole document when heading-based section is empty/missing.
+    if not lines or sum(1 for ln in lines if _DATE_PATTERN.search(ln)) == 0:
+        lines = [ln.strip() for ln in (text or "").splitlines()]
 
     experiences: list[dict[str, Any]] = []
     current_job: dict[str, Any] | None = None
@@ -205,9 +324,8 @@ def _extract_experience(text: str) -> list[dict[str, Any]]:
 
     def _save_current():
         nonlocal current_job, current_bullets
-        if current_job:
+        if current_job and (current_job.get("company") or current_job.get("title")):
             current_job["description"] = [b for b in current_bullets if b]
-            # Infer technologies from bullets
             techs: set[str] = set()
             for b in current_job["description"]:
                 techs.update(_infer_technologies(b))
@@ -224,63 +342,46 @@ def _extract_experience(text: str) -> list[dict[str, Any]]:
             i += 1
             continue
 
-        # Heuristic: if this line (or next 2 lines) contains a date range,
-        # treat it as the start of a new job block.
-        window = " ".join(lines[i : min(i + 3, len(lines))])
-        date_match = _DATE_PATTERN.search(window)
+        # Skip section headings and Dice profile noise so they never become roles.
+        if _is_section_heading_line(line) or _DICE_NOISE_RE.search(line):
+            i += 1
+            continue
+
+        date_match = _DATE_PATTERN.search(line)
+        # Title/company on this line, date on next line
+        next_line = lines[i + 1].strip() if i + 1 < len(lines) else ""
+        next_date = _DATE_PATTERN.search(next_line) if next_line and not _is_bullet(next_line) else None
 
         if date_match and not _is_bullet(line):
             _save_current()
-            duration = date_match.group(0).strip()
+            parsed = _parse_job_header_line(line, date_match)
+            # Optional next-line title when header only has company+dates
+            if not parsed["title"] and next_line and not next_date and not _is_bullet(next_line):
+                if not _is_section_heading_line(next_line) and len(next_line) < 120:
+                    parsed["title"] = _clean_text(next_line)
+                    i += 1
+            current_job = {
+                **parsed,
+                "description": [],
+                "technologies": [],
+            }
+            i += 1
+            continue
 
-            # Try to identify title / company from the window
-            window_before_date = window[: date_match.start()].strip()
-            window_after_date = window[date_match.end() :].strip()
-
-            title = ""
-            company = ""
+        if next_date and not _is_bullet(line) and not date_match:
+            _save_current()
+            # Title on line 1, company+date on line 2 — or company on line 1, date on line 2
+            duration = next_date.group(0).strip()
+            company_line = next_line
+            before = company_line[: next_date.start()].strip(" ,|(-–—")
+            title = line
+            company = before or company_line
             location = ""
-
-            # Common pattern: Title on line 1, Company on line 2, Date on line 3
-            if i + 2 < len(lines) and _DATE_PATTERN.search(lines[i + 2]):
-                title = line
-                company = lines[i + 1].strip()
-                duration = lines[i + 2].strip()
-                i += 3
-            elif i + 1 < len(lines) and _DATE_PATTERN.search(lines[i + 1]):
-                # Two-line block: title + date, or company + date
-                second = lines[i + 1].strip()
-                if date_match.start() < len(lines[i]):
-                    # Date is on the same line as title
-                    title = window_before_date or line
-                    company = window_after_date
-                    i += 2
-                else:
-                    title = line
-                    company = second[: date_match.start() - len(lines[i]) - 1].strip()
-                    duration = date_match.group(0).strip()
-                    i += 2
-            else:
-                # Date on same line as title/company
-                parts = window_before_date.split(" at ")
-                if len(parts) == 2:
-                    title = parts[0].strip()
-                    company = parts[1].strip()
-                else:
-                    title = window_before_date or line
-                i += 1
-
-            # Clean company of trailing location/dates
-            company = re.sub(r'[,\|]\s*' + _DATE_PATTERN.pattern, '', company, flags=re.IGNORECASE).strip()
-            location_match = re.search(r'([A-Za-z][A-Za-z\s,]+?)(?:\s*[|,]\s*\d{4}|$)', company)
-            if location_match and len(location_match.group(1).split()) <= 4:
-                # Heuristic: last part after comma might be location
-                if ',' in company:
-                    parts = company.rsplit(',', 1)
-                    if len(parts) == 2 and len(parts[1].strip().split()) <= 3:
-                        company = parts[0].strip()
-                        location = parts[1].strip()
-
+            if "," in company:
+                bits = [b.strip() for b in company.split(",") if b.strip()]
+                if len(bits) >= 2 and len(bits[-1].split()) <= 3:
+                    location = bits[-1]
+                    company = ", ".join(bits[:-1])
             current_job = {
                 "title": _clean_text(title),
                 "company": _clean_text(company),
@@ -289,23 +390,31 @@ def _extract_experience(text: str) -> list[dict[str, Any]]:
                 "description": [],
                 "technologies": [],
             }
+            i += 2
             continue
 
-        # Collect bullet points / detail lines for current job.
-        # Wrapped resume lines should continue the previous bullet sentence.
+        # Collect bullets / detail lines for the current job.
         if current_job:
             if _is_section_heading_line(line):
+                i += 1
+                continue
+            # Stop collecting when we hit education/skills-like blocks mid-pass.
+            norm = _normalize_heading(line)
+            if norm in {"environment", "environment used"} or norm.startswith("environment "):
                 i += 1
                 continue
             clean = _clean_bullet_text(line)
             if clean and not _DATE_PATTERN.search(clean):
                 if _is_bullet(line):
                     current_bullets.append(clean)
+                elif current_bullets and not clean[:1].isupper():
+                    current_bullets[-1] = f"{current_bullets[-1]} {clean}".strip()
+                elif current_bullets and len(clean.split()) < 8 and not clean.endswith("."):
+                    # Likely a short role/domain subtitle — attach as context bullet if useful
+                    current_bullets.append(clean)
                 elif current_bullets:
-                    # Continuation line for prior bullet.
                     current_bullets[-1] = f"{current_bullets[-1]} {clean}".strip()
                 else:
-                    # Some resumes don't use bullet markers; keep as sentence bullets.
                     current_bullets.append(clean)
         i += 1
 
@@ -314,9 +423,18 @@ def _extract_experience(text: str) -> list[dict[str, Any]]:
 
 
 def _extract_education(text: str) -> list[dict[str, Any]]:
-    lines = _find_section(text, _SECTION_HEADINGS["education"])
-    if not lines:
-        return []
+    # Use every Education block (Dice header + resume footer) plus degree/@ lines.
+    lines = _find_all_sections(text, _SECTION_HEADINGS["education"])
+    for ln in (text or "").splitlines():
+        raw = ln.strip()
+        if not raw:
+            continue
+        low = raw.lower()
+        if "@" in raw and any(k in low for k in ("bachelor", "master", "phd", "mba", "b.tech", "m.tech")):
+            lines.append(raw)
+        elif any(k in low for k in ("bachelor", "master of", "b.tech", "m.tech", "bachelors", "masters")):
+            if "university" in low or "college" in low or "institute" in low:
+                lines.append(raw)
 
     education: list[dict[str, Any]] = []
     current: dict[str, Any] | None = None
@@ -325,25 +443,54 @@ def _extract_education(text: str) -> list[dict[str, Any]]:
     def _save_current():
         nonlocal current, current_details
         if current and current.get("degree"):
-            current["details"] = [d for d in current_details if d]
+            current["details"] = [d for d in current_details if d and not _DICE_NOISE_RE.search(d)]
             education.append(current)
         current = None
         current_details = []
 
-    year_re = re.compile(r'\b(19\d{2}|20\d{2})\b')
-    inst_re = re.compile(r'((?:[A-Za-z][a-z]+\s+)*(?:University|College|Institute|School|Academy|IIT|NIT|IIIT|IIM|BITS|Tech))')
+    year_re = re.compile(r"\b(19\d{2}|20\d{2})\b")
+    inst_re = re.compile(
+        r"((?:[A-Za-z][A-Za-z.&'\-]+\s+){0,6}"
+        r"(?:University|College|Institute|School|Academy|IIT|NIT|IIIT|IIM|BITS)"
+        r"(?:\s+of\s+[A-Za-z][A-Za-z.&'\-]+(?:\s+[A-Za-z][A-Za-z.&'\-]+){0,4})?)"
+    )
+    at_re = re.compile(
+        r"(?i)\b((?:bachelor|master|masters|phd|mba|b\.?tech|m\.?tech|bachelors|ms|bs|ba|ma)[^@]{0,60}?)\s*@\s*(.+)$"
+    )
 
     for line in lines:
         line = line.strip()
-        if not line:
-            if current:
-                _save_current()
+        if not line or _DICE_NOISE_RE.search(line):
+            continue
+        # Don't treat job headers as education details.
+        if _DATE_PATTERN.search(line) and ("|" in line or "," in line):
+            continue
+
+        # Dice-style: "Bachelors @ Delhi Technological University"
+        at_match = at_re.search(line)
+        if at_match:
+            _save_current()
+            degree = re.sub(r"\s+", " ", at_match.group(1)).strip(" :-")
+            institution = re.sub(r"\s+", " ", at_match.group(2)).strip(" :-")
+            year_match = year_re.search(line)
+            education.append(
+                {
+                    "degree": _clean_text(degree),
+                    "institution": _clean_text(institution),
+                    "location": "",
+                    "year": year_match.group(1) if year_match else "",
+                    "cgpa": "",
+                    "details": [],
+                }
+            )
+            current = None
+            current_details = []
             continue
 
         line_lower = line.lower()
         has_degree = any(kw in line_lower for kw in _DEGREE_KEYWORDS)
 
-        if has_degree and (not current or not current.get("degree")):
+        if has_degree:
             if current:
                 _save_current()
 
@@ -357,8 +504,14 @@ def _extract_education(text: str) -> list[dict[str, Any]]:
                 degree = degree.replace(institution, "").strip()
             if year:
                 degree = degree.replace(year, "").strip()
-            degree = re.sub(r'[|,;]', ' ', degree).strip()
-            degree = re.sub(r'\s+', ' ', degree).strip()
+            degree = re.sub(r"[|,;]", " ", degree).strip()
+            degree = re.sub(r"\s+", " ", degree).strip(" :-")
+            # Fix soft-hyphen / broken wraps: "Tech nology" → "Technology"
+            degree = re.sub(r"(?i)\btech\s+nology\b", "Technology", degree)
+            degree = re.sub(r"(?i)\bengi\s+neering\b", "Engineering", degree)
+            # Drop leftover city/state crumbs after institution removal
+            degree = re.sub(r"(?i)\b(springfield|delhi|india|il|tx|pa|nj|ks|va)\b", "", degree).strip(" ,")
+            degree = re.sub(r"\s+", " ", degree).strip(" ,-")
 
             if len(degree) > 3:
                 current = {
@@ -370,6 +523,7 @@ def _extract_education(text: str) -> list[dict[str, Any]]:
                     "details": [],
                 }
                 current_details = []
+            continue
         elif current:
             if not current.get("institution"):
                 inst_match = inst_re.search(line)
@@ -381,18 +535,29 @@ def _extract_education(text: str) -> list[dict[str, Any]]:
                 if year_match:
                     current["year"] = year_match.group(1)
                     continue
-            # CGPA / GPA / percentage
             if not current.get("cgpa"):
-                cgpa_match = re.search(r'(?:cgpa|gpa|percentage)[\s:]*([\d.]+\s*/?\s*\d*)', line, re.IGNORECASE)
+                cgpa_match = re.search(
+                    r"(?:cgpa|gpa|percentage)[\s:]*([\d.]+\s*/?\s*\d*)", line, re.IGNORECASE
+                )
                 if cgpa_match:
                     current["cgpa"] = cgpa_match.group(1).strip()
                     continue
-            clean = re.sub(r'^[\-\*\u2022\s>]+', '', line).strip()
-            if clean:
+            clean = re.sub(r"^[\-\*\u2022\s>]+", "", line).strip()
+            if clean and not _DICE_NOISE_RE.search(clean) and len(clean) < 160:
                 current_details.append(clean)
 
     _save_current()
-    return education
+    deduped: list[dict[str, Any]] = []
+    seen: set[str] = set()
+    for item in education:
+        inst = (item.get("institution") or "").lower()
+        deg = (item.get("degree") or "").lower()
+        key = f"{inst}|{deg[:48]}"
+        if key in seen:
+            continue
+        seen.add(key)
+        deduped.append(item)
+    return deduped
 
 
 def _extract_projects(text: str) -> list[dict[str, Any]]:
