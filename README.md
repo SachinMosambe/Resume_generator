@@ -7,7 +7,7 @@ Standalone app that generates client-formatted DOCX resumes from an uploaded can
 | Layer | Tech | Host |
 |-------|------|------|
 | UI | Next.js (App Router) + Tailwind | Vercel (free) |
-| API | FastAPI + Bedrock + python-docx | Render (free) |
+| API | FastAPI + Bedrock + python-docx | AWS EC2 (free tier) |
 
 ## Local development
 
@@ -45,34 +45,34 @@ Open http://localhost:3000 — upload a resume, choose Aptino default or a clien
   - `client_name`, `job_role` (optional)
   - Response: DOCX file download
 
-## Deploy (free tier)
+## Deploy (EC2 backend + Vercel frontend)
 
 ### 1. Push to GitHub
 
 Repo: `https://github.com/SachinMosambe/Resume_generator`
 
-### 2. Backend on Render
+### 2. Backend on EC2
 
-1. New → Blueprint → select this repo (`render.yaml`), **or** New Web Service with root `backend`
-2. Set env vars:
-   - `AWS_BEARER_TOKEN_BEDROCK` (required)
-   - `AWS_REGION` (e.g. `ap-south-1`)
-   - `CORS_ORIGINS` = your Vercel URL (e.g. `https://your-app.vercel.app`)
-3. Health check path: `/api/health`
+1. Launch Ubuntu 22.04 `t2.micro` / `t3.micro`
+2. Security group inbound: **22** (SSH, your IP) and **8000** (HTTP, `0.0.0.0/0`)
+3. SSH in, clone repo, run:
 
-**Note:** Free Render services sleep after ~15 minutes idle. The first request after sleep can take 30–60s; generation itself may take longer while Bedrock runs.
+```bash
+cd ~/Resume_generator/backend
+bash deploy/setup-ec2.sh
+nano .env   # set AWS_BEARER_TOKEN_BEDROCK + CORS_ORIGINS=https://your-app.vercel.app
+sudo systemctl restart resume-api
+```
+
+4. Test: `http://YOUR_EC2_IP:8000/api/health`
 
 ### 3. Frontend on Vercel
 
 1. Import the GitHub repo
 2. Root directory: `frontend`
-3. Framework: Next.js
-4. Env: `NEXT_PUBLIC_API_URL` = your Render URL (e.g. `https://resume-generator-api.onrender.com`)
+3. Env: `NEXT_PUBLIC_API_URL` = `http://YOUR_EC2_IP:8000` (no trailing slash)
+4. Deploy, then set EC2 `CORS_ORIGINS` to the Vercel URL and restart `resume-api`
 
 ### 4. CI
 
-GitHub Actions (`.github/workflows/ci.yml`) builds the Next.js app and compiles the Python package on every push/PR to `main`. Deployments are handled by Vercel and Render Git integrations.
-
-## Upgrade path
-
-If Render cold starts or timeouts are painful, move the API to Railway Hobby (~$5 credit) without code changes — keep the same env vars and update `NEXT_PUBLIC_API_URL` / `CORS_ORIGINS`.
+GitHub Actions (`.github/workflows/ci.yml`) builds the Next.js app and compiles the Python package on every push/PR to `main`.
