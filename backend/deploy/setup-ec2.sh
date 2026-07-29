@@ -34,7 +34,8 @@ After=network.target
 [Service]
 User=ubuntu
 WorkingDirectory=${APP_DIR}
-Environment=PATH=${APP_DIR}/.venv/bin
+Environment=PATH=${APP_DIR}/.venv/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+Environment=HOME=/home/ubuntu
 ExecStart=${APP_DIR}/.venv/bin/uvicorn app.main:app --host 0.0.0.0 --port 8000
 Restart=always
 RestartSec=5
