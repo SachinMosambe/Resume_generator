@@ -119,7 +119,12 @@ def get_aptino_default_metadata() -> dict[str, Any]:
         },
         "logo_count": len(logos),
         "logos": logos,
-        "preview_text": "",
+        "preview_text": (
+            "Section order: PROFESSIONAL SUMMARY → TECHNICAL SKILLS → PROFESSIONAL EXPERIENCE → "
+            "PROJECTS → EDUCATION → CERTIFICATIONS → ACHIEVEMENTS → LANGUAGES || "
+            "Template headings: PROFESSIONAL SUMMARY | TECHNICAL SKILLS | PROFESSIONAL EXPERIENCE | "
+            "PROJECTS | EDUCATION | CERTIFICATIONS"
+        ),
     }
 
 

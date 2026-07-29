@@ -56,14 +56,14 @@ class FormatExtractionService:
 
         text, styling, logos, header_text, footer_text = self._extract_document(ext, content)
         sections, section_labels = self._infer_sections_with_labels(text)
-        company_header = self._infer_company_header(text)
 
-        # Prefer formal header/footer branding extracted from the template file.
+        # Prefer formal header/footer branding; fall back to body heuristics.
         header_sign = self._company_sign_from_text(header_text)
         footer_sign = self._company_sign_from_text(footer_text)
-        if header_sign and not company_header:
-            company_header = header_sign
+        company_header = header_sign or self._infer_company_header(text)
         company_footer = footer_sign or company_header
+
+        preview_text = self._build_format_preview(text, sections, section_labels)
 
         logger.info(
             "Extraction complete: %s sections, %s logos, header_branding=%s, footer_branding=%s",
@@ -96,7 +96,7 @@ class FormatExtractionService:
             },
             "company_header": company_header,
             "company_footer": company_footer,
-            "preview_text": "",
+            "preview_text": preview_text,
             "logos": logos,
             "logo_count": len(logos),
             # Intentionally blank: sample resume candidate names must not be copied.
@@ -143,41 +143,16 @@ class FormatExtractionService:
                     if char.get("size"):
                         font_sizes.append(float(char["size"]))
 
-        # Do not carry textual header/footer content from sample resumes.
-        first_page_lines: list[str] = []
-        last_page_lines: list[str] = []
+        # Extract top/bottom page bands for company branding (not candidate bio).
+        first_page_lines, last_page_lines = self._pdf_edge_lines(path, pages)
+        header_text = self._pick_branding_lines(first_page_lines, region="header")
+        footer_text = self._pick_branding_lines(last_page_lines, region="footer")
+        if header_text:
+            logger.info("Detected PDF header branding: %s", header_text[:120])
+        if footer_text:
+            logger.info("Detected PDF footer branding: %s", footer_text[:120])
 
-        # Keep these empty so sample candidate/company text is not persisted.
-        header_text = ""
-        if first_page_lines:
-            # Look for company/client name in header (usually short, all caps or proper case)
-            for line in first_page_lines[:5]:
-                # Skip if it looks like a candidate name or section header
-                if len(line) < 50 and not any(x in line.lower() for x in ['summary', 'experience', 'education', 'skills']):
-                    if line.isupper() or len(line.split()) <= 3:
-                        header_text = line
-                        logger.info(f"Detected header text: {header_text}")
-                        break
-        
-        # Keep footer text empty for the same reason.
-        footer_text = ""
-        if last_page_lines:
-            # Footer is usually at the very bottom
-            footer_candidates = last_page_lines[-3:]
-            for line in reversed(footer_candidates):
-                # Look for copyright, page numbers, or short footer text
-                if len(line) < 80:
-                    if any(x in line.lower() for x in ['©', 'page', 'confidential', 'copyright', 'all rights']):
-                        footer_text = line
-                        break
-                    # If no explicit marker, use the last short line
-                    elif len(line) > 5 and not line.isdigit():
-                        footer_text = line
-                        break
-            if footer_text:
-                logger.info(f"Detected footer text: {footer_text}")
-
-        # Try multiple methods to extract logo
+        # Try multiple methods to extract logo (+ optional footer stamp)
         logos = self._extract_logo_from_pdf(path)
 
         body_size = round(sum(font_sizes) / len(font_sizes), 1) if font_sizes else 11
@@ -205,10 +180,11 @@ class FormatExtractionService:
             if len(doc) > 0:
                 page = doc[0]
                 page_h = float(page.rect.height or 0)
-                header_cutoff = page_h * 0.45 if page_h > 0 else 320.0
+                header_cutoff = page_h * 0.55 if page_h > 0 else 400.0
+                footer_floor = page_h * 0.72 if page_h > 0 else 550.0
                 images = page.get_images(full=True)
                 logger.info(f"Found {len(images)} images on first page")
-                
+
                 for img_index, img in enumerate(images):
                     try:
                         xref = img[0]
@@ -216,49 +192,58 @@ class FormatExtractionService:
                         if not rects:
                             logger.debug(f"Skipping image {img_index}: no placement rect found")
                             continue
-                        # Keep only images placed in the top/header region.
                         top_y = min(float(r.y0) for r in rects)
-                        if top_y > header_cutoff:
+                        bottom_y = max(float(r.y1) for r in rects)
+                        in_header = top_y <= header_cutoff
+                        in_footer = bottom_y >= footer_floor
+                        if not in_header and not in_footer:
                             logger.debug(
-                                f"Skipping image {img_index}: outside header region (y0={top_y:.1f}, cutoff={header_cutoff:.1f})"
+                                "Skipping image %s: outside header/footer (y0=%.1f y1=%.1f)",
+                                img_index,
+                                top_y,
+                                bottom_y,
                             )
                             continue
 
                         base_image = doc.extract_image(xref)
                         image_bytes = base_image["image"]
                         image_ext = base_image["ext"]
-                        
-                        # Skip tiny decorative icons / huge backgrounds
+
                         if len(image_bytes) < 300:
                             logger.debug(f"Skipping small image {img_index}: {len(image_bytes)} bytes")
                             continue
-                            
-                        if len(image_bytes) > 5_000_000:  # 5MB
+                        if len(image_bytes) > 5_000_000:
                             logger.debug(f"Skipping large image {img_index}: {len(image_bytes)} bytes")
                             continue
 
-                        # Normalize to PNG for reliable DOCX embedding
                         image_bytes, image_ext = self._normalize_image_bytes(image_bytes, image_ext)
                         if not image_bytes:
                             continue
-                        
-                        logo_b64 = base64.b64encode(image_bytes).decode('utf-8')
+
+                        logo_b64 = base64.b64encode(image_bytes).decode("utf-8")
+                        position = "footer_center" if in_footer and not in_header else "header_right"
+                        source = "pymupdf_footer" if position.startswith("footer") else "pymupdf_header"
                         logos.append({
                             "data": f"data:image/{image_ext};base64,{logo_b64}",
-                            "position": "header_right",
+                            "position": position,
                             "width": 150,
                             "height": 75,
-                            "source": "pymupdf_header",
-                            "index": img_index
+                            "source": source,
+                            "index": img_index,
                         })
-                        logger.info(f"Extracted logo {img_index}: {image_ext}, {len(image_bytes)} bytes")
-                        
-                        if len(logos) >= 3:
+                        logger.info(
+                            "Extracted image %s (%s): %s, %s bytes",
+                            img_index,
+                            source,
+                            image_ext,
+                            len(image_bytes),
+                        )
+                        if len(logos) >= 4:
                             break
                     except Exception as img_err:
                         logger.warning(f"Failed to extract image {img_index}: {img_err}")
                         continue
-                
+
                 doc.close()
                 if logos:
                     logger.info(f"PyMuPDF extraction successful: {len(logos)} logos")
@@ -390,23 +375,26 @@ class FormatExtractionService:
         document = docx.Document(str(path))
         lines = [p.text.strip() for p in document.paragraphs if p.text.strip()]
         logos: list[dict] = self._extract_docx_header_logos(document)
+        footer_logos = self._extract_docx_footer_logos(document)
+        if footer_logos:
+            logos.extend(footer_logos)
         if not logos:
             # Some templates place logo in top body area (not formal header part).
             logos = self._extract_docx_top_body_logos(document)
 
         if logos:
-            logger.info(f"Extracted {len(logos)} logo(s) from DOCX headers")
+            logger.info(f"Extracted {len(logos)} logo(s) from DOCX")
         else:
-            logger.warning("No header logos found in DOCX")
+            logger.warning("No logos found in DOCX")
 
         # Extract header text from DOCX headers
         header_text = ""
         try:
-            for section in []:
+            for section in document.sections:
                 if section.header:
                     header_paras = [p.text.strip() for p in section.header.paragraphs if p.text.strip()]
                     if header_paras:
-                        header_text = " | ".join(header_paras[:3])  # First 3 non-empty lines
+                        header_text = " | ".join(header_paras[:3])
                         logger.info(f"Extracted DOCX header: {header_text[:100]}...")
                         break
         except Exception as header_err:
@@ -415,31 +403,32 @@ class FormatExtractionService:
         # Extract footer text from DOCX footers
         footer_text = ""
         try:
-            for section in []:
+            for section in document.sections:
                 if section.footer:
                     footer_paras = [p.text.strip() for p in section.footer.paragraphs if p.text.strip()]
                     if footer_paras:
-                        footer_text = " | ".join(footer_paras[:3])  # First 3 non-empty lines
+                        footer_text = " | ".join(footer_paras[:3])
                         logger.info(f"Extracted DOCX footer: {footer_text[:100]}...")
                         break
         except Exception as footer_err:
             logger.debug(f"Could not extract DOCX footer: {footer_err}")
 
-        # If no header/footer from sections, try to infer from document body
-        if False and not header_text and lines:
-            # Header might be first line if it's all caps or short
-            first_line = lines[0] if lines else ""
-            if first_line.isupper() or (len(first_line) < 50 and len(first_line.split()) <= 3):
-                header_text = first_line
-                logger.info(f"Inferred header from first line: {header_text}")
+        # If no header/footer branding, carefully infer company block from body top lines.
+        if not header_text and not footer_text and lines:
+            inferred = self._infer_company_header("\n".join(lines[:12]))
+            if inferred and inferred.get("lines"):
+                header_text = " | ".join(inferred["lines"])
+                logger.info("Inferred company branding from DOCX body top lines")
 
         normal_style = document.styles["Normal"]
         font = normal_style.font
         font_size = int(font.size.pt) if font.size else 11
         styling = {
-            "font_family": font.name or "Helvetica",
+            "font_family": font.name or "Calibri",
             "font_size_header": max(14, font_size + 3),
             "font_size_body": font_size,
+            "font_size_name": max(18, font_size + 8),
+            "margin_inches": 0.7,
         }
         logger.info(f"DOCX extraction complete: {len(lines)} text lines, {len(logos)} logos, header={bool(header_text)}, footer={bool(footer_text)}")
         return "\n".join(lines), styling, logos, header_text, footer_text
@@ -509,6 +498,69 @@ class FormatExtractionService:
                         return logos
         except Exception as exc:
             logger.warning(f"DOCX header logo extraction failed: {exc}")
+        return logos
+
+    def _extract_docx_footer_logos(self, document: Any) -> list[dict]:
+        """Extract images from DOCX footer parts (company stamp / signature mark)."""
+        logos: list[dict] = []
+        try:
+            import base64
+            from io import BytesIO
+            from PIL import Image
+        except Exception:
+            return logos
+
+        seen_rids: set[str] = set()
+        try:
+            for section in document.sections:
+                footer = section.footer
+                if not footer:
+                    continue
+                blips = footer._element.xpath(".//*[local-name()='blip']")  # nosec - trusted DOCX XML
+                for blip in blips:
+                    rid = blip.get("{http://schemas.openxmlformats.org/officeDocument/2006/relationships}embed")
+                    if not rid or rid in seen_rids:
+                        continue
+                    seen_rids.add(rid)
+                    try:
+                        part = footer.part.related_parts[rid]
+                        img_data = part.blob
+                    except Exception:
+                        try:
+                            part = document.part.related_parts[rid]
+                            img_data = part.blob
+                        except Exception:
+                            continue
+                    if not img_data or len(img_data) < 300 or len(img_data) > 5_000_000:
+                        continue
+                    try:
+                        img = Image.open(BytesIO(img_data))
+                        width, height = img.size
+                        aspect = width / height if height else 0
+                        if aspect < 0.2 or aspect > 14:
+                            continue
+                        ext = str((img.format or "PNG")).lower()
+                        if ext == "jpg":
+                            ext = "jpeg"
+                    except Exception:
+                        continue
+                    img_data, ext = self._normalize_image_bytes(img_data, ext)
+                    if not img_data:
+                        continue
+                    logo_b64 = base64.b64encode(img_data).decode("utf-8")
+                    logos.append(
+                        {
+                            "data": f"data:image/{ext};base64,{logo_b64}",
+                            "position": "footer_center",
+                            "width": width,
+                            "height": height,
+                            "source": "docx_footer",
+                        }
+                    )
+                    if len(logos) >= 2:
+                        return logos
+        except Exception as exc:
+            logger.warning(f"DOCX footer logo extraction failed: {exc}")
         return logos
 
     def _extract_docx_top_body_logos(self, document: Any) -> list[dict]:
@@ -820,7 +872,16 @@ class FormatExtractionService:
                 break
 
         if len(selected) < 2:
-            return None
+            # Allow a single strong company line (Inc/LLC/www/@/address cues).
+            if len(selected) == 1:
+                lower = selected[0].lower()
+                strong = any(marker in lower for marker in company_markers) or bool(
+                    re.search(r"\b\d{5}(?:-\d{4})?\b", selected[0])
+                )
+                if not strong:
+                    return None
+            else:
+                return None
 
         return {
             "name": selected[0],
@@ -828,6 +889,169 @@ class FormatExtractionService:
             "contact": selected[2] if len(selected) > 2 else "",
             "lines": selected[:3],
         }
+
+    def _pdf_edge_lines(self, path: Path, pages: list[str]) -> tuple[list[str], list[str]]:
+        """Collect short lines from the top and bottom of the first/last PDF pages."""
+        first_page_lines: list[str] = []
+        last_page_lines: list[str] = []
+
+        try:
+            import fitz
+
+            doc = fitz.open(str(path))
+            if len(doc) > 0:
+                page = doc[0]
+                page_h = float(page.rect.height or 1)
+                blocks = page.get_text("blocks") or []
+                top_blocks = []
+                bottom_blocks = []
+                for block in blocks:
+                    if len(block) < 5:
+                        continue
+                    _x0, y0, _x1, y1, text = block[:5]
+                    text = str(text or "").strip()
+                    if not text:
+                        continue
+                    if float(y0) <= page_h * 0.22:
+                        top_blocks.append((float(y0), text))
+                    if float(y1) >= page_h * 0.78:
+                        bottom_blocks.append((float(y0), text))
+                top_blocks.sort(key=lambda item: item[0])
+                bottom_blocks.sort(key=lambda item: item[0])
+                for _, text in top_blocks:
+                    first_page_lines.extend(
+                        [re.sub(r"\s+", " ", line).strip() for line in text.splitlines() if line.strip()]
+                    )
+                for _, text in bottom_blocks:
+                    last_page_lines.extend(
+                        [re.sub(r"\s+", " ", line).strip() for line in text.splitlines() if line.strip()]
+                    )
+            doc.close()
+        except Exception as exc:
+            logger.debug("PyMuPDF edge-line extraction unavailable: %s", exc)
+
+        if not first_page_lines and pages:
+            first_page_lines = [
+                re.sub(r"\s+", " ", line).strip()
+                for line in pages[0].splitlines()
+                if line.strip()
+            ][:8]
+        if not last_page_lines and pages:
+            source = pages[-1]
+            last_page_lines = [
+                re.sub(r"\s+", " ", line).strip()
+                for line in source.splitlines()
+                if line.strip()
+            ][-8:]
+        return first_page_lines, last_page_lines
+
+    def _pick_branding_lines(self, lines: list[str], region: str = "header") -> str:
+        """Keep company-like lines; drop candidate names, section titles, page numbers."""
+        if not lines:
+            return ""
+
+        section_markers = (
+            "summary",
+            "experience",
+            "education",
+            "skills",
+            "professional",
+            "objective",
+            "projects",
+            "certification",
+            "achievement",
+        )
+        company_markers = (
+            "inc",
+            "llc",
+            "ltd",
+            "corp",
+            "company",
+            "pvt",
+            "solutions",
+            "technologies",
+            "consulting",
+            "www.",
+            "http",
+            "@",
+            "email",
+            "blvd",
+            "suite",
+            "street",
+            "avenue",
+            "road",
+            "confidential",
+            "copyright",
+            "©",
+        )
+
+        selected: list[str] = []
+        for line in lines:
+            clean = re.sub(r"\s+", " ", line).strip()
+            if not clean or len(clean) > 120:
+                continue
+            lower = clean.lower()
+            if clean.isdigit() or re.fullmatch(r"page\s*\d+(\s*of\s*\d+)?", lower):
+                continue
+            if any(marker in lower for marker in section_markers):
+                continue
+            looks_company = any(marker in lower for marker in company_markers)
+            looks_address = bool(re.search(r"\b\d{5}(?:-\d{4})?\b", clean)) or (
+                "," in clean and any(ch.isdigit() for ch in clean)
+            )
+            short_brand = len(clean.split()) <= 6 and clean[0].isupper()
+            if region == "footer":
+                if looks_company or looks_address or ("www." in lower or "@" in lower):
+                    selected.append(clean)
+            else:
+                if looks_company or looks_address or short_brand:
+                    selected.append(clean)
+            if len(selected) >= 3:
+                break
+
+        if not selected:
+            return ""
+        if len(selected) == 1:
+            joined = selected[0].lower()
+            if not any(marker in joined for marker in company_markers) and not re.search(r"\d", selected[0]):
+                return ""
+        return " | ".join(selected[:3])
+
+    def _build_format_preview(
+        self,
+        text: str,
+        sections: list[str],
+        section_labels: dict[str, str] | None = None,
+    ) -> str:
+        """Sanitized layout hint for the LLM (headings only — no sample person content)."""
+        labels = section_labels or {}
+        heading_bits = []
+        for section in sections:
+            if section == "header":
+                continue
+            label = labels.get(section) or section.replace("_", " ").upper()
+            heading_bits.append(str(label).upper())
+        layout_hint = "Section order: " + " → ".join(heading_bits[:10]) if heading_bits else ""
+
+        heading_lines: list[str] = []
+        for line in (text or "").splitlines():
+            clean = re.sub(r"\s+", " ", line).strip()
+            if not clean or len(clean) > 48:
+                continue
+            letters = re.sub(r"[^A-Za-z]", "", clean)
+            if len(letters) < 4:
+                continue
+            upper_ratio = sum(1 for ch in letters if ch.isupper()) / max(len(letters), 1)
+            if upper_ratio >= 0.7 or clean.isupper():
+                heading_lines.append(clean.upper())
+            if len(heading_lines) >= 10:
+                break
+        parts = []
+        if layout_hint:
+            parts.append(layout_hint)
+        if heading_lines:
+            parts.append("Template headings: " + " | ".join(heading_lines))
+        return self._preview(" || ".join(parts))
 
     def _preview(self, text: str) -> str:
         return re.sub(r"\s+", " ", (text or "").strip())[:700]

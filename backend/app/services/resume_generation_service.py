@@ -85,18 +85,22 @@ class ResumeGenerationService:
             document["company_footer_lines"] = []
         # Backward-compatible alias used by older callers/tests.
         document["company_header_lines"] = list(document["company_footer_lines"])
-        
-        logo_count = len(logos)
+
+        header_logos, footer_logos = self._split_logos(logos)
+        logo_count = len(header_logos) + len(footer_logos)
         logger.info(
             "client_format_metadata",
             client_format_id=str(getattr(client_format, "id", "")),
             logo_count=logo_count,
+            header_logo_count=len(header_logos),
+            footer_logo_count=len(footer_logos),
             has_logos=logo_count > 0,
             template_id=format_metadata.get("template_id"),
+            has_company_footer=bool(document.get("company_footer_lines")),
         )
-        
+
         if logo_count > 0:
-            for i, logo in enumerate(logos):
+            for i, logo in enumerate(header_logos + footer_logos):
                 data_size = len(logo.get("data", "")) if logo.get("data") else 0
                 logger.info(
                     f"logo_{i+1}_info",
@@ -104,13 +108,13 @@ class ResumeGenerationService:
                     source=logo.get("source"),
                     data_size=data_size,
                 )
-        
+
         document["client_header_text"] = ""
         document["client_footer_text"] = ""
-        
-        # Generate DOCX with the client logo only (editable format)
+
+        # Generate DOCX with the client logo + company sign (editable format)
         try:
-            docx_bytes = self._render_docx(document, format_metadata, logos)
+            docx_bytes = self._render_docx(document, format_metadata, header_logos, footer_logos)
             logger.info(
                 "docx_rendered_successfully",
                 candidate_id=str(candidate.id),
@@ -128,13 +132,13 @@ class ResumeGenerationService:
 
         safe_client = sanitize_filename(getattr(client_format, "client_id", None) or "client")
         object_key = f"resumes/{candidate.recruiter_id}/generated/{candidate.id}_{safe_client}.docx"
-        
+
         logger.info(
             "uploading_generated_resume",
             candidate_id=str(candidate.id),
             object_key=object_key,
         )
-        
+
         upload_bytes_to_key(
             recruiter_id=str(candidate.recruiter_id),
             object_key=object_key,
@@ -155,16 +159,16 @@ class ResumeGenerationService:
             has_extracted_data=bool(candidate.extracted_data),
             has_resume_path=bool(candidate.resume_path),
         )
-        
+
         # Try to get resume text - from stored text first
         resume_text = None
         if candidate.extracted_data:
             resume_text = (
-                candidate.extracted_data.get("raw_text") 
+                candidate.extracted_data.get("raw_text")
                 or candidate.extracted_data.get("resume_text")
                 or candidate.extracted_data.get("full_text")
             )
-        
+
         # If no stored text, extract from the original resume file.
         if not resume_text and candidate.resume_path:
             try:
@@ -655,13 +659,13 @@ class ResumeGenerationService:
                 compressed["skills_by_category"] = grouped_skills
 
         summary = compressed.get("summary", "")
-        if len(summary) > 1200:
-            compressed["summary"] = summary[:1200]
+        if len(summary) > 2000:
+            compressed["summary"] = summary[:2000]
 
         # Keep more raw text as fallback so older roles can still be recovered.
         raw_text = str(compressed.get("raw_resume_text") or "")
         if raw_text:
-            compressed["raw_resume_text"] = raw_text[:8000]
+            compressed["raw_resume_text"] = raw_text[:14000]
 
         return compressed
 
@@ -1293,10 +1297,10 @@ class ResumeGenerationService:
     ) -> dict[str, Any] | None:
         """Compose the resume JSON directly with the LLM using candidate facts."""
         compressed = self._compress_candidate_data(candidate_data)
-        candidate_payload = json.dumps(compressed, ensure_ascii=True)[:40000]
-        metadata_payload = json.dumps(metadata, ensure_ascii=True)[:7000]
-        baseline_payload = json.dumps(baseline_document, ensure_ascii=True)[:16000]
-        format_preview = str(metadata.get("preview_text") or "")[:2500]
+        candidate_payload = json.dumps(compressed, ensure_ascii=True)[:55000]
+        metadata_payload = json.dumps(metadata, ensure_ascii=True)[:9000]
+        baseline_payload = json.dumps(baseline_document, ensure_ascii=True)[:22000]
+        format_preview = str(metadata.get("preview_text") or "")[:3500]
 
         prompts = [
             (
@@ -1476,11 +1480,14 @@ class ResumeGenerationService:
                 valid.append(logo)
         if not valid:
             return []
-        # Prefer explicit header-extracted sources and larger payloads.
+
         def _rank(item: dict) -> tuple[int, int]:
             source = str(item.get("source") or "").lower()
+            position = str(item.get("position") or "").lower()
             source_rank = 0
-            if "docx_header" in source or "pymupdf_header" in source:
+            if "docx_header" in source or "pymupdf_header" in source or "aptino" in source:
+                source_rank = 5
+            elif "footer" in source or "footer" in position:
                 source_rank = 4
             elif "header" in source:
                 source_rank = 3
@@ -1490,8 +1497,41 @@ class ResumeGenerationService:
                 source_rank = 1
             return (source_rank, len(str(item.get("data") or "")))
 
-        best = sorted(valid, key=_rank, reverse=True)[0]
-        return [best]
+        header_candidates = [
+            logo for logo in valid
+            if "footer" not in str(logo.get("position") or "").lower()
+            and "footer" not in str(logo.get("source") or "").lower()
+        ]
+        footer_candidates = [
+            logo for logo in valid
+            if "footer" in str(logo.get("position") or "").lower()
+            or "footer" in str(logo.get("source") or "").lower()
+        ]
+
+        selected: list[dict] = []
+        if header_candidates:
+            selected.append(sorted(header_candidates, key=_rank, reverse=True)[0])
+        elif valid:
+            # Fallback: best overall image as header logo.
+            selected.append(sorted(valid, key=_rank, reverse=True)[0])
+        if footer_candidates:
+            best_footer = sorted(footer_candidates, key=_rank, reverse=True)[0]
+            if best_footer not in selected:
+                selected.append(best_footer)
+        return selected
+
+    def _split_logos(self, logos: list[dict]) -> tuple[list[dict], list[dict]]:
+        """Split validated logos into header brand mark vs footer stamp/sign."""
+        header: list[dict] = []
+        footer: list[dict] = []
+        for logo in logos or []:
+            position = str(logo.get("position") or "").lower()
+            source = str(logo.get("source") or "").lower()
+            if "footer" in position or "footer" in source:
+                footer.append(logo)
+            else:
+                header.append(logo)
+        return header, footer
 
     def _clean_skill_groups(self, content: Any) -> dict[str, list[str]]:
         if not isinstance(content, dict):
@@ -2267,6 +2307,7 @@ class ResumeGenerationService:
         document: dict[str, Any],
         metadata: dict[str, Any] | None,
         logos: list[dict],
+        footer_logos: list[dict] | None = None,
     ) -> bytes:
         """Render resume as DOCX with Aptino-style single-column ATS layout."""
         try:
@@ -2283,7 +2324,7 @@ class ResumeGenerationService:
         header_size = float(styling.get("font_size_header") or 12)
         name_size = float(styling.get("font_size_name") or 20)
         font_family = styling.get("font_family") or "Calibri"
-        margin_inches = float(styling.get("margin_inches") or 0.7)
+        margin_inches = float(styling.get("margin_inches") or 0.65)
 
         style = doc.styles["Normal"]
         style.font.name = font_family
@@ -2292,11 +2333,11 @@ class ResumeGenerationService:
 
         section = doc.sections[0]
         section.top_margin = Inches(margin_inches)
-        section.bottom_margin = Inches(margin_inches)
+        section.bottom_margin = Inches(max(0.6, margin_inches))
         section.left_margin = Inches(margin_inches)
         section.right_margin = Inches(margin_inches)
-        section.header_distance = Inches(0.35)
-        section.footer_distance = Inches(0.35)
+        section.header_distance = Inches(0.3)
+        section.footer_distance = Inches(0.3)
 
         usable_width = section.page_width - section.left_margin - section.right_margin
         header = document.get("header") or {}
@@ -2316,6 +2357,10 @@ class ResumeGenerationService:
                 bool(logos) and "aptino" in str((logos[0] or {}).get("source") or "").lower()
             ),
         )
+        footer_stamp_bytes = self._decode_logo_bytes(
+            (footer_logos or [None])[0] if footer_logos else None,
+            strip_black_bg=False,
+        )
 
         # Page header (every page): candidate name + position + logo. No company sign here.
         self._fill_docx_page_header(
@@ -2328,8 +2373,13 @@ class ResumeGenerationService:
             font_family,
         )
 
-        # Page footer (every page): company sign only.
-        self._fill_docx_page_footer(section.footer, company_lines, font_family)
+        # Page footer (every page): optional stamp image + company sign text.
+        self._fill_docx_page_footer(
+            section.footer,
+            company_lines,
+            font_family,
+            stamp_bytes=footer_stamp_bytes,
+        )
 
         # Contact on one line beneath the repeating header (body, first page flow).
         if header.get("contact"):
@@ -2409,7 +2459,7 @@ class ResumeGenerationService:
             right_para = right_cell.paragraphs[0]
             right_para.alignment = WD_ALIGN_PARAGRAPH.RIGHT
             logo_run = right_para.add_run()
-            logo_width = Inches(1.35)
+            logo_width = Inches(1.5)
             try:
                 from PIL import Image as PILImage
 
@@ -2417,9 +2467,9 @@ class ResumeGenerationService:
                 img_width, img_height = pil_img.size
                 aspect = img_width / img_height if img_height else 2
                 if aspect > 3:
-                    logo_width = Inches(1.55)
+                    logo_width = Inches(1.7)
                 elif aspect < 1.2:
-                    logo_width = Inches(0.9)
+                    logo_width = Inches(1.05)
             except Exception:
                 pass
             logo_run.add_picture(BytesIO(logo_bytes), width=logo_width)
@@ -2447,14 +2497,38 @@ class ResumeGenerationService:
         page_footer: Any,
         company_lines: list[Any],
         font_family: str,
+        stamp_bytes: bytes | None = None,
     ) -> None:
-        """Put company sign in the Word section footer (repeats on every page)."""
-        from docx.shared import Pt, RGBColor
+        """Put company stamp/sign in the Word section footer (repeats on every page)."""
+        from docx.shared import Inches, Pt, RGBColor
         from docx.enum.text import WD_ALIGN_PARAGRAPH
+        from io import BytesIO
 
         self._clear_docx_container(page_footer)
         lines = [str(line or "").strip() for line in (company_lines or []) if str(line or "").strip()]
-        if not lines:
+
+        if stamp_bytes:
+            stamp_para = page_footer.add_paragraph()
+            stamp_para.alignment = WD_ALIGN_PARAGRAPH.CENTER
+            stamp_para.paragraph_format.space_before = Pt(0)
+            stamp_para.paragraph_format.space_after = Pt(2)
+            stamp_run = stamp_para.add_run()
+            stamp_width = Inches(1.15)
+            try:
+                from PIL import Image as PILImage
+
+                pil_img = PILImage.open(BytesIO(stamp_bytes))
+                img_width, img_height = pil_img.size
+                aspect = img_width / img_height if img_height else 2
+                if aspect > 3:
+                    stamp_width = Inches(1.45)
+                elif aspect < 1.1:
+                    stamp_width = Inches(0.85)
+            except Exception:
+                pass
+            stamp_run.add_picture(BytesIO(stamp_bytes), width=stamp_width)
+
+        if not lines and not stamp_bytes:
             # Keep an empty paragraph so Word still has a valid footer part.
             page_footer.add_paragraph()
             return

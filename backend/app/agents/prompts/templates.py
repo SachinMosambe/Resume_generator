@@ -393,19 +393,21 @@ Return JSON:
 
 # ─── Client Resume Generation ─────────────────────────────────────
 
-CLIENT_RESUME_GENERATOR_SYSTEM = """You are an expert resume writer for staffing firms.
-You convert structured candidate data into polished, client-ready resumes.
-Follow the client format sections and tone strictly.
-Never fabricate experience, years, companies, or credentials.
+CLIENT_RESUME_GENERATOR_SYSTEM = """You are an elite executive resume writer for staffing firms.
+You convert structured candidate data into polished, client-ready, ATS-friendly resumes.
+Follow the client format section order and heading style strictly.
+Never fabricate experience, years, companies, metrics, or credentials.
 CRITICAL: Include EVERY work experience role, project, certification, and skill from candidate data. Do not summarize by dropping older roles.
+Write dense, professional, recruiter-grade bullets with strong verbs and measurable impact when facts exist.
 Return ONLY valid JSON.
 """
 
 CLIENT_RESUME_GENERATOR_PROMPT = "\n".join(
     [
-        "Create a professional client-formatted resume document.",
+        "Create a premium professional client-formatted resume document.",
         "This must be detailed and comprehensive: do not drop roles, projects, bullets, certifications, or skills that exist in the candidate data.",
         "Rewrite for professionalism, impact, and clarity while preserving the original meaning and ALL factual details.",
+        "Prefer specificity over generic phrasing. Keep every meaningful accomplishment.",
         "",
         "CLIENT FORMAT METADATA:",
         "{format_metadata}",
@@ -422,13 +424,13 @@ CLIENT_RESUME_GENERATOR_PROMPT = "\n".join(
         "REQUIREMENTS:",
         "1) Use the client section order from metadata when available. Default order: Professional Summary, Technical Skills, Professional Experience, Projects, Education, Certifications, Achievements.",
         "2) Improve clarity and impact of bullet points using professional, polished wording.",
-        "3) Keep statements factual; do not invent data, years, or companies.",
-        "4) Use strong action verbs (Led, Developed, Implemented, Designed, Optimized, etc.).",
-        "5) Include quantified outcomes (numbers, percentages, time savings) when present in data.",
+        "3) Keep statements factual; do not invent data, years, companies, or metrics.",
+        "4) Use strong action verbs (Led, Developed, Implemented, Designed, Optimized, Architected, Delivered, etc.).",
+        "5) Include quantified outcomes (numbers, percentages, time savings, scale) when present in data; never invent numbers.",
         '6) Avoid weak filler words ("responsible for", "worked on", "helped with") and repetitive phrasing.',
         "7) Ensure each section has useful content; skip empty sections ONLY if there is truly no source content.",
-        "8) Summary should be concise (3-5 lines), impactful, and role-aligned.",
-        "9) Experience: include ALL roles from candidate data (never only the most recent). Keep all meaningful bullets per role (typically 3-10 depending on source).",
+        "8) Summary should be 4-6 high-impact lines, role-aligned, with domain depth and differentiators.",
+        "9) Experience: include ALL roles from candidate data (never only the most recent). Keep all meaningful bullets per role (typically 4-10 depending on source).",
         "10) Technical skills should be grouped logically: Languages, Frameworks, AI/ML, Databases, Cloud, Tools, etc.",
         "11) The resume will include the client logo with the candidate name in the page header and company branding in the footer; do not invent logos or addresses.",
         '12) Match the client format styling: section headers in UPPERCASE (e.g., "PROFESSIONAL SUMMARY", "PROFESSIONAL EXPERIENCE").',
@@ -436,12 +438,14 @@ CLIENT_RESUME_GENERATOR_PROMPT = "\n".join(
         "14) Always include Technical Skills and Education when candidate data contains those sections, even if the client metadata did not list them.",
         "15) Preserve chronology: keep experiences in reverse-chronological order unless metadata specifies a different order.",
         "16) Preserve technologies/tools mentioned in each role (include as a final 'Technologies:' bullet if available).",
-        "17) Prefer professional formatting in content: short punchy bullets, consistent tense, no first-person pronouns, no paragraphs in experience.",
+        "17) Prefer professional formatting in content: short punchy bullets, consistent past tense for prior roles / present for current, no first-person pronouns, no paragraphs in experience.",
         "18) Technical Skills must be a categorized JSON object when there are 8+ skills. Use concise category names and atomic skill names only.",
         "19) Do not put skills into matched/missing/client-required groups. This is a resume, not an ATS report.",
         "20) Never put responsibility bullets, summary sentences, contact data, company addresses, or boilerplate into the skills section.",
         "21) Skill categories should be useful and readable, for example: Programming Languages, Frontend, Backend & Frameworks, Databases, Cloud & DevOps, Data & AI, Testing & QA, Tools & Platforms.",
         "22) If baseline has more experience roles than your draft, copy the missing roles from baseline/candidate data.",
+        "23) Do not over-compress: completeness and professionalism beat brevity. Keep the resume rich and client-ready.",
+        "24) Mirror the template's section heading wording when preview headings are provided, without copying sample person content.",
         "",
         "Return JSON with this schema:",
         "{{",
@@ -530,9 +534,9 @@ CLIENT_RESUME_REWRITER_PROMPT = "\n".join(
         "",
         "GOALS:",
         "- Address all review issues.",
-        "- Improve professionalism, readability, and section coherence.",
+        "- Improve professionalism, readability, impact, and section coherence.",
         "- Keep all claims grounded in candidate data.",
-        "- Keep output concise and client-ready.",
+        "- Prefer complete, recruiter-grade content over aggressive shortening.",
         "- Preserve space for client logo + candidate name in the page header and company branding in the footer.",
         "- Do not copy any sample-person content from the client format metadata.",
         "- Preserve Technical Skills and Education whenever candidate data contains them.",
@@ -547,6 +551,7 @@ CLIENT_RESUME_REWRITER_PROMPT = "\n".join(
         "- Strict section mapping: SUMMARY must contain only summary text; SKILLS only skill items; EXPERIENCE only job entries; EDUCATION only academic entries; PROJECTS only project entries; CERTIFICATIONS/ACHIEVEMENTS/LANGUAGES only bullet lists.",
         "- Never place contact info, addresses, company boilerplate, or unrelated sentences into section content.",
         "- If a section lacks valid source data, leave it out instead of filling random text.",
+        "- Do not drop older roles or meaningful bullets while polishing.",
         "",
         "Return revised resume JSON with the same schema:",
         "{{",

@@ -13,7 +13,7 @@ class Settings(BaseSettings):
     # LLM — AWS Bedrock
     BEDROCK_MODEL: str = "google.gemma-3-27b-it"
     LLM_MAX_TOKENS: int = 2048
-    RESUME_GENERATION_MAX_TOKENS: int = 4096
+    RESUME_GENERATION_MAX_TOKENS: int = 8192
     INTERVIEW_FALLBACK_MODELS: str = ""
     AWS_BEARER_TOKEN_BEDROCK: str | None = None
     AWS_REGION: str = "ap-south-1"
