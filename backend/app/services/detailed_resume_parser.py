@@ -879,6 +879,27 @@ def _looks_like_new_achievement_bullet(clean: str, current_bullets: list[str]) -
     return False
 
 
+def _repair_education_spacing(text: str) -> str:
+    """Fix PDF soft-wrap mashups like Collegeof / Instituteof / Masterof."""
+    cleaned = str(text or "")
+    cleaned = re.sub(
+        r"(?i)\b(University|College|Institute|School|Academy)of\b",
+        r"\1 of",
+        cleaned,
+    )
+    cleaned = re.sub(
+        r"(?i)\b(Master|Bachelor|Bachelors|Masters)of\b",
+        r"\1 of",
+        cleaned,
+    )
+    cleaned = re.sub(
+        r"(?i)\b(Technology|Engineering|Management|Science|Studies)\(",
+        r"\1 (",
+        cleaned,
+    )
+    return cleaned
+
+
 def _extract_education(text: str) -> list[dict[str, Any]]:
     # Use every Education block (Dice header + resume footer) plus degree/@ lines.
     lines = _find_all_sections(text, _SECTION_HEADINGS["education"])
@@ -906,17 +927,27 @@ def _extract_education(text: str) -> list[dict[str, Any]]:
         current_details = []
 
     year_re = re.compile(r"\b(19\d{2}|20\d{2})\b")
+    # Capture full school names including "of …", parentheticals, and campus city.
     inst_re = re.compile(
-        r"((?:[A-Za-z][A-Za-z.&'\-]+\s+){0,6}"
+        r"("
+        r"(?:[A-Za-z][A-Za-z.&'\-]+\s+){0,8}"
         r"(?:University|College|Institute|School|Academy|IIT|NIT|IIIT|IIM|BITS)"
-        r"(?:\s+of\s+[A-Za-z][A-Za-z.&'\-]+(?:\s+[A-Za-z][A-Za-z.&'\-]+){0,4})?)"
+        r"(?:\s*\([^)]{1,48}\))?"
+        r"(?:"
+        r"\s+of\s+[A-Za-z][A-Za-z.&'\-]+"
+        r"(?:\s*\([^)]{1,48}\))?"
+        r"(?:\s+[A-Za-z][A-Za-z.&'\-]+){0,6}"
+        r")?"
+        r"(?:\s*\([^)]{1,48}\))?"
+        r"(?:\s+(?:at\s+)?[A-Za-z][A-Za-z.&'\-]+){0,4}"
+        r")"
     )
     at_re = re.compile(
         r"(?i)\b((?:bachelor|master|masters|phd|mba|b\.?tech|m\.?tech|bachelors|ms|bs|ba|ma)[^@]{0,60}?)\s*@\s*(.+)$"
     )
 
     for line in lines:
-        line = line.strip()
+        line = _repair_education_spacing(line.strip())
         if not line or _DICE_NOISE_RE.search(line):
             continue
 
@@ -1016,9 +1047,20 @@ def _extract_education(text: str) -> list[dict[str, Any]]:
             continue
         elif current:
             if not current.get("institution"):
+                # Institution-only rows: prefer the full line so campus/parentheticals
+                # are not chopped by the keyword match ("Government College" alone).
+                looks_like_school = bool(
+                    re.search(
+                        r"(?i)\b(university|college|institute|school|academy|iit|nit|iiit|iim|bits)\b",
+                        line,
+                    )
+                )
+                if looks_like_school and not has_degree:
+                    current["institution"] = _clean_text(line)
+                    continue
                 inst_match = inst_re.search(line)
                 if inst_match:
-                    current["institution"] = inst_match.group(1)
+                    current["institution"] = _clean_text(inst_match.group(1))
                     continue
             if not current.get("year"):
                 year_match = year_re.search(line)

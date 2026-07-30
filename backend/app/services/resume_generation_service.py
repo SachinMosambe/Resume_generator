@@ -3193,7 +3193,11 @@ class ResumeGenerationService:
         body_size: float,
         font_family: str,
     ) -> None:
-        """Put name + role + logo in the Word section header (repeats on every page)."""
+        """Put logo in the Word section header (repeats on every page).
+
+        Candidate name is rendered once in the document body to avoid a
+        double-name look (header + body) on page 1 when a client logo is present.
+        """
         from docx.shared import Inches, Pt, RGBColor
         from docx.enum.text import WD_ALIGN_PARAGRAPH
         from io import BytesIO
@@ -3209,17 +3213,8 @@ class ResumeGenerationService:
 
             left_cell = table.cell(0, 0)
             left_cell.paragraphs[0].clear()
-            name_para = left_cell.paragraphs[0]
-            name_para.paragraph_format.space_after = Pt(2)
-            name_run = name_para.add_run(str(header.get("name") or "Candidate"))
-            name_run.bold = True
-            name_run.font.name = font_family
-            name_run.font.size = Pt(name_size)
-            name_run.font.color.rgb = RGBColor(0x00, 0x00, 0x00)
-
             if header.get("role"):
-                role_para = left_cell.add_paragraph()
-                role_para.paragraph_format.space_before = Pt(0)
+                role_para = left_cell.paragraphs[0]
                 role_para.paragraph_format.space_after = Pt(0)
                 role_run = role_para.add_run(str(header["role"]))
                 role_run.font.name = font_family
@@ -3244,25 +3239,23 @@ class ResumeGenerationService:
                     logo_width = Inches(1.05)
             except Exception:
                 pass
-            logo_run.add_picture(BytesIO(logo_bytes), width=logo_width)
+            try:
+                logo_run.add_picture(BytesIO(logo_bytes), width=logo_width)
+            except Exception:
+                pass
             self._clear_table_borders(table)
-        else:
-            name_para = page_header.add_paragraph()
-            name_para.paragraph_format.space_after = Pt(2)
-            name_run = name_para.add_run(str(header.get("name") or "Candidate"))
-            name_run.bold = True
-            name_run.font.name = font_family
-            name_run.font.size = Pt(name_size)
-            name_run.font.color.rgb = RGBColor(0x00, 0x00, 0x00)
+            return
 
-            if header.get("role"):
-                role_para = page_header.add_paragraph()
-                role_para.paragraph_format.space_before = Pt(0)
-                role_para.paragraph_format.space_after = Pt(0)
-                role_run = role_para.add_run(str(header["role"]))
-                role_run.font.name = font_family
-                role_run.font.size = Pt(body_size + 0.5)
-                role_run.font.color.rgb = RGBColor(0x33, 0x33, 0x33)
+        # No logo: leave header empty (or role only). Name always lives in the body
+        # so it never appears twice on page 1.
+        if header.get("role"):
+            role_para = page_header.add_paragraph()
+            role_para.paragraph_format.space_before = Pt(0)
+            role_para.paragraph_format.space_after = Pt(0)
+            role_run = role_para.add_run(str(header["role"]))
+            role_run.font.name = font_family
+            role_run.font.size = Pt(body_size + 0.5)
+            role_run.font.color.rgb = RGBColor(0x33, 0x33, 0x33)
 
     def _fill_docx_page_footer(
         self,

@@ -157,10 +157,26 @@ def normalize_education_entries(entries: Any) -> list[dict[str, Any]]:
             degree = at_match.group(1).strip(" :-")
             institution = at_match.group(2).strip(" :-")
 
+        # Repair PDF mashups before peeling school names.
+        degree = re.sub(
+            r"(?i)\b(University|College|Institute|School|Academy)of\b",
+            r"\1 of",
+            degree,
+        )
+        institution = re.sub(
+            r"(?i)\b(University|College|Institute|School|Academy)of\b",
+            r"\1 of",
+            institution,
+        )
+
         # If degree still contains university phrase, peel it out.
         if degree and not institution:
             uni = re.search(
-                r"((?:[A-Z][A-Za-z.&'\-]+\s+){0,6}(?:University|College|Institute|School)(?:\s+of\s+[A-Za-z][A-Za-z.&'\-\s]+)?)",
+                r"((?:[A-Z][A-Za-z.&'\-]+\s+){0,8}"
+                r"(?:University|College|Institute|School|Academy)"
+                r"(?:\s*\([^)]{1,48}\))?"
+                r"(?:\s+of\s+[A-Za-z][A-Za-z.&'\-\s]+(?:\([^)]{1,48}\))?)*"
+                r"(?:\s+[A-Za-z][A-Za-z.&'\-]+){0,4})",
                 degree,
             )
             if uni:

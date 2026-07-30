@@ -149,6 +149,19 @@ Government College of Engineering Amravati
 """
     edu = _extract_education(edu_text)
     assert len(edu) >= 2, edu
+    assert any("Kharagpur" in str(e.get("institution") or "") for e in edu), edu
+    assert any("Amravati" in str(e.get("institution") or "") for e in edu), edu
+    assert any("Government College of Engineering" in str(e.get("institution") or "") for e in edu), edu
+
+    mashed_edu = """EDUCATION
+Bachelorof Technology(B.Tech) in Civil Engineering|CGPA:8.16/10 Aug 2017—May 2021
+Government Collegeof Engineering Amravati
+Masterof Technology(M.Tech) in Infrastructure Design Management|CGPA:9.09/10 Aug 2022—May 2024
+Indian Instituteof Technology(IIT) Kharagpur
+"""
+    mashed = _extract_education(mashed_edu)
+    assert any("Amravati" in str(e.get("institution") or "") for e in mashed), mashed
+    assert any("Kharagpur" in str(e.get("institution") or "") for e in mashed), mashed
 
     wrap_exp = """PROFESSIONAL EXPERIENCE
 Staff Engineer — AI/ML | Nagarro India July 2025 – Present
