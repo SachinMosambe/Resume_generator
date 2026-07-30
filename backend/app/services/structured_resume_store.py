@@ -208,7 +208,9 @@ def normalize_education_entries(entries: Any) -> list[dict[str, Any]]:
 
     def _inst_key(name: str) -> str:
         text = (name or "").lower()
-        text = re.sub(r"\bat\s+[a-z].*$", "", text)  # drop "at Springfield"
+        # Keep campus tokens in the display merge score; only strip for keying after
+        # normalizing "university of illinois at springfield" → same school family.
+        text = re.sub(r"\bat\s+[a-z].*$", "", text)  # drop "at Springfield" for key only
         text = re.sub(r",\s*[a-z].*$", "", text)  # drop ", Delhi, India"
         text = re.sub(r"\(.*?\)", "", text)
         text = re.sub(r"formerly.*$", "", text)

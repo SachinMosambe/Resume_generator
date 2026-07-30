@@ -3077,6 +3077,16 @@ class ResumeGenerationService:
         )
 
         # Contact on one line beneath the repeating header (body, first page flow).
+        # Also put the name in the body so copy/paste and some viewers show it.
+        if header.get("name"):
+            name_para = doc.add_paragraph()
+            name_para.paragraph_format.space_before = Pt(0)
+            name_para.paragraph_format.space_after = Pt(2)
+            name_run = name_para.add_run(str(header.get("name") or "").strip())
+            name_run.font.name = font_family
+            name_run.font.size = Pt(max(name_size, body_size + 2))
+            name_run.font.bold = True
+            name_run.font.color.rgb = RGBColor(0x11, 0x11, 0x11)
         if header.get("contact"):
             contact_para = doc.add_paragraph()
             contact_para.paragraph_format.space_before = Pt(2)

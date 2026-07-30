@@ -144,6 +144,9 @@ def repair_collapsed_spaces(text: str) -> str:
         "streamlit", "experiment", "tracking", "loan", "conversational", "assistant",
         "external", "capabilities", "interactive", "experiences", "kharagpur",
         "leadership", "achievements", "certifications", "conference",
+        "grade", "question", "answering", "cross", "encoder", "ranking", "accuracy",
+        "citation", "backed", "metrics", "evaluation", "documents", "sources",
+        "through", "quality", "improving", "improved", "achieving", "measured",
     }
 
     def _segment_token(word: str) -> str:
@@ -184,15 +187,16 @@ def repair_collapsed_spaces(text: str) -> str:
         if not line.strip():
             out_lines.append(line)
             continue
-        # Never aggressively rewrite pure contact lines.
-        if "@" in line or "⟦KEEP" in line:
+        # Never aggressively rewrite pure contact lines (emails/URLs only).
+        if "@" in line or "http://" in line.lower() or "https://" in line.lower():
             out_lines.append(line)
             continue
+        # Placeholders are fine to keep; strip them from density checks only.
         line_letters = sum(1 for c in line if c.isalpha())
         dens = line.count(" ") / max(line_letters, 1)
-        long_tokens = re.findall(r"[A-Za-z]{18,}", line)
-        needs_fix = dens < 0.10 or len(long_tokens) >= 1
-        if not needs_fix or line_letters < 18:
+        long_tokens = re.findall(r"[A-Za-z]{14,}", line)
+        needs_fix = dens < 0.12 or len(long_tokens) >= 1
+        if not needs_fix or line_letters < 16:
             out_lines.append(line)
             continue
         chunks = re.findall(r"[A-Za-z]+|[^A-Za-z]+", line)

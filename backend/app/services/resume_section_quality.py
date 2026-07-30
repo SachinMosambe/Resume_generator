@@ -234,10 +234,12 @@ def _repair_and_check_experience(
                 role["description"] = [role_title, *bullets_seed]
                 role_title = ""
                 bullet_titles += 1
-                # Recover real title from source when possible.
+                # Recover real title from source only when it is itself a valid title.
                 src = src_by_key.get(_role_key(company, duration))
-                if src and str(src.get("title") or "").strip():
-                    role_title = str(src.get("title") or "").strip()
+                if src:
+                    src_title = str(src.get("title") or "").strip()
+                    if src_title and not _looks_like_bullet_as_title(src_title):
+                        role_title = src_title
 
             bullets_raw = role.get("description") or role.get("details") or []
             bullets: list[str] = []
@@ -246,7 +248,7 @@ def _repair_and_check_experience(
                     repair_collapsed_spaces(str(x))
                     for x in (bullets_raw if isinstance(bullets_raw, list) else [bullets_raw])
                 ],
-                max_bullets=10,
+                max_bullets=12,
             ):
                 text = re.sub(r"\s+", " ", str(b).strip())
                 if not text or len(text) < 12:
@@ -392,19 +394,52 @@ def _repair_and_check_experience(
 
 
 def _role_key(company: Any, duration: Any) -> str:
-    return re.sub(r"[^a-z0-9]+", "", f"{company or ''}{duration or ''}".lower())
+    company_key = re.sub(
+        r"\b(inc|llc|ltd|corp|co|limited|technologies|technology)\b\.?",
+        "",
+        str(company or "").lower(),
+    )
+    company_key = re.sub(r"[^a-z0-9]+", "", company_key)
+    duration_key = str(duration or "").lower()
+    duration_key = duration_key.replace("–", " ").replace("—", " ").replace("-", " ")
+    duration_key = re.sub(r"\s+to\s+", " ", duration_key)
+    for long, short in (
+        ("january", "jan"),
+        ("february", "feb"),
+        ("march", "mar"),
+        ("april", "apr"),
+        ("june", "jun"),
+        ("july", "jul"),
+        ("august", "aug"),
+        ("september", "sep"),
+        ("october", "oct"),
+        ("november", "nov"),
+        ("december", "dec"),
+    ):
+        duration_key = duration_key.replace(long, short)
+    duration_key = re.sub(r"[^a-z0-9]+", "", duration_key)
+    if not company_key:
+        return ""
+    return f"{company_key}{duration_key}"
 
 
 def _looks_like_bullet_as_title(title: str) -> bool:
     text = str(title or "").strip()
-    if len(text) < 60:
+    if not text:
         return False
-    if text.count(". ") >= 1 or text.endswith("."):
+    words = text.split()
+    if text.count(". ") >= 1 or (text.endswith(".") and len(words) >= 6):
         return True
-    if len(text.split()) >= 14 and re.match(
-        r"(?i)^(architected|developed|designed|implemented|built|led|engineered|applied|managed|created|utilized|worked|responsible)\b",
+    if len(words) >= 14:
+        return True
+    if len(words) >= 8 and re.match(
+        r"(?i)^(architected|developed|designed|implemented|built|led|engineered|"
+        r"applied|managed|created|utilized|worked|responsible|leveraged|maintained|"
+        r"wrote|supported|collaborated|configured|deployed|integrated|optimized)\b",
         text,
     ):
+        return True
+    if len(text) >= 60 and len(words) >= 10:
         return True
     return False
 
@@ -758,17 +793,39 @@ def _repair_and_check_certifications(
             text = restore_tech_names(str(raw or "").strip())
             if not text:
                 continue
-            if re.search(r"(?i)\bleadership\b|\bachievements?\b|\bmentored\b|\bchampionship\b", text):
+            if re.search(
+                r"(?i)\b(leadership|achievements?|mentored|championship|table\s+tennis|"
+                r"led\s+\d+|core\s+committee|teaching\s+assistant|conference)\b",
+                text,
+            ):
                 mashed += 1
                 text = re.split(
-                    r"(?i)\b(?:leadership\s*&?\s*achievements?|leadership|achievements?|led\s+\d+)\b",
+                    r"(?i)\b(?:leadership\s*&?\s*achievements?|leadership|achievements?|"
+                    r"led\s+\d+|mentored\s+\d+|core\s+committee|teaching\s+assistant|"
+                    r"championship|table\s+tennis)\b",
                     text,
                     maxsplit=1,
                 )[0].strip(" |")
+            if re.fullmatch(r"(?i)specialization(?:\s*\([^)]*\))?", text) and cleaned:
+                cleaned[-1] = f"{cleaned[-1]} {text}".strip()
+                continue
+            if re.search(
+                r"(?i)\b(led\s+\d+|mentored|championship|table\s+tennis|core\s+committee|"
+                r"teaching\s+assistant|conference)\b",
+                text,
+            ):
+                continue
             if "|" in text and (len(text) > 40 or text.count("|") >= 1):
                 mashed += 1
                 parts = [restore_tech_names(p.strip()) for p in text.split("|") if len(p.strip()) > 3]
-                cleaned.extend(parts)
+                cleaned.extend(
+                    p
+                    for p in parts
+                    if not re.search(
+                        r"(?i)\b(led\s+\d+|mentored|championship|table\s+tennis|conference)\b",
+                        p,
+                    )
+                )
             elif text:
                 cleaned.append(text)
         # Dedupe

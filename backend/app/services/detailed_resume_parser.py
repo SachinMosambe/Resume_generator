@@ -214,13 +214,14 @@ def _extract_portfolio(text: str) -> str:
 
 def _extract_name(text: str) -> str:
     lines = [l.strip() for l in (text or "").splitlines() if l.strip()]
-    for line in lines[:12]:
-        # Contact-style first lines: "Name | email | phone"
+    # Prefer an ALL-CAPS name banner common on Dice exports ("HARKARAN SIDHU | C: | E:").
+    for line in lines[:20]:
         if "|" in line or "•" in line:
             left = re.split(r"[|•]", line)[0].strip()
             if 2 <= len(left.split()) <= 5 and "@" not in left and not re.search(r"\d{5,}", left):
                 if re.match(r"^[A-Za-z][A-Za-z .'-]+$", left):
-                    return left
+                    return left.title() if left.isupper() else left
+    for line in lines[:16]:
         if len(line) < 3 or len(line) > 60:
             continue
         lower = line.lower()
@@ -238,6 +239,11 @@ def _extract_name(text: str) -> str:
                 "email",
                 "address",
                 "linkedin",
+                "preferred",
+                "location",
+                "summary",
+                "education",
+                "experience",
             ]
         ):
             continue
@@ -247,7 +253,7 @@ def _extract_name(text: str) -> str:
         if 2 <= len(words) <= 5 and not re.search(r"[^a-zA-Z\s.\-']", line):
             title_case = sum(1 for w in words if w and w[0].isupper())
             if title_case >= len(words) // 2:
-                return line
+                return line.title() if line.isupper() else line
     return ""
 
 
@@ -309,7 +315,7 @@ def _extract_skills_by_category(text: str) -> dict[str, list[str]]:
             elif not right.strip() and len(left_clean.split()) <= 8:
                 pending_category = left_clean
                 continue
-        parts = re.split(r"[,;|•\*]+", payload)
+        parts = _split_skills_payload(payload)
         bucket = grouped.setdefault(category, [])
         for part in parts:
             skill = re.sub(r"^[\-\*\u2022\s]+", "", part).strip()
@@ -319,6 +325,31 @@ def _extract_skills_by_category(text: str) -> dict[str, list[str]]:
                 bucket.append(skill)
         pending_category = category
     return {k: v for k, v in grouped.items() if v}
+
+
+def _split_skills_payload(payload: str) -> list[str]:
+    """Split skills on commas/pipes without breaking parenthetical groups like AWS (EC2, S3)."""
+    parts: list[str] = []
+    buf: list[str] = []
+    depth = 0
+    for ch in str(payload or ""):
+        if ch == "(":
+            depth += 1
+            buf.append(ch)
+        elif ch == ")":
+            depth = max(0, depth - 1)
+            buf.append(ch)
+        elif ch in ",;|•*" and depth == 0:
+            part = "".join(buf).strip()
+            if part:
+                parts.append(part)
+            buf = []
+        else:
+            buf.append(ch)
+    tail = "".join(buf).strip()
+    if tail:
+        parts.append(tail)
+    return parts
 
 
 def _extract_skills(text: str) -> list[str]:
@@ -350,17 +381,18 @@ def _parse_job_header_line(line: str, date_match: re.Match) -> dict[str, str]:
     # Pipe-separated: Company ... (dates) | Title | Project/Domain
     if "|" in after:
         parts = [p.strip() for p in after.split("|") if p.strip()]
-        if parts:
+        if parts and not _is_invalid_job_title(parts[0]):
             title = parts[0]
-    elif after and not _DATE_PATTERN.fullmatch(after):
+    elif after and not _DATE_PATTERN.fullmatch(after) and not _is_invalid_job_title(after):
         # Trailing title on same line without pipes
         title = after
 
     # "Title at Company" before the date
     if " at " in before.lower() and not title:
         left, right = re.split(r"\s+at\s+", before, maxsplit=1, flags=re.IGNORECASE)
-        title = left.strip()
-        company = right.strip()
+        if not _is_invalid_job_title(left):
+            title = left.strip()
+            company = right.strip()
 
     # Company, City, ST  → split location from trailing city/state
     if "," in company:
@@ -457,16 +489,36 @@ def _extract_experience(text: str) -> list[dict[str, Any]]:
             if _is_gap_period_entry(parsed.get("company") or "", parsed.get("title") or ""):
                 i += 1
                 continue
-            # Optional next-line title when header only has company+dates
-            if not parsed["title"] and next_line and not next_date and not _is_bullet(next_line):
-                if (
-                    not _is_section_heading_line(next_line)
-                    and not re.match(r"(?i)^environment\s*:", next_line)
-                    and not _is_gap_period_entry(next_line, "")
-                    and len(next_line) < 120
-                ):
-                    parsed["title"] = _clean_text(next_line)
-                    i += 1
+            # Optional next-line title when header only has company+dates.
+            # Skip action-verb / sentence lines (common Dice PDF reordering).
+            if not parsed["title"]:
+                look = i + 1
+                scanned = 0
+                while look < len(lines) and scanned < 3:
+                    candidate = lines[look].strip()
+                    if not candidate:
+                        look += 1
+                        scanned += 1
+                        continue
+                    if _DATE_PATTERN.search(candidate) or _is_bullet(candidate):
+                        break
+                    if (
+                        not _is_section_heading_line(candidate)
+                        and not re.match(r"(?i)^environment\s*:", candidate)
+                        and not _is_gap_period_entry(candidate, "")
+                        and not _is_invalid_job_title(candidate)
+                        and len(candidate) < 120
+                    ):
+                        parsed["title"] = _clean_text(candidate)
+                        # Consume only the title line; later loop continues after header.
+                        lines[look] = ""
+                        break
+                    # Location crumbs like "TX" / "India" — skip; sentences stay for bullets.
+                    if len(candidate.split()) <= 3 and len(candidate) <= 40:
+                        look += 1
+                        scanned += 1
+                        continue
+                    break
             current_job = {
                 **parsed,
                 "description": [],
@@ -484,7 +536,7 @@ def _extract_experience(text: str) -> list[dict[str, Any]]:
             duration = next_date.group(0).strip()
             company_line = next_line
             before = company_line[: next_date.start()].strip(" ,|(-–—")
-            title = line
+            title = "" if _is_invalid_job_title(line) else line
             company = before or company_line
             location = ""
             if "," in company:
@@ -500,6 +552,11 @@ def _extract_experience(text: str) -> list[dict[str, Any]]:
                 "description": [],
                 "technologies": [],
             }
+            current_bullets = []
+            if _is_invalid_job_title(line) and line.strip():
+                clean_seed = _clean_bullet_text(line)
+                if clean_seed:
+                    current_bullets.append(clean_seed)
             i += 2
             continue
 
@@ -555,20 +612,83 @@ def _is_gap_period_entry(company: str, title: str) -> bool:
 
 
 def _dedupe_experience_roles(roles: list[dict[str, Any]]) -> list[dict[str, Any]]:
-    """Drop duplicate company+duration rows (e.g. repeated Gap Period / AIG)."""
-    seen: set[str] = set()
+    """Drop duplicate company+duration rows; keep the richer title/bullet set."""
     out: list[dict[str, Any]] = []
+    index_by_key: dict[str, int] = {}
     for role in roles:
-        key = re.sub(
-            r"[^a-z0-9]+",
-            "",
-            f"{role.get('company') or ''}{role.get('title') or ''}{role.get('duration') or ''}".lower(),
-        )
-        if not key or key in seen:
+        key = _experience_role_key(role.get("company"), role.get("duration"))
+        if not key:
+            out.append(role)
             continue
-        seen.add(key)
+        if key in index_by_key:
+            prev = out[index_by_key[key]]
+            prev_bullets = prev.get("description") if isinstance(prev.get("description"), list) else []
+            new_bullets = role.get("description") if isinstance(role.get("description"), list) else []
+            if len(new_bullets) > len(prev_bullets):
+                # Preserve a good title if the richer row lacks one.
+                if not role.get("title") and prev.get("title"):
+                    role = {**role, "title": prev.get("title")}
+                out[index_by_key[key]] = role
+            elif role.get("title") and not prev.get("title"):
+                prev["title"] = role.get("title")
+            continue
+        index_by_key[key] = len(out)
         out.append(role)
     return out
+
+
+def _normalize_duration_key(duration: Any) -> str:
+    text = str(duration or "").lower()
+    text = text.replace("–", " ").replace("—", " ").replace("-", " ")
+    text = re.sub(r"\s+to\s+", " ", text)
+    months = {
+        "january": "jan",
+        "february": "feb",
+        "march": "mar",
+        "april": "apr",
+        "may": "may",
+        "june": "jun",
+        "july": "jul",
+        "august": "aug",
+        "september": "sep",
+        "october": "oct",
+        "november": "nov",
+        "december": "dec",
+    }
+    for long, short in months.items():
+        text = text.replace(long, short)
+    return re.sub(r"[^a-z0-9]+", "", text)
+
+
+def _normalize_company_key(company: Any) -> str:
+    text = str(company or "").lower()
+    text = re.sub(r"\b(inc|llc|ltd|corp|co|limited|technologies|technology|pvt|private)\b\.?", "", text)
+    return re.sub(r"[^a-z0-9]+", "", text)
+
+
+def _experience_role_key(company: Any, duration: Any) -> str:
+    company_key = _normalize_company_key(company)
+    duration_key = _normalize_duration_key(duration)
+    if not company_key:
+        return ""
+    return f"{company_key}|{duration_key}"
+
+
+def _is_invalid_job_title(text: str) -> bool:
+    """True when a line is clearly a bullet/sentence, not a job title."""
+    t = str(text or "").strip()
+    if not t:
+        return True
+    if len(t) > 110 or t.count(". ") >= 1:
+        return True
+    words = t.split()
+    if t.endswith(".") and len(words) >= 6:
+        return True
+    if _ACTION_VERB_START.match(t) and len(words) >= 8:
+        return True
+    if len(words) >= 14:
+        return True
+    return False
 
 
 _ACTION_VERB_START = re.compile(
@@ -687,6 +807,18 @@ def _extract_education(text: str) -> list[dict[str, Any]]:
             # Fix soft-hyphen / broken wraps: "Tech nology" → "Technology"
             degree = re.sub(r"(?i)\btech\s+nology\b", "Technology", degree)
             degree = re.sub(r"(?i)\bengi\s+neering\b", "Engineering", degree)
+            # Campus tokens belong on the institution (e.g. University of Illinois at Springfield).
+            campus_match = re.search(
+                r"(?i)\b(springfield|amravati|kharagpur|delhi)\b",
+                degree,
+            )
+            if campus_match and institution:
+                campus = campus_match.group(1).title()
+                if campus.lower() not in institution.lower():
+                    if "illinois" in institution.lower() and campus.lower() == "springfield":
+                        institution = f"{institution} at Springfield"
+                    elif campus.lower() not in {"delhi"}:
+                        institution = f"{institution}, {campus}"
             # Drop leftover city/state crumbs after institution removal
             degree = re.sub(r"(?i)\b(springfield|delhi|india|il|tx|pa|nj|ks|va)\b", "", degree).strip(" ,")
             degree = re.sub(r"\s+", " ", degree).strip(" ,-")
@@ -829,47 +961,83 @@ def _extract_projects(text: str) -> list[dict[str, Any]]:
 def _extract_bullet_list(text: str, section_key: str) -> list[str]:
     lines = _find_section(text, _SECTION_HEADINGS[section_key])
     items: list[str] = []
+    non_cert_bleed = re.compile(
+        r"(?i)\b(?:"
+        r"leadership\s*&?\s*achievements?|leadership|achievements?|awards?|"
+        r"led\s+\d+|mentored\s+\d+|core\s+committee|teaching\s+assistant|"
+        r"championship|table\s+tennis|doubles\s+championship"
+        r")\b"
+    )
     for line in lines:
         clean = _clean_bullet_text(line)
         if not clean or len(clean) <= 2:
             continue
+        if non_cert_bleed.search(clean) and section_key == "certifications":
+            clean = non_cert_bleed.split(clean, maxsplit=1)[0].strip(" |")
+            if not clean or len(clean) <= 3:
+                continue
         # Split pipe-glued certification mega-lines.
         if "|" in clean and len(clean) > 80:
             parts = [p.strip() for p in clean.split("|") if p.strip()]
-            # Also cut leadership bleed after certifications.
             expanded: list[str] = []
             for part in parts:
-                cut = re.split(
-                    r"(?i)\b(?:leadership\s*&?\s*achievements?|leadership|achievements?)\b",
-                    part,
-                    maxsplit=1,
-                )[0].strip(" |")
-                if cut and len(cut) > 3:
+                cut = non_cert_bleed.split(part, maxsplit=1)[0].strip(" |")
+                if cut and len(cut) > 3 and not _is_non_cert_item(cut):
                     expanded.append(cut)
             if expanded:
                 items.extend(expanded)
                 continue
         if _is_bullet(line):
+            if section_key == "certifications" and _is_non_cert_item(clean):
+                continue
             items.append(clean)
         elif items and not re.match(r"(?i)^(leadership|achievements?|awards?)\b", clean):
+            # Soft-wrap continuation (e.g. "Specialization (DeepLearning.AI)").
+            if section_key == "certifications" and re.fullmatch(
+                r"(?i)specialization(?:\s*\([^)]*\))?",
+                clean,
+            ):
+                items[-1] = f"{items[-1]} {clean}".strip()
+                continue
+            if section_key == "certifications" and _is_non_cert_item(clean):
+                continue
             items[-1] = f"{items[-1]} {clean}".strip()
         else:
+            if section_key == "certifications" and _is_non_cert_item(clean):
+                continue
             items.append(clean)
     # Final split of leftover mega-items.
     final: list[str] = []
     for item in items:
         if "|" in item and len(item) > 100:
-            final.extend([p.strip() for p in item.split("|") if len(p.strip()) > 3])
+            for p in item.split("|"):
+                cut = p.strip()
+                if len(cut) > 3 and not _is_non_cert_item(cut):
+                    final.append(cut)
         else:
-            # Strip leadership bleed.
-            cut = re.split(
-                r"(?i)\b(?:leadership\s*&?\s*achievements?|led\s+\d+-participant)\b",
-                item,
-                maxsplit=1,
-            )[0].strip(" |")
-            if cut:
+            cut = non_cert_bleed.split(item, maxsplit=1)[0].strip(" |")
+            if cut and not _is_non_cert_item(cut):
                 final.append(cut)
     return _dedupe(final)
+
+
+def _is_non_cert_item(text: str) -> bool:
+    """Reject leadership / sports / conference lines that bled into certifications."""
+    t = str(text or "").strip()
+    if not t:
+        return True
+    if re.search(
+        r"(?i)\b("
+        r"led\s+\d+|mentored|championship|table\s+tennis|core\s+committee|"
+        r"teaching\s+assistant|conference|doubles\b"
+        r")\b",
+        t,
+    ):
+        return True
+    # Bare wrap fragments that are not standalone certs.
+    if re.fullmatch(r"(?i)specialization(?:\s*\([^)]*\))?", t):
+        return True
+    return False
 
 
 def _infer_technologies(text: str) -> set[str]:

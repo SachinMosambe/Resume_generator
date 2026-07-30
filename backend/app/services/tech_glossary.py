@@ -116,7 +116,8 @@ TECH_COMPACT_TO_CANONICAL: dict[str, str] = {
     "terraform": "Terraform",
     "kafka": "Kafka",
     "spark": "Spark",
-    "bedrock": "AWS Bedrock",
+    # Keep as Bedrock — restore_tech_names adds a single AWS prefix idempotently.
+    "bedrock": "Bedrock",
     "mcp": "MCP",
     "rag": "RAG",
     "llm": "LLM",
@@ -161,6 +162,11 @@ PROTECTED_TECH_TOKENS: tuple[str, ...] = tuple(
             "Scikit-learn",
             "HuggingFace",
             "Bedrock",
+            "LLM",
+            "LLMs",
+            "RAG",
+            "MCP",
+            "NLP",
         },
         key=len,
         reverse=True,
@@ -178,10 +184,11 @@ def restore_tech_names(text: str) -> str:
         out = re.sub(rf"(?i)\b{re.escape(broken)}\b", canon, out)
     # Compact forms that may appear after bad splits were partially fixed.
     for compact, canon in TECH_COMPACT_TO_CANONICAL.items():
-        if " " in compact or "/" in compact or "." in compact:
-            out = re.sub(rf"(?i)\b{re.escape(compact)}\b", canon, out)
-        else:
-            out = re.sub(rf"(?i)\b{re.escape(compact)}\b", canon, out)
+        out = re.sub(rf"(?i)\b{re.escape(compact)}\b", canon, out)
+    # One AWS prefix for Bedrock; never AWS AWS AWS Bedrock.
+    out = re.sub(r"(?i)(?<!\bAWS\s)\bBedrock\b", "AWS Bedrock", out)
+    out = re.sub(r"(?i)\b(?:AWS\s+){2,}(Bedrock)\b", r"AWS \1", out)
+    out = re.sub(r"(?i)\b(?:AWS\s+){2,}", "AWS ", out)
     # AWS(EC 2, S 3 → AWS(EC2, S3
     out = re.sub(r"(?i)\bEC\s*2\b", "EC2", out)
     out = re.sub(r"(?i)\bS\s*3\b", "S3", out)

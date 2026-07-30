@@ -250,7 +250,7 @@ def _merge_condensed(source: dict[str, Any], condensed: dict[str, Any]) -> dict[
                 "title": src.get("title") or "",
                 "duration": src.get("duration") or "",
                 "location": src.get("location") or match.get("location") or "",
-                "description": bullets[:6],
+                "description": bullets[:10],
                 "technologies": techs[:12],
             }
         )

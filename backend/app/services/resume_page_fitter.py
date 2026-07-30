@@ -210,14 +210,14 @@ def _fit_experience(
     total_budget = int(body_pages * 16)  # denser, more readable Capgemini-style body
     if tight:
         total_budget = max(28, int(total_budget * 0.8))
-    total_budget = max(n * 3, min(total_budget, 72))  # prefer ~3+ bullets/role when possible
+    total_budget = max(n * 4, min(total_budget, 96))  # prefer ~4+ bullets/role when possible
 
     # Recency weights: first roles assumed reverse-chronological.
     weights = [max(1.0, float(n - i)) for i in range(n)]
     weight_sum = sum(weights) or 1.0
     quotas = [max(3 if not tight else 2, int(round(total_budget * (w / weight_sum)))) for w in weights]
     # Cap per-role so one job doesn't dominate — still keep recent roles rich.
-    max_each = 8 if not tight else 5
+    max_each = 12 if not tight else 7
     quotas = [min(max_each, q) for q in quotas]
     # Adjust to budget.
     while sum(quotas) > total_budget:
@@ -282,6 +282,13 @@ def _bullet_score(text: str) -> float:
         score += 2.0
     if re.search(r"(?i)\b(aws|azure|kafka|kubernetes|spring|microservices|react|angular|python|java)\b", text):
         score += 1.0
+    # Protect high-signal platform / product keywords often lost in aggressive fit.
+    if re.search(
+        r"(?i)\b(mulesoft|camp|forge|bedrock|oauth|graphql|terraform|eks|fargate|"
+        r"databricks|anypoint|raml|dataweave|wcag|openai|langgraph|langchain)\b",
+        text,
+    ):
+        score += 2.5
     # Prefer mid-length substance over tiny fragments or mega-paragraphs.
     length = len(text)
     if 80 <= length <= 280:
