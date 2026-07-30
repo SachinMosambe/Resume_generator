@@ -270,8 +270,14 @@ def _repair_and_check_experience(
                     continue
                 techs.append(name)
 
-            role["company"] = company
-            role["title"] = role_title
+            role["company"] = restore_tech_names(re.sub(r"\s+", " ", company))
+            role["title"] = restore_tech_names(
+                re.sub(
+                    r"(?i)\b(AI/?ML)(Developer|Engineer|Architect|Specialist)\b",
+                    r"\1 \2",
+                    re.sub(r"\s+", " ", role_title),
+                )
+            )
             role["location"] = location
             role["duration"] = duration
             role["description"] = _dedupe_bullets(bullets)
@@ -428,8 +434,17 @@ def _looks_like_bullet_as_title(title: str) -> bool:
     if not text:
         return False
     words = text.split()
-    if text.count(". ") >= 1 or (text.endswith(".") and len(words) >= 6):
+    if text[:1].islower():
         return True
+    if text.count(". ") >= 1 or (text.endswith(".") and len(words) >= 2):
+        # Role titles almost never end with a period.
+        if not re.search(
+            r"(?i)\b(engineer|developer|analyst|manager|architect|consultant|intern|lead|director|specialist)\b",
+            text,
+        ):
+            return True
+        if len(words) >= 6:
+            return True
     if len(words) >= 14:
         return True
     if len(words) >= 8 and re.match(
@@ -502,12 +517,22 @@ def _repair_and_check_skills(
         # Prefer source categories when document skills look remapped/wrong.
         if isinstance(src_grouped, dict) and src_grouped:
             bad_soft = False
+            bad_jam = False
             if isinstance(content, dict):
                 soft = content.get("Soft Skills") or content.get("soft skills") or []
                 soft_text = " ".join(str(x).lower() for x in soft)
                 if re.search(r"microservices|distributed systems|spring boot|ci/cd|kafka", soft_text):
                     bad_soft = True
-            if bad_soft or not isinstance(content, dict) or len(content) < 2:
+                joined_skills = " | ".join(
+                    f"{k}::{v}" for k, vals in content.items() for v in (vals or [])[:3]
+                )
+                if re.search(
+                    r"(?i)(Frameworks Python|MLOps MLflow|Cloud AWS|Data Eng\.? SQL|ML & AI LLM|"
+                    r"AWS\([^)]*Docker|AWS\([^)]*$)",
+                    joined_skills,
+                ):
+                    bad_jam = True
+            if bad_soft or bad_jam or not isinstance(content, dict) or len(content) < 2:
                 section["content"] = {
                     str(k): [normalize_skill_token(str(v)) for v in (vals or []) if str(v).strip()][:16]
                     for k, vals in src_grouped.items()
@@ -527,11 +552,14 @@ def _repair_and_check_skills(
             for cat, vals in content.items():
                 skills = []
                 for v in vals or []:
-                    name = normalize_skill_token(str(v))
+                    name = restore_tech_names(normalize_skill_token(str(v)))
                     if not name or len(name) > 80 or len(name.split()) > 12:
                         continue
                     if re.search(r"(?i)\b(responsible for|architected and|developed a)\b", name):
                         continue
+                    # Close truncated parentheticals like "AWS(EC2, S3, Docker"
+                    if name.count("(") > name.count(")"):
+                        name = name.rstrip(",; ") + ")"
                     skills.append(name)
                 if skills:
                     cleaned[str(cat).strip()] = skills[:16]

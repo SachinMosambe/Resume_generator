@@ -20,6 +20,10 @@ frontend/.env.local
 backend/uploads/
 *.docx
 !frontend/**
+!test/format/**
+!test/resume/**
+test/output/
+test/output_fixed/
 
 # OS / IDE
 .DS_Store

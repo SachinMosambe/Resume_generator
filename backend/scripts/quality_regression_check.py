@@ -1,11 +1,17 @@
 """Quick regression checks for quality fixes (no Bedrock required)."""
 from __future__ import annotations
 
+import re
+
 from app.services.detailed_resume_parser import (
+    _DATE_PATTERN,
     _dedupe_experience_roles,
     _extract_bullet_list,
+    _extract_education,
+    _extract_experience,
     _extract_name,
     _is_invalid_job_title,
+    _parse_job_header_line,
     _split_skills_payload,
 )
 from app.services.resume_section_quality import _looks_like_bullet_as_title, _role_key
@@ -17,9 +23,11 @@ def main() -> None:
         "Implemented Graph Neural Networks (GNNs) and scalable machine learning pipelines in Databricks"
     )
     assert not _is_invalid_job_title("Java Full-Stack Programmer")
+    assert _is_invalid_job_title("across squads.")
     assert _looks_like_bullet_as_title(
         "Applied ITSCM and ITIL processes to diagnose and resolve incidents, collaborating with the team lead"
     )
+    assert _looks_like_bullet_as_title("across squads.")
 
     roles = _dedupe_experience_roles(
         [
@@ -72,16 +80,45 @@ Led 200-participant conference as Core Committee Member at IIT Kharagpur
 Mentored 60+ students as Teaching Assistant
 Doubles Championship in Table Tennis at Kalpana Chawla Trophy, GCOEA (2019)
 """
-    # Section finder needs a heading; wrap as full-ish text.
     certs = _extract_bullet_list(cert_blob, "certifications")
     joined = " | ".join(certs).lower()
     assert "table tennis" not in joined, certs
     assert "mentored" not in joined, certs
-    assert any("natural language processing" in c.lower() for c in certs), certs
+    assert any(
+        "natural language processing" in c.lower() and "specialization" in c.lower() for c in certs
+    ), certs
 
     name = _extract_name("HARKARAN SIDHU | C: | E:\nEmail: a@b.com\n")
     assert "Harkaran" in name or "HARKARAN" in name.upper(), name
 
+    dm = _DATE_PATTERN.search("Staff Engineer — AI/ML | Nagarro India July 2025 – Present")
+    assert dm
+    parsed = _parse_job_header_line("Staff Engineer — AI/ML | Nagarro India July 2025 – Present", dm)
+    assert "Staff Engineer" in parsed["title"], parsed
+    assert "Nagarro" in parsed["company"], parsed
+
+    edu_text = """EDUCATION
+Master of Technology(M.Tech) in Infrastructure Design Management|CGPA:9.09/10 Aug 2022—May 2024
+Indian Institute of Technology(IIT) Kharagpur
+Bachelor of Technology(B.Tech) in Civil Engineering|CGPA:8.16/10 Aug 2017—May 2021
+Government College of Engineering Amravati
+"""
+    edu = _extract_education(edu_text)
+    assert len(edu) >= 2, edu
+
+    wrap_exp = """PROFESSIONAL EXPERIENCE
+Staff Engineer — AI/ML | Nagarro India July 2025 – Present
+• Mentor 8+ junior and mid-level engineers on ML best practices
+across squads.
+Associate Staff Engineer — AI/ML | Nagarro India Jan 2024 – July 2025
+• Built an NLP-driven document classification system.
+"""
+    exp = _extract_experience(wrap_exp)
+    assert all("across squads" not in str(r.get("title") or "").lower() for r in exp), exp
+    assert any("across squads" in " ".join(r.get("description") or []).lower() for r in exp), exp
+
+    # Silence unused import warning in some linters.
+    assert re is not None
     print("quality_regression_ok")
 
 

@@ -1428,7 +1428,56 @@ class ResumeGenerationService:
                     break
             if matched:
                 grounded.append(item)
-        return self._restore_missing_roles(grounded, source_list, header_contact)
+        restored = self._restore_missing_roles(grounded, source_list, header_contact)
+        # Collapse near-duplicates created when company was temporarily blanked.
+        return self._dedupe_experience_items(restored)
+
+    def _dedupe_experience_items(self, items: list[dict[str, Any]]) -> list[dict[str, Any]]:
+        """Keep one row per company+duration, preferring richer title/bullets."""
+        out: list[dict[str, Any]] = []
+        index: dict[str, int] = {}
+        for item in items:
+            if not isinstance(item, dict):
+                continue
+            company = str(item.get("company") or item.get("organization") or "").strip()
+            duration = str(item.get("duration") or item.get("dates") or "").strip()
+            key = re.sub(
+                r"[^a-z0-9]+",
+                "",
+                f"{company}|{duration}".lower(),
+            )
+            if not key:
+                # Fall back to full identity when company is empty.
+                key = self._experience_identity(item)
+            if not key or key == "||":
+                out.append(item)
+                continue
+            if key in index:
+                prev = out[index[key]]
+                prev_bullets = prev.get("description") if isinstance(prev.get("description"), list) else []
+                new_bullets = item.get("description") if isinstance(item.get("description"), list) else []
+                prev_company = str(prev.get("company") or "").strip()
+                new_company = str(item.get("company") or "").strip()
+                richer = False
+                if len(new_bullets) > len(prev_bullets):
+                    richer = True
+                if new_company and not prev_company:
+                    richer = True
+                if richer:
+                    # Preserve a good title if the richer row lacks one.
+                    if not item.get("title") and prev.get("title"):
+                        item = {**item, "title": prev.get("title")}
+                    if not new_company and prev_company:
+                        item = {**item, "company": prev_company}
+                    out[index[key]] = item
+                elif item.get("title") and not prev.get("title"):
+                    prev["title"] = item.get("title")
+                elif new_company and not prev_company:
+                    prev["company"] = new_company
+                continue
+            index[key] = len(out)
+            out.append(item)
+        return out
 
     def _filter_grounded_education(
         self,
@@ -1591,8 +1640,10 @@ class ResumeGenerationService:
             return True
         if header_contact and low in header_contact.lower():
             return True
+        # Only strip Aptino *template branding*, never a real employer named Aptino.
         noise_patterns = [
-            r"^aptino\b",
+            r"^aptino\s+inc\.?\b",
+            r"^aptino\s+corp\.?\b",
             r"^tushar\s+chouhan\b",
             r"^info@",
             r"^www\.",
@@ -2670,9 +2721,11 @@ class ResumeGenerationService:
                 items.extend(self._extract_skill_items(value))
             return items
         if isinstance(source, str):
+            from app.services.detailed_resume_parser import _split_skills_payload
+
             return [
                 self._clean_inline_text(part)
-                for part in re.split(r"[,;\n|]+", source)
+                for part in _split_skills_payload(source)
                 if self._clean_inline_text(part)
             ]
         return [self._clean_inline_text(source)]
@@ -2811,8 +2864,13 @@ class ResumeGenerationService:
 
     def _clean_inline_text(self, value: Any) -> str:
         # Strip common bullet glyphs copied from source resumes to avoid double bullets in DOCX lists.
+        from app.services.tech_glossary import restore_tech_names
+
         cleaned = re.sub(r"^[\-\*\u2022\u2023\u25AA\u25AB\u25CF\u25E6\u2043\u2219\uf0a7\uf0b7▪■●◦•\s]+", "", str(value or "")).strip()
-        return re.sub(r"\s+", " ", cleaned)
+        cleaned = re.sub(r"\s+", " ", cleaned)
+        cleaned = restore_tech_names(cleaned)
+        cleaned = re.sub(r"(?i)\b(AI/?ML)(Developer|Engineer|Architect|Specialist)\b", r"\1 \2", cleaned)
+        return cleaned
 
     def _dedupe_text(self, values: list[str]) -> list[str]:
         seen: set[str] = set()
@@ -3077,16 +3135,17 @@ class ResumeGenerationService:
         )
 
         # Contact on one line beneath the repeating header (body, first page flow).
-        # Also put the name in the body so copy/paste and some viewers show it.
-        if header.get("name"):
-            name_para = doc.add_paragraph()
-            name_para.paragraph_format.space_before = Pt(0)
-            name_para.paragraph_format.space_after = Pt(2)
-            name_run = name_para.add_run(str(header.get("name") or "").strip())
-            name_run.font.name = font_family
-            name_run.font.size = Pt(max(name_size, body_size + 2))
-            name_run.font.bold = True
-            name_run.font.color.rgb = RGBColor(0x11, 0x11, 0x11)
+        # Always put the name in the body so copy/paste, text extractors, and some
+        # viewers show it even when page headers are hidden.
+        display_name = str(header.get("name") or "Candidate").strip() or "Candidate"
+        name_para = doc.add_paragraph()
+        name_para.paragraph_format.space_before = Pt(0)
+        name_para.paragraph_format.space_after = Pt(2)
+        name_run = name_para.add_run(display_name)
+        name_run.font.name = font_family
+        name_run.font.size = Pt(max(name_size, body_size + 2))
+        name_run.font.bold = True
+        name_run.font.color.rgb = RGBColor(0x11, 0x11, 0x11)
         if header.get("contact"):
             contact_para = doc.add_paragraph()
             contact_para.paragraph_format.space_before = Pt(2)
