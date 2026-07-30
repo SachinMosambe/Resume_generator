@@ -19,7 +19,19 @@ _SECTION_HEADINGS = {
     "education": ["education", "academic background", "academics", "qualifications", "degrees", "academic qualifications", "educational background", "academic credentials"],
     "projects": ["projects", "personal projects", "academic projects", "key projects", "project experience"],
     "certifications": ["certifications", "certificates", "licenses", "accreditations", "professional certifications"],
-    "achievements": ["achievements", "awards", "honors", "accomplishments", "recognition"],
+    "achievements": [
+        "achievements",
+        "awards",
+        "honors",
+        "accomplishments",
+        "recognition",
+        "leadership",
+        "leadership & achievements",
+        "leadership and achievements",
+        "extracurricular",
+        "activities",
+        "positions of responsibility",
+    ],
     "languages": ["languages", "language proficiency", "spoken languages"],
 }
 
@@ -142,39 +154,58 @@ def _is_section_heading_line(line: str) -> bool:
 
 # ─── Contact extractors ────────────────────────────────────────
 def _extract_email(text: str) -> str:
-    match = re.search(r'\b[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Z|a-z]{2,}\b', text)
-    return match.group(0) if match else ""
+    # Prefer longest plausible email (avoid truncated fragments like 7814@gmail.com mid-token).
+    matches = re.findall(r"\b[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}\b", text or "")
+    if not matches:
+        # Recover emails broken by space repair: sachin 7814 @ gmail.com → join nearby.
+        soft = re.search(
+            r"\b([A-Za-z0-9._%+-]+)\s*@\s*([A-Za-z0-9.-]+)\s*\.\s*([A-Za-z]{2,})\b",
+            text or "",
+        )
+        if soft:
+            return f"{soft.group(1)}@{soft.group(2)}.{soft.group(3)}".replace(" ", "")
+        return ""
+    # Prefer emails with a local-part that looks complete (>= 5 chars) when available.
+    ranked = sorted(matches, key=lambda e: (len(e.split("@")[0]) >= 5, len(e)), reverse=True)
+    return ranked[0]
 
 
 def _extract_phone(text: str) -> str:
     patterns = [
-        r'\+?\d{1,3}[-.\s]?\(?\d{2,4}\)?[-.\s]?\d{3,4}[-.\s]?\d{3,4}',
-        r'\(\d{3}\)\s*\d{3}[-.\s]?\d{4}',
-        r'\d{3}[-.\s]?\d{3}[-.\s]?\d{4}',
-        r'\+91\s?\d{5}\s?\d{5}',
+        r"\+?\d{1,3}[-.\s]?\(?\d{2,4}\)?[-.\s]?\d{3,4}[-.\s]?\d{3,4}",
+        r"\(\d{3}\)\s*\d{3}[-.\s]?\d{4}",
+        r"\d{3}[-.\s]?\d{3}[-.\s]?\d{4}",
+        r"\+91\s?\d{5}\s?\d{5}",
     ]
     for p in patterns:
-        match = re.search(p, text)
+        match = re.search(p, text or "")
         if match:
             return match.group(0).strip()
     return ""
 
 
 def _extract_linkedin(text: str) -> str:
-    match = re.search(r'https?://(?:www\.)?linkedin\.com/in/[A-Za-z0-9\-_]+', text, re.IGNORECASE)
+    match = re.search(
+        r"https?://(?:www\.)?linkedin\.com/in/[A-Za-z0-9\-_]+",
+        text or "",
+        re.IGNORECASE,
+    )
     return match.group(0) if match else ""
 
 
 def _extract_portfolio(text: str) -> str:
-    match = re.search(r'https?://(?:www\.)?(?:github|gitlab|bitbucket)\.com/[A-Za-z0-9\-_]+', text, re.IGNORECASE)
-    if match:
-        return match.group(0)
-    # Iterate over all URLs and return the first non-LinkedIn one
-    url_pattern = re.compile(
-        r'https?://(?:www\.)?[A-Za-z0-9\-_]+(?:\.[A-Za-z0-9\-_]+)*?\.(?:com|io|dev|net|org)[A-Za-z0-9\-_/.]*',
+    match = re.search(
+        r"https?://(?:www\.)?(?:github|gitlab|bitbucket)\.com/[A-Za-z0-9\-_]+",
+        text or "",
         re.IGNORECASE,
     )
-    for m in url_pattern.finditer(text):
+    if match:
+        return match.group(0)
+    url_pattern = re.compile(
+        r"https?://(?:www\.)?[A-Za-z0-9\-_]+(?:\.[A-Za-z0-9\-_]+)*?\.(?:com|io|dev|net|org)[A-Za-z0-9\-_/.]*",
+        re.IGNORECASE,
+    )
+    for m in url_pattern.finditer(text or ""):
         url = m.group(0)
         if "linkedin" not in url.lower():
             return url
@@ -182,18 +213,38 @@ def _extract_portfolio(text: str) -> str:
 
 
 def _extract_name(text: str) -> str:
-    lines = [l.strip() for l in text.splitlines() if l.strip()]
-    for line in lines[:10]:
+    lines = [l.strip() for l in (text or "").splitlines() if l.strip()]
+    for line in lines[:12]:
+        # Contact-style first lines: "Name | email | phone"
+        if "|" in line or "•" in line:
+            left = re.split(r"[|•]", line)[0].strip()
+            if 2 <= len(left.split()) <= 5 and "@" not in left and not re.search(r"\d{5,}", left):
+                if re.match(r"^[A-Za-z][A-Za-z .'-]+$", left):
+                    return left
         if len(line) < 3 or len(line) > 60:
             continue
         lower = line.lower()
-        if any(k in lower for k in ["resume", "cv", "curriculum", "page", "http", "www", "@", "phone", "email", "address", "linkedin"]):
+        if any(
+            k in lower
+            for k in [
+                "resume",
+                "cv",
+                "curriculum",
+                "page",
+                "http",
+                "www",
+                "@",
+                "phone",
+                "email",
+                "address",
+                "linkedin",
+            ]
+        ):
             continue
-        if re.search(r'\d{4}', line):
+        if re.search(r"\d{4}", line):
             continue
         words = line.split()
-        if 2 <= len(words) <= 5 and not re.search(r'[^a-zA-Z\s\.\-]', line):
-            # Title-case or all-caps heuristic
+        if 2 <= len(words) <= 5 and not re.search(r"[^a-zA-Z\s.\-']", line):
             title_case = sum(1 for w in words if w and w[0].isupper())
             if title_case >= len(words) // 2:
                 return line
@@ -349,12 +400,26 @@ def _extract_experience(text: str) -> list[dict[str, Any]]:
     def _save_current():
         nonlocal current_job, current_bullets
         if current_job and (current_job.get("company") or current_job.get("title")):
-            current_job["description"] = [b for b in current_bullets if b]
-            techs: set[str] = set()
-            for b in current_job["description"]:
-                techs.update(_infer_technologies(b))
-            if techs:
-                current_job["technologies"] = list(techs)
+            cleaned_bullets: list[str] = []
+            for b in current_bullets:
+                if not b:
+                    continue
+                if re.match(r"(?i)^environment\s*:", b):
+                    env_payload = b.split(":", 1)[1].strip() if ":" in b else ""
+                    _add_environment_techs(current_job, env_payload)
+                    continue
+                cleaned_bullets.append(b)
+            current_job["description"] = cleaned_bullets
+            if re.match(r"(?i)^environment\s*:", str(current_job.get("title") or "")):
+                current_job["title"] = ""
+            if _is_gap_period_entry(
+                str(current_job.get("company") or ""),
+                str(current_job.get("title") or ""),
+            ):
+                current_job = None
+                current_bullets = []
+                return
+            # Keep Environment techs only — never invent tools from bullet keyword scans.
             experiences.append(current_job)
         current_job = None
         current_bullets = []
@@ -371,6 +436,16 @@ def _extract_experience(text: str) -> list[dict[str, Any]]:
             i += 1
             continue
 
+        # Strip trailing "Gap Period [...]" annotations glued onto title/company lines.
+        line = re.sub(
+            r"(?i)\s*gap\s*period\s*[\[\(][^\]\)]*[\]\)]\s*$",
+            "",
+            line,
+        ).strip()
+        if not line or _is_gap_period_entry(line, ""):
+            i += 1
+            continue
+
         date_match = _DATE_PATTERN.search(line)
         # Title/company on this line, date on next line
         next_line = lines[i + 1].strip() if i + 1 < len(lines) else ""
@@ -379,9 +454,17 @@ def _extract_experience(text: str) -> list[dict[str, Any]]:
         if date_match and not _is_bullet(line):
             _save_current()
             parsed = _parse_job_header_line(line, date_match)
+            if _is_gap_period_entry(parsed.get("company") or "", parsed.get("title") or ""):
+                i += 1
+                continue
             # Optional next-line title when header only has company+dates
             if not parsed["title"] and next_line and not next_date and not _is_bullet(next_line):
-                if not _is_section_heading_line(next_line) and len(next_line) < 120:
+                if (
+                    not _is_section_heading_line(next_line)
+                    and not re.match(r"(?i)^environment\s*:", next_line)
+                    and not _is_gap_period_entry(next_line, "")
+                    and len(next_line) < 120
+                ):
                     parsed["title"] = _clean_text(next_line)
                     i += 1
             current_job = {
@@ -393,6 +476,9 @@ def _extract_experience(text: str) -> list[dict[str, Any]]:
             continue
 
         if next_date and not _is_bullet(line) and not date_match:
+            if re.match(r"(?i)^environment\s*:", line) or _is_gap_period_entry(line, ""):
+                i += 1
+                continue
             _save_current()
             # Title on line 1, company+date on line 2 — or company on line 1, date on line 2
             duration = next_date.group(0).strip()
@@ -426,12 +512,7 @@ def _extract_experience(text: str) -> list[dict[str, Any]]:
             # Environment: Java, Spring Boot, ... → technologies for this role
             if norm.startswith("environment") or line.lower().startswith("environment:"):
                 env_payload = line.split(":", 1)[1].strip() if ":" in line else ""
-                if env_payload:
-                    techs = [t.strip() for t in re.split(r"[,;|]+", env_payload) if t.strip()]
-                    existing = current_job.setdefault("technologies", [])
-                    for tech in techs:
-                        if tech.casefold() not in {str(x).casefold() for x in existing}:
-                            existing.append(tech)
+                _add_environment_techs(current_job, env_payload)
                 i += 1
                 continue
             clean = _clean_bullet_text(line)
@@ -439,17 +520,84 @@ def _extract_experience(text: str) -> list[dict[str, Any]]:
                 if _is_bullet(line):
                     current_bullets.append(clean)
                 elif current_bullets and not clean[:1].isupper():
+                    # Soft wrap / continuation of previous bullet.
                     current_bullets[-1] = f"{current_bullets[-1]} {clean}".strip()
-                elif current_bullets and len(clean.split()) < 8 and not clean.endswith("."):
+                elif _looks_like_new_achievement_bullet(clean, current_bullets):
                     current_bullets.append(clean)
-                elif current_bullets:
+                elif current_bullets and len(clean.split()) < 8 and not clean.endswith("."):
                     current_bullets[-1] = f"{current_bullets[-1]} {clean}".strip()
                 else:
+                    # Prefer discrete bullets over paragraph streams.
                     current_bullets.append(clean)
         i += 1
 
     _save_current()
-    return experiences
+    return _dedupe_experience_roles(experiences)
+
+
+def _add_environment_techs(job: dict[str, Any], payload: str) -> None:
+    if not payload:
+        return
+    techs = [t.strip() for t in re.split(r"[,;|]+", payload) if t.strip()]
+    existing = job.setdefault("technologies", [])
+    for tech in techs:
+        if len(tech) > 80 or len(tech.split()) > 8:
+            continue
+        if tech.casefold() not in {str(x).casefold() for x in existing}:
+            existing.append(tech)
+
+
+def _is_gap_period_entry(company: str, title: str) -> bool:
+    blob = f"{company} {title}".strip().lower()
+    if not blob:
+        return False
+    return bool(re.search(r"\bgap\s*period\b", blob)) or blob.startswith("gap period")
+
+
+def _dedupe_experience_roles(roles: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Drop duplicate company+duration rows (e.g. repeated Gap Period / AIG)."""
+    seen: set[str] = set()
+    out: list[dict[str, Any]] = []
+    for role in roles:
+        key = re.sub(
+            r"[^a-z0-9]+",
+            "",
+            f"{role.get('company') or ''}{role.get('title') or ''}{role.get('duration') or ''}".lower(),
+        )
+        if not key or key in seen:
+            continue
+        seen.add(key)
+        out.append(role)
+    return out
+
+
+_ACTION_VERB_START = re.compile(
+    r"^(?:"
+    r"Architected|Developed|Designed|Implemented|Built|Led|Created|Improved|Optimized|"
+    r"Deployed|Integrated|Managed|Delivered|Engineered|Collaborated|Mentored|Configured|"
+    r"Migrated|Reduced|Increased|Automated|Established|Owned|Supported|Analyzed|Processed|"
+    r"Enabled|Wrote|Maintained|Refactored|Troubleshot|Coordinated|Partnered|Worked|"
+    r"Responsible|Spearheaded|Drove|Executed|Enhanced|Launched|Conducted|Performed|"
+    r"Utilized|Leveraged|Applied|Contributed|Assisted|Presented|Facilitated"
+    r")\b",
+    re.I,
+)
+
+
+def _looks_like_new_achievement_bullet(clean: str, current_bullets: list[str]) -> bool:
+    """True when a non-glyph line should start a new bullet instead of merging."""
+    if not clean:
+        return False
+    if not current_bullets:
+        return True
+    prev = current_bullets[-1].rstrip()
+    if prev.endswith((".", ";", ":")) and clean[:1].isupper():
+        return True
+    if _ACTION_VERB_START.match(clean) and len(prev) >= 60:
+        return True
+    if clean[:1].isupper() and len(clean.split()) >= 8 and len(prev) >= 80:
+        return True
+    return False
 
 
 def _extract_education(text: str) -> list[dict[str, Any]]:
@@ -607,6 +755,20 @@ def _extract_projects(text: str) -> list[dict[str, Any]]:
         current = None
         current_desc = []
 
+    def _looks_like_project_title(clean: str) -> bool:
+        if not clean or _is_bullet(clean):
+            return False
+        # RetrieveIQ – Something | EMIPredictAI–Financial ...
+        if re.search(r"[–—\-]\s*[A-Z]", clean) and len(clean.split()) <= 14:
+            return True
+        if re.match(r"^[A-Z][A-Za-z0-9]+(?:[A-Z][a-z0-9]+)+", clean) and len(clean) <= 90:
+            return True
+        if len(clean.split()) <= 10 and not clean.endswith(".") and clean[:1].isupper():
+            # Title-ish line without being a long sentence.
+            if clean.count(". ") == 0 and len(clean) <= 100:
+                return True
+        return False
+
     for line in lines:
         line = line.strip()
         if not line:
@@ -618,28 +780,47 @@ def _extract_projects(text: str) -> list[dict[str, Any]]:
         if not clean:
             continue
 
-        if not current:
-            # First line in a block is the project name
-            tech_match = re.search(r'\(([^)]+)\)', clean)
-            techs = []
-            if tech_match:
-                techs = [t.strip() for t in tech_match.group(1).split(",") if t.strip()]
-                clean = clean.replace(tech_match.group(0), "").strip()
-            current = {
-                "name": clean,
-                "description": [],
-                "technologies": techs,
-                "link": "",
-                "duration": "",
-            }
-            current_desc = []
+        # Split mashed ".... generation. EMIPredictAI–..." into bullet + new project.
+        split_match = re.search(
+            r"(?<=[.!?])\s+(?=[A-Z][A-Za-z0-9].{0,40}[–—\-])",
+            clean,
+        )
+        if current and split_match and not _is_bullet(line):
+            left = clean[: split_match.start()].strip()
+            right = clean[split_match.start() :].strip()
+            if left:
+                current_desc.append(left)
+            _save_current()
+            clean = right
+            line = right
+
+        if not current or (_looks_like_project_title(clean) and not _is_bullet(line) and current_desc):
+            if current and _looks_like_project_title(clean) and not _is_bullet(line):
+                _save_current()
+            if not current:
+                tech_match = re.search(r"\(([^)]+)\)", clean)
+                techs = []
+                if tech_match:
+                    techs = [t.strip() for t in tech_match.group(1).split(",") if t.strip()]
+                    clean = clean.replace(tech_match.group(0), "").strip()
+                # Trim trailing sentence fragments incorrectly glued to title.
+                name = re.split(r"(?<=[.!?])\s+", clean)[0].strip()
+                current = {
+                    "name": name,
+                    "description": [],
+                    "technologies": techs,
+                    "link": "",
+                    "duration": "",
+                }
+                current_desc = []
+                continue
+
+        if _is_bullet(line):
+            current_desc.append(clean)
+        elif current_desc:
+            current_desc[-1] = f"{current_desc[-1]} {clean}".strip()
         else:
-            if _is_bullet(line):
-                current_desc.append(clean)
-            elif current_desc:
-                current_desc[-1] = f"{current_desc[-1]} {clean}".strip()
-            else:
-                current_desc.append(clean)
+            current_desc.append(clean)
 
     _save_current()
     return projects
@@ -652,13 +833,43 @@ def _extract_bullet_list(text: str, section_key: str) -> list[str]:
         clean = _clean_bullet_text(line)
         if not clean or len(clean) <= 2:
             continue
+        # Split pipe-glued certification mega-lines.
+        if "|" in clean and len(clean) > 80:
+            parts = [p.strip() for p in clean.split("|") if p.strip()]
+            # Also cut leadership bleed after certifications.
+            expanded: list[str] = []
+            for part in parts:
+                cut = re.split(
+                    r"(?i)\b(?:leadership\s*&?\s*achievements?|leadership|achievements?)\b",
+                    part,
+                    maxsplit=1,
+                )[0].strip(" |")
+                if cut and len(cut) > 3:
+                    expanded.append(cut)
+            if expanded:
+                items.extend(expanded)
+                continue
         if _is_bullet(line):
             items.append(clean)
-        elif items:
+        elif items and not re.match(r"(?i)^(leadership|achievements?|awards?)\b", clean):
             items[-1] = f"{items[-1]} {clean}".strip()
         else:
             items.append(clean)
-    return _dedupe(items)
+    # Final split of leftover mega-items.
+    final: list[str] = []
+    for item in items:
+        if "|" in item and len(item) > 100:
+            final.extend([p.strip() for p in item.split("|") if len(p.strip()) > 3])
+        else:
+            # Strip leadership bleed.
+            cut = re.split(
+                r"(?i)\b(?:leadership\s*&?\s*achievements?|led\s+\d+-participant)\b",
+                item,
+                maxsplit=1,
+            )[0].strip(" |")
+            if cut:
+                final.append(cut)
+    return _dedupe(final)
 
 
 def _infer_technologies(text: str) -> set[str]:

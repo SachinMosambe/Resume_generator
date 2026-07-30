@@ -26,22 +26,62 @@ CRITICAL RULES:
 
 
 def condense_store_with_llm(store: dict[str, Any], *, target_pages: float = 3.0) -> dict[str, Any] | None:
-    """
-    Polish a page-fitted store with one grounded LLM pass.
+    """Compress a page-fitted store with one grounded LLM pass."""
+    return _run_grounded_store_llm(
+        store,
+        mode="condense",
+        target_pages=target_pages,
+    )
 
-    Returns updated store or None if LLM fails / fails grounding checks.
+
+def polish_store_with_llm(store: dict[str, Any]) -> dict[str, Any] | None:
     """
+    Professional rewrite for normal-sized resumes (no aggressive compression).
+
+    Fixes spacing/wording while keeping all roles and genuine facts.
+    """
+    return _run_grounded_store_llm(store, mode="polish", target_pages=3.0)
+
+
+def _run_grounded_store_llm(
+    store: dict[str, Any],
+    *,
+    mode: str,
+    target_pages: float,
+) -> dict[str, Any] | None:
+    """Shared grounded LLM path for condense (large) and polish (normal)."""
     try:
         payload = _source_payload(store)
-        user = "\n".join(
-            [
+        if mode == "polish":
+            instructions = [
+                "Mode: PROFESSIONAL POLISH (keep length similar — do not aggressively compress).",
+                "Fix missing spaces, jammed words, and awkward formatting.",
+                "CRITICAL FORMAT: each experience description item MUST be one short bullet (1-2 sentences max).",
+                "Never return a paragraph stream. Split multi-achievement text into separate bullet strings.",
+                "Rewrite bullets to clear Action + Context + Result sentences.",
+                "Keep ALL experience roles from SOURCE (do not drop employers).",
+                "Keep roughly the same bullet count per role (trim only obvious duplicates/noise).",
+                "Summary: 4-6 dense professional lines, facts only (summary may be paragraph).",
+                "Skills: keep categories; atomic skill names from SOURCE only.",
+                "Education: cleaned degree + full institution name + year (never stub labels like Institute/College/IIT alone).",
+                "Split mashed certification/achievement lines into clean separate items when needed.",
+            ]
+        else:
+            instructions = [
                 f"Target length: about {target_pages} pages.",
                 "Compress wording and keep the strongest genuine accomplishments.",
                 "Keep ALL experience roles from SOURCE (do not drop employers).",
-                "Aim for 3-5 bullets per recent role and 2-3 for older roles.",
+                "Aim for 5-7 bullets per recent role and 3-4 for older roles.",
+                "CRITICAL FORMAT: each description item is ONE bullet (not a paragraph of many achievements).",
+                "Do NOT invent technologies. Keep technologies ONLY from SOURCE technologies/Environment lists.",
+                "Never put Environment text into title or location fields.",
+                "Keep SOURCE skills_by_category names and trim within those categories only.",
                 "Summary: 4-6 dense lines, facts only.",
-                "Skills: keep category names; keep only the most relevant skill names from SOURCE (atomic names).",
                 "Education: return cleaned degree + institution + year only (no profile/Dice noise).",
+            ]
+        user = "\n".join(
+            [
+                *instructions,
                 "",
                 "SOURCE JSON:",
                 json.dumps(payload, ensure_ascii=True)[:55000],
@@ -57,7 +97,7 @@ def condense_store_with_llm(store: dict[str, Any], *, target_pages: float = 3.0)
                                 "title": "must match source",
                                 "duration": "must match source",
                                 "location": "optional",
-                                "description": ["rewritten genuine bullets"],
+                                "description": ["one achievement per bullet string"],
                                 "technologies": ["from source only"],
                             }
                         ],
@@ -69,27 +109,30 @@ def condense_store_with_llm(store: dict[str, Any], *, target_pages: float = 3.0)
                 ),
             ]
         )
+        # Polish stays smaller/faster; condense may need more output for multi-role resumes.
+        token_budget = 4096 if mode == "polish" else min(8192, max(settings.RESUME_GENERATION_MAX_TOKENS, 4096))
         result = llm_call_json_with_metrics(
             _SYSTEM,
             user,
             validate=_validate_condense_shape,
             repair_attempts=1,
             validation_attempts=1,
-            max_tokens=min(8192, max(settings.RESUME_GENERATION_MAX_TOKENS, 4096)),
+            max_tokens=token_budget,
         )
         merged = _merge_condensed(store, result.data)
         if not merged:
-            logger.warning("resume_llm_condense_rejected", reason="grounding_or_merge_failed")
+            logger.warning("resume_llm_condense_rejected", reason="grounding_or_merge_failed", mode=mode)
             return None
         logger.info(
             "resume_llm_condense_complete",
+            mode=mode,
             roles=len(merged.get("experience") or []),
             bullets=sum(len(r.get("description") or []) for r in (merged.get("experience") or [])),
             output_tokens_est=result.metrics.get("output_tokens_est"),
         )
         return merged
     except Exception as exc:
-        logger.warning("resume_llm_condense_failed", error=str(exc))
+        logger.warning("resume_llm_condense_failed", mode=mode, error=str(exc))
         return None
 
 
@@ -177,17 +220,22 @@ def _merge_condensed(source: dict[str, Any], condensed: dict[str, Any]) -> dict[
         used.add(match_idx)
         src_blob = " ".join(str(x) for x in (src.get("description") or [])).lower()
         src_blob += " " + " ".join(str(x) for x in (src.get("technologies") or [])).lower()
-        bullets = []
+        from app.services.structured_resume_store import expand_to_bullets
+
+        raw_bullets = []
         for b in match.get("description") or []:
             text = re.sub(r"\s+", " ", str(b).strip())
             if len(text) < 25:
                 continue
-            # Soft grounding: require overlap with source tokens / verbs+tools already present.
+            raw_bullets.append(text)
+        # Ensure LLM paragraph streams become discrete bullets.
+        bullets = []
+        for text in expand_to_bullets(raw_bullets, max_bullets=8):
             if not _bullet_grounded(text, src_blob, src.get("description") or []):
                 continue
             bullets.append(text)
         if len(bullets) < 2:
-            bullets = list(src.get("description") or [])[:4]
+            bullets = expand_to_bullets(list(src.get("description") or []), max_bullets=6)
         techs = []
         src_techs = {str(t).strip().lower() for t in (src.get("technologies") or []) if str(t).strip()}
         for t in match.get("technologies") or []:
@@ -207,6 +255,18 @@ def _merge_condensed(source: dict[str, Any], condensed: dict[str, Any]) -> dict[
             }
         )
 
+    # Hard dedupe by company+duration (LLM rewrite sometimes repeats roles).
+    deduped_roles: list[dict[str, Any]] = []
+    seen_role_keys: set[str] = set()
+    for role in merged_roles:
+        key = _norm(role.get("company")) + _norm(role.get("duration"))
+        if key and key in seen_role_keys:
+            continue
+        if key:
+            seen_role_keys.add(key)
+        deduped_roles.append(role)
+    merged_roles = deduped_roles
+
     # Summary: accept only if not tiny and not wildly unrelated.
     summary = re.sub(r"\s+", " ", str(condensed.get("summary") or "").strip())
     src_summary = str(source.get("summary") or "")
@@ -219,27 +279,47 @@ def _merge_condensed(source: dict[str, Any], condensed: dict[str, Any]) -> dict[
     else:
         out["summary"] = src_summary
 
-    # Skills: only keep names that exist in source skill universe.
-    src_skills = {
-        str(s).strip().lower()
-        for values in (source.get("skills_by_category") or {}).values()
-        for s in (values or [])
-    }
-    src_skills.update(str(s).strip().lower() for s in (source.get("skills") or []))
-    llm_skills = condensed.get("skills_by_category") or {}
-    cleaned_skills: dict[str, list[str]] = {}
-    if isinstance(llm_skills, dict):
-        for cat, values in llm_skills.items():
+    # Skills: prefer source categories; only trim within them (never LLM remaps Soft Skills wrongly).
+    src_grouped = source.get("skills_by_category") or {}
+    if isinstance(src_grouped, dict) and src_grouped:
+        llm_skills = condensed.get("skills_by_category") or {}
+        cleaned_skills: dict[str, list[str]] = {}
+        for cat, values in src_grouped.items():
+            src_names = [str(s).strip() for s in (values or []) if str(s).strip()]
+            src_set = {s.lower() for s in src_names}
             kept = []
-            for skill in values or []:
-                name = str(skill).strip()
-                if name and name.lower() in src_skills:
-                    kept.append(name)
-            if kept:
-                cleaned_skills[str(cat).strip()] = kept[:14]
-    if cleaned_skills:
+            if isinstance(llm_skills, dict):
+                # Match LLM category loosely to source category.
+                llm_vals = []
+                for lcat, lvals in llm_skills.items():
+                    if str(lcat).strip().lower() == str(cat).strip().lower() or str(cat).lower() in str(lcat).lower():
+                        llm_vals.extend(lvals or [])
+                for skill in llm_vals:
+                    name = str(skill).strip()
+                    if name and name.lower() in src_set:
+                        kept.append(name)
+            if not kept:
+                kept = src_names[:14]
+            cleaned_skills[str(cat).strip()] = kept[:14]
         out["skills_by_category"] = cleaned_skills
         out["skills"] = [s for vals in cleaned_skills.values() for s in vals]
+    else:
+        # Fallback: only keep names that exist in source skill universe.
+        src_skills = {str(s).strip().lower() for s in (source.get("skills") or [])}
+        llm_skills = condensed.get("skills_by_category") or {}
+        cleaned_skills = {}
+        if isinstance(llm_skills, dict):
+            for cat, values in llm_skills.items():
+                kept = []
+                for skill in values or []:
+                    name = str(skill).strip()
+                    if name and name.lower() in src_skills:
+                        kept.append(name)
+                if kept:
+                    cleaned_skills[str(cat).strip()] = kept[:14]
+        if cleaned_skills:
+            out["skills_by_category"] = cleaned_skills
+            out["skills"] = [s for vals in cleaned_skills.values() for s in vals]
 
     # Education: prefer cleaned LLM rows only when institution/degree match source.
     out["education"] = _merge_education(source.get("education") or [], condensed.get("education") or [])

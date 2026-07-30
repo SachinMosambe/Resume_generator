@@ -6,6 +6,7 @@ and applies client format layout — the LLM must never be the only copy of body
 """
 from __future__ import annotations
 
+import re
 from typing import Any
 
 from app.core.logging import logger
@@ -13,12 +14,18 @@ from app.core.logging import logger
 
 def build_structured_resume(candidate_data: dict[str, Any]) -> dict[str, Any]:
     """Normalize candidate_data into a durable section store with no content caps."""
+    from app.services.pdf_parser import repair_collapsed_spaces
+
     skills_by_category = candidate_data.get("skills_by_category")
     if not isinstance(skills_by_category, dict) or not skills_by_category:
         skills_by_category = _skills_list_to_categories(candidate_data.get("skills"))
 
     experience = [_normalize_experience(item) for item in _as_list(candidate_data.get("experience"))]
     experience = [item for item in experience if item.get("company") or item.get("title")]
+    for role in experience:
+        role["description"] = expand_to_bullets(
+            [repair_collapsed_spaces(str(b)) for b in (role.get("description") or []) if str(b).strip()]
+        )
 
     education = normalize_education_entries(
         [_normalize_education(item) for item in _as_list(candidate_data.get("education"))]
@@ -26,6 +33,10 @@ def build_structured_resume(candidate_data: dict[str, Any]) -> dict[str, Any]:
 
     projects = [_normalize_project(item) for item in _as_list(candidate_data.get("projects"))]
     projects = [item for item in projects if item.get("name")]
+    for project in projects:
+        project["description"] = expand_to_bullets(
+            [repair_collapsed_spaces(str(b)) for b in (project.get("description") or []) if str(b).strip()]
+        )
 
     store = {
         "version": 1,
@@ -43,7 +54,7 @@ def build_structured_resume(candidate_data: dict[str, Any]) -> dict[str, Any]:
                 or ""
             ).strip(),
         },
-        "summary": str(candidate_data.get("summary") or "").strip(),
+        "summary": repair_collapsed_spaces(str(candidate_data.get("summary") or "").strip()),
         "skills": _as_str_list(candidate_data.get("skills")),
         "skills_by_category": {
             str(k).strip(): _as_str_list(v)
@@ -53,10 +64,14 @@ def build_structured_resume(candidate_data: dict[str, Any]) -> dict[str, Any]:
         "experience": experience,
         "education": education,
         "projects": projects,
-        "certifications": _as_str_list(candidate_data.get("certifications")),
-        "achievements": _as_str_list(candidate_data.get("achievements")),
+        "certifications": [
+            repair_collapsed_spaces(c) for c in _as_str_list(candidate_data.get("certifications"))
+        ],
+        "achievements": [
+            repair_collapsed_spaces(a) for a in _as_str_list(candidate_data.get("achievements"))
+        ],
         "languages": _as_str_list(candidate_data.get("languages")),
-        "raw_resume_text": str(candidate_data.get("raw_resume_text") or ""),
+        "raw_resume_text": repair_collapsed_spaces(str(candidate_data.get("raw_resume_text") or "")),
         "stats": {
             "experience_count": len(experience),
             "experience_bullets": sum(len(e.get("description") or []) for e in experience),
@@ -162,7 +177,18 @@ def normalize_education_entries(entries: Any) -> list[dict[str, Any]]:
         if re.fullmatch(r"(?i)master", degree):
             degree = "Master's Degree"
 
+        # Reject stub institution labels extracted from templates/columns.
+        stub_institutions = {
+            "institute", "college", "university", "school", "academy", "iit",
+            "department", "faculty", "campus", "institution",
+        }
+        if institution.casefold() in stub_institutions:
+            institution = ""
+
         if not degree and not institution:
+            continue
+
+        if len(degree) <= 3 and not institution:
             continue
 
         cleaned.append(
@@ -300,11 +326,9 @@ def document_from_store(
         if not canonical or canonical in seen:
             continue
         seen.add(canonical)
-        title = str(labels.get(canonical) or default_titles.get(canonical) or f"{canonical.upper()}:")
-        if not title.endswith(":"):
-            title = f"{title}:"
+        title = _safe_section_title(labels.get(canonical), default_titles.get(canonical) or f"{canonical.upper()}:")
 
-        section = _section_payload(store, canonical, title.upper() if len(title) < 40 else title)
+        section = _section_payload(store, canonical, title)
         if section:
             sections.append(section)
 
@@ -352,6 +376,29 @@ def _section_payload(store: dict[str, Any], canonical: str, title: str) -> dict[
     return None
 
 
+def _safe_section_title(label: Any, default: str) -> str:
+    """Use template labels only when they look like short canonical headings."""
+    title = str(label or "").strip()
+    fallback = default if default.endswith(":") else f"{default}:"
+    if not title:
+        return fallback
+    clean = title[:-1].strip() if title.endswith(":") else title
+    if len(clean) > 36 or len(clean.split()) > 4:
+        return fallback
+    low = clean.lower()
+    if "," in low or "|" in low or "@" in low:
+        return fallback
+    # Must contain a recognizable section keyword.
+    keywords = (
+        "summary", "objective", "profile", "skill", "experience", "employment",
+        "education", "project", "certif", "achievement", "award", "language",
+    )
+    if not any(k in low for k in keywords):
+        return fallback
+    titled = clean.upper()
+    return titled if titled.endswith(":") else f"{titled}:"
+
+
 def _canonical(name: Any) -> str:
     text = str(name or "").lower()
     if "summary" in text or "profile" in text or "objective" in text:
@@ -387,14 +434,143 @@ def _normalize_experience(item: Any) -> dict[str, Any]:
     techs = item.get("technologies") or item.get("environment") or item.get("tech_stack") or []
     if isinstance(techs, str):
         techs = [t.strip() for t in techs.replace(";", ",").split(",") if t.strip()]
+    title = str(item.get("title") or item.get("role") or item.get("position") or "").strip()
+    company = str(item.get("company") or item.get("organization") or item.get("employer") or "").strip()
+    location = str(item.get("location") or "").strip()
+    if re.match(r"(?i)^environment\s*:", title):
+        title = ""
+    if re.match(r"(?i)^environment\s*:", location):
+        location = ""
+    if re.search(r"(?i)\bgap\s*period\b", f"{company} {title}"):
+        return {
+            "title": "",
+            "company": "",
+            "location": "",
+            "duration": "",
+            "description": [],
+            "technologies": [],
+        }
+    clean_techs = []
+    for t in _as_list(techs):
+        name = str(t).strip()
+        if not name or len(name) > 60 or len(name.split()) > 6:
+            continue
+        if name.lower().startswith("environment"):
+            continue
+        clean_techs.append(name)
     return {
-        "title": str(item.get("title") or item.get("role") or item.get("position") or "").strip(),
-        "company": str(item.get("company") or item.get("organization") or item.get("employer") or "").strip(),
-        "location": str(item.get("location") or "").strip(),
+        "title": title,
+        "company": company,
+        "location": location,
         "duration": str(item.get("duration") or item.get("dates") or item.get("period") or "").strip(),
-        "description": [str(b).strip() for b in _as_list(desc) if str(b).strip()],
-        "technologies": [str(t).strip() for t in _as_list(techs) if str(t).strip()],
+        "description": expand_to_bullets(_as_list(desc)),
+        "technologies": clean_techs[:12],
     }
+
+
+_ACTION_VERB_START = re.compile(
+    r"^(?:"
+    r"Architected|Developed|Designed|Implemented|Built|Led|Created|Improved|Optimized|"
+    r"Deployed|Integrated|Managed|Delivered|Engineered|Collaborated|Mentored|Configured|"
+    r"Migrated|Reduced|Increased|Automated|Established|Owned|Supported|Analyzed|Processed|"
+    r"Enabled|Wrote|Maintained|Refactored|Troubleshot|Coordinated|Partnered|Worked|"
+    r"Responsible|Spearheaded|Drove|Executed|Enhanced|Launched|Conducted|Performed|"
+    r"Utilized|Leveraged|Applied|Contributed|Assisted|Presented|Facilitated"
+    r")\b",
+    re.I,
+)
+
+
+def expand_to_bullets(values: list[Any], *, max_bullets: int = 12) -> list[str]:
+    """
+    Turn paragraph streams into discrete professional bullets.
+
+    Splits on bullet glyphs and on sentence boundaries that start with action verbs.
+    """
+    out: list[str] = []
+    for raw in values or []:
+        text = re.sub(r"\s+", " ", str(raw or "").strip())
+        if not text:
+            continue
+        # Glyph-separated chunks first.
+        chunks = [
+            c.strip(" -•\t")
+            for c in re.split(r"(?:(?<=\s)|^)[•\u2022\u25CF\u25E6▪●◦\*]\s+", text)
+            if c and c.strip(" -•\t")
+        ]
+        if len(chunks) <= 1:
+            chunks = [text]
+
+        for chunk in chunks:
+            chunk = re.sub(r"\s+", " ", chunk).strip()
+            if not chunk:
+                continue
+            sentence_count = len(re.findall(r"[.!?](?:\s+|$)", chunk))
+            if len(chunk) >= 180 and sentence_count >= 2:
+                sentences = re.split(r"(?<=[.!?])\s+(?=[A-Z\"'])", chunk)
+                buf: list[str] = []
+                for sentence in sentences:
+                    s = sentence.strip()
+                    if not s:
+                        continue
+                    if buf and _ACTION_VERB_START.match(s):
+                        joined = " ".join(buf).strip()
+                        if joined:
+                            out.append(joined)
+                        buf = [s]
+                    else:
+                        buf.append(s)
+                if buf:
+                    out.append(" ".join(buf).strip())
+            else:
+                out.append(chunk)
+
+    # Deduplicate while preserving order.
+    seen: set[str] = set()
+    unique: list[str] = []
+    for item in out:
+        key = re.sub(r"[^a-z0-9]+", "", item.lower())
+        if len(key) < 12 or key in seen:
+            continue
+        seen.add(key)
+        unique.append(item)
+        if len(unique) >= max_bullets:
+            break
+    return unique
+
+
+def store_needs_llm_polish(store: dict[str, Any]) -> bool:
+    """True only when deterministic formatting is not enough (mashed/broken text)."""
+    summary = str(store.get("summary") or "")
+    if _text_looks_mashed(summary):
+        return True
+    for role in store.get("experience") or []:
+        if not isinstance(role, dict):
+            continue
+        bullets = role.get("description") or []
+        if not bullets:
+            continue
+        # Still one mega-paragraph after expansion → needs LLM rewrite help.
+        if len(bullets) <= 2 and any(len(str(b)) > 420 for b in bullets):
+            return True
+        for b in bullets:
+            if _text_looks_mashed(str(b)):
+                return True
+            if len(str(b)) > 520 and str(b).count(". ") >= 3:
+                return True
+    return False
+
+
+def _text_looks_mashed(text: str) -> bool:
+    sample = re.sub(r"\s+", " ", str(text or "").strip())
+    if len(sample) < 40:
+        return False
+    letters = sum(1 for c in sample if c.isalpha())
+    if letters < 40:
+        return False
+    if sample.count(" ") / max(letters, 1) < 0.08:
+        return True
+    return len(re.findall(r"[A-Za-z]{22,}", sample)) >= 2
 
 
 def _normalize_education(item: Any) -> dict[str, Any]:
@@ -427,7 +603,7 @@ def _normalize_project(item: Any) -> dict[str, Any]:
     techs = item.get("technologies") or []
     return {
         "name": str(item.get("name") or item.get("title") or "").strip(),
-        "description": [str(b).strip() for b in _as_list(desc) if str(b).strip()],
+        "description": expand_to_bullets(_as_list(desc)),
         "technologies": [str(t).strip() for t in _as_list(techs) if str(t).strip()],
         "link": str(item.get("link") or item.get("url") or "").strip(),
         "duration": str(item.get("duration") or item.get("dates") or "").strip(),

@@ -38,9 +38,16 @@ from app.services.structured_resume_store import (
     build_structured_resume,
     document_from_store,
     is_large_resume,
+    store_needs_llm_polish,
 )
 from app.services.resume_page_fitter import estimate_pages, fit_store_to_pages, needs_page_fit
-from app.services.resume_llm_condense import condense_store_with_llm
+from app.services.resume_llm_condense import condense_store_with_llm, polish_store_with_llm
+from app.services.resume_section_quality import (
+    audit_and_repair_document,
+    critical_findings,
+    findings_as_feedback,
+)
+from app.services.resume_quality_agent import run_section_quality_agents
 from app.core.config import settings
 from app.core.logging import logger
 
@@ -730,11 +737,11 @@ class ResumeGenerationService:
         pages_full = estimate_pages(full_store)
         target_pages = float(getattr(settings, "RESUME_TARGET_PAGES", 3.0) or 3.0)
 
-        # 2) Keep 2–3 page resumes intact; fit oversized ones, then LLM-polish bullets genuinely.
+        # 2) Fast path: deterministic bullets/format first.
+        #    LLM only when oversized (condense) OR small resume still has mashed/broken text.
         if needs_page_fit(full_store, target_pages=target_pages):
             render_store = fit_store_to_pages(full_store, target_pages=target_pages)
             mode = "store_page_fit"
-            # Grounded LLM condensation: professional bullets/summary without inventing facts.
             if bool(getattr(settings, "RESUME_LLM_CONDENSE", True)):
                 condensed = condense_store_with_llm(render_store, target_pages=target_pages)
                 if condensed:
@@ -743,6 +750,23 @@ class ResumeGenerationService:
         else:
             render_store = full_store
             mode = "store_keep_all"
+            # Skip slow polish for clean text and for large resumes (was timing out ~6 min).
+            needs_polish = store_needs_llm_polish(render_store)
+            if (
+                bool(getattr(settings, "RESUME_LLM_CONDENSE", True))
+                and needs_polish
+                and not is_large_resume(full_store)
+            ):
+                polished = polish_store_with_llm(render_store)
+                if polished:
+                    render_store = polished
+                    mode = "store_keep_all_llm"
+            elif needs_polish and is_large_resume(full_store):
+                logger.info(
+                    "resume_llm_polish_skipped",
+                    reason="large_resume_use_deterministic_bullets",
+                    pages=round(pages_full, 2),
+                )
 
         candidate_data = apply_store_to_candidate_data(candidate_data, render_store)
         if isinstance(candidate_data.get("extracted_data"), dict):
@@ -756,7 +780,21 @@ class ResumeGenerationService:
         draft_document = normalize_resume_document(draft_document, candidate_data)
         draft_document["client_name"] = candidate_data.get("client_name", "")
         draft_document = self._enforce_document_reliability(draft_document, candidate_data, metadata)
+
+        # Quality-first: deterministic audit, then section critic/repair agents (max 2 rounds).
+        draft_document, section_findings = audit_and_repair_document(draft_document, candidate_data)
+        draft_document = self._enforce_document_reliability(draft_document, candidate_data, metadata)
+        agent_metrics: dict[str, Any] = {"llm_calls": 0, "sections_repaired": [], "rounds": 0}
+        if critical_findings(section_findings) and bool(getattr(settings, "RESUME_LLM_CONDENSE", True)):
+            draft_document, section_findings, agent_metrics = run_section_quality_agents(
+                draft_document,
+                candidate_data,
+                max_rounds=2,
+                max_llm_calls=5,
+            )
+            draft_document = self._enforce_document_reliability(draft_document, candidate_data, metadata)
         draft_issues = self._resume_quality_feedback(candidate_data, draft_document)
+        draft_issues = list(dict.fromkeys([*findings_as_feedback(section_findings), *draft_issues]))
 
         logger.info(
             "resume_generation_store_ready",
@@ -769,160 +807,111 @@ class ResumeGenerationService:
             skills_count=(render_store.get("stats") or {}).get("skills_count"),
             education_count=len(render_store.get("education") or []),
             fit=render_store.get("fit"),
+            section_critical=len(critical_findings(section_findings)),
+            section_findings=len(section_findings),
+            quality_agent_calls=agent_metrics.get("llm_calls"),
+            quality_agent_repaired=agent_metrics.get("sections_repaired"),
         )
 
-        # Fast path (default): store/fit/(optional condense) → DOCX.
-        # Full-document LLM rewrite loops stay off unless RESUME_LLM_POLISH=true on small resumes.
-        use_full_llm = bool(getattr(settings, "RESUME_LLM_POLISH", False)) and not is_large_resume(full_store)
-        if not use_full_llm:
+        best_document = draft_document
+        best_issues = draft_issues
+        best_findings = section_findings
+        llm_used = mode.endswith("_llm") or bool(agent_metrics.get("llm_calls"))
+
+        # Fallback full rewrite only if critical section issues remain after agents.
+        needs_quality_repair = bool(critical_findings(section_findings)) and not agent_metrics.get(
+            "sections_repaired"
+        )
+        if needs_quality_repair and bool(getattr(settings, "RESUME_LLM_CONDENSE", True)):
             logger.info(
-                "resume_quality_document_selected",
-                mode=mode,
-                baseline_issues=len(draft_issues),
-                final_issues=len(draft_issues),
-                critical_remaining=self._has_critical_quality_issues(draft_issues),
-                llm_compose_used=mode.endswith("_llm"),
+                "resume_section_quality_repair_started",
+                critical=len(critical_findings(section_findings)),
+                issues=findings_as_feedback(critical_findings(section_findings))[:8],
             )
-            return self._enforce_document_reliability(draft_document, candidate_data, metadata)
-
-        # Optional slow path for small resumes only when RESUME_LLM_POLISH=true.
-        generated_document = self._compose_document_with_llm(
-            candidate_data=candidate_data,
-            metadata=metadata,
-            baseline_document=draft_document,
-        )
-
-        if generated_document:
-            generated_document = self._enforce_document_reliability(generated_document, candidate_data, metadata)
-            generated_issues = self._resume_quality_feedback(candidate_data, generated_document)
-            if self._document_is_substantially_thinner(generated_document, draft_document, candidate_data):
-                logger.warning(
-                    "resume_generation_llm_compose_too_thin",
-                    llm_roles=self._experience_role_count(generated_document),
-                    baseline_roles=self._experience_role_count(draft_document),
-                    fallback="structured_store",
-                )
-                best_document = draft_document
-                best_issues = draft_issues
-            else:
-                best_document = generated_document
-                best_issues = generated_issues
-        else:
-            logger.warning("resume_generation_llm_compose_unavailable", fallback="structured_store")
-            best_document = draft_document
-            best_issues = draft_issues
-
-        # Always run at least one QA polish pass. If the primary composer failed,
-        # this still gives the deterministic baseline an LLM pass before fallback.
-        qa_feedback = list(best_issues) if best_issues else [
-            "Perform a final senior resume-editor QA pass. Make the skills section grouped and client-ready."
-        ]
-        if self._has_critical_quality_issues(best_issues):
-            qa_feedback = [
-                "CRITICAL: Fix hallucinations, invalid section titles, and section-mixed content before polishing style.",
-                *qa_feedback,
-            ]
-        polished_document = self._rewrite_document(
-            draft_document=best_document,
-            candidate_data=candidate_data,
-            metadata=metadata,
-            feedback=qa_feedback,
-        )
-        if polished_document:
-            polished_document = self._enforce_document_reliability(polished_document, candidate_data, metadata)
-            polished_issues = self._resume_quality_feedback(candidate_data, polished_document)
-            if self._document_is_better(polished_document, polished_issues, best_document, best_issues, candidate_data):
-                best_document = polished_document
-                best_issues = polished_issues
-            elif self._has_critical_quality_issues(best_issues) and not self._has_critical_quality_issues(polished_issues):
-                best_document = polished_document
-                best_issues = polished_issues
-        elif not generated_document:
-            logger.info("resume_quality_rewrite_skipped", reason="rewrite_failed_or_unavailable")
-            logger.warning("resume_generation_without_llm_polish", reason="llm_rewrite_unavailable")
-            return self._enforce_document_reliability(draft_document, candidate_data, metadata)
-
-        # If issues remain, run targeted correction passes and keep best version.
-        # Critical grounding/section issues get extra regeneration attempts.
-        max_polish_passes = 3 if self._has_critical_quality_issues(best_issues) else 2
-        for pass_idx in range(max_polish_passes):
-            if not best_issues:
-                break
-            # Soft style issues can stop early; critical issues must keep regenerating.
-            if pass_idx > 0 and not self._has_critical_quality_issues(best_issues) and len(best_issues) <= 1:
-                break
-            logger.info(
-                "resume_quality_additional_polish_pass",
-                pass_number=pass_idx + 2,
-                issue_count=len(best_issues),
-                critical=self._has_critical_quality_issues(best_issues),
-                issues=best_issues[:8],
-            )
-            feedback = list(best_issues)
-            if self._has_critical_quality_issues(best_issues):
-                feedback = [
-                    "CRITICAL REGENERATION REQUIRED:",
-                    "- Do NOT invent employers, schools, skills, dates, or metrics.",
-                    "- Section titles must be canonical (PROFESSIONAL SUMMARY, TECHNICAL SKILLS, PROFESSIONAL EXPERIENCE, etc).",
-                    "- Never use a company/role name as a section title.",
-                    "- Keep content strictly inside the correct section.",
-                    *feedback,
-                ]
-            next_document = self._rewrite_document(
+            repaired = self._rewrite_document(
                 draft_document=best_document,
                 candidate_data=candidate_data,
                 metadata=metadata,
-                feedback=feedback,
+                feedback=[
+                    "CRITICAL SECTION QUALITY REPAIR REQUIRED:",
+                    "- Fix ONLY the listed section issues.",
+                    "- Do NOT invent employers, schools, skills, dates, or metrics.",
+                    "- Experience: real company/title/dates; discrete bullets; never Environment as title.",
+                    "- Skills: keep source category names; atomic skill names only (FastAPI not Fast API).",
+                    "- Education: Degree + full Institution + Year (no Institute/College stubs).",
+                    "- Certifications must be separate items; never mix Leadership/Achievements into Certifications.",
+                    "- Projects must be separate entries with their own bullets.",
+                    "- Section titles must be canonical (PROFESSIONAL SUMMARY, TECHNICAL SKILLS, etc).",
+                    "- Header must include full name and full email.",
+                    *findings_as_feedback(critical_findings(section_findings) or section_findings)[:10],
+                    *draft_issues[:6],
+                ],
             )
-            if not next_document:
-                # Hard regenerate from baseline when rewrite fails and critical issues remain.
-                if self._has_critical_quality_issues(best_issues):
-                    next_document = self._compose_document_with_llm(
-                        candidate_data=candidate_data,
-                        metadata=metadata,
-                        baseline_document=draft_document,
+            if repaired:
+                repaired = self._enforce_document_reliability(repaired, candidate_data, metadata)
+                repaired, repaired_findings = audit_and_repair_document(repaired, candidate_data)
+                repaired = self._enforce_document_reliability(repaired, candidate_data, metadata)
+                repaired_issues = self._resume_quality_feedback(candidate_data, repaired)
+                repaired_issues = list(
+                    dict.fromkeys([*findings_as_feedback(repaired_findings), *repaired_issues])
+                )
+                llm_used = True
+                if self._document_is_better(
+                    repaired, repaired_issues, best_document, best_issues, candidate_data
+                ) or (
+                    len(critical_findings(repaired_findings)) < len(critical_findings(best_findings))
+                ):
+                    # Prefer repaired unless it dropped most experience content.
+                    if not self._document_is_substantially_thinner(repaired, best_document, candidate_data):
+                        best_document = repaired
+                        best_issues = repaired_issues
+                        best_findings = repaired_findings
+
+            # If still critical on a non-huge resume, one compose pass as last resort.
+            if critical_findings(best_findings) and not is_large_resume(full_store):
+                composed = self._compose_document_with_llm(
+                    candidate_data=candidate_data,
+                    metadata=metadata,
+                    baseline_document=best_document,
+                )
+                if composed:
+                    composed = self._enforce_document_reliability(composed, candidate_data, metadata)
+                    composed, composed_findings = audit_and_repair_document(composed, candidate_data)
+                    composed = self._enforce_document_reliability(composed, candidate_data, metadata)
+                    composed_issues = self._resume_quality_feedback(candidate_data, composed)
+                    composed_issues = list(
+                        dict.fromkeys([*findings_as_feedback(composed_findings), *composed_issues])
                     )
-                if not next_document:
-                    continue
-            next_document = self._enforce_document_reliability(next_document, candidate_data, metadata)
-            next_issues = self._resume_quality_feedback(candidate_data, next_document)
-            if self._document_is_better(next_document, next_issues, best_document, best_issues, candidate_data):
-                best_document = next_document
-                best_issues = next_issues
-            elif self._has_critical_quality_issues(best_issues) and not self._has_critical_quality_issues(next_issues):
-                best_document = next_document
-                best_issues = next_issues
+                    llm_used = True
+                    if not self._document_is_substantially_thinner(composed, best_document, candidate_data):
+                        if len(critical_findings(composed_findings)) <= len(critical_findings(best_findings)):
+                            best_document = composed
+                            best_issues = composed_issues
+                            best_findings = composed_findings
 
-        # Final safety: if critical hallucinations/title issues remain, prefer grounded baseline.
-        if self._has_critical_quality_issues(best_issues):
+        # Final mandatory section audit before DOCX.
+        best_document, final_findings = audit_and_repair_document(best_document, candidate_data)
+        best_document = self._enforce_document_reliability(best_document, candidate_data, metadata)
+        final_critical = critical_findings(final_findings)
+        if final_critical:
             logger.warning(
-                "resume_quality_falling_back_to_grounded_baseline",
-                remaining_issues=best_issues[:8],
+                "resume_section_quality_remaining_critical",
+                count=len(final_critical),
+                issues=findings_as_feedback(final_critical)[:8],
             )
-            baseline_clean = self._enforce_document_reliability(draft_document, candidate_data, metadata)
-            baseline_issues = self._resume_quality_feedback(candidate_data, baseline_clean)
-            if not self._has_critical_quality_issues(baseline_issues) or len(baseline_issues) <= len(best_issues):
-                best_document = baseline_clean
-                best_issues = baseline_issues
-
-        # Also fall back when polish left the body thinner than the deterministic parse.
-        if self._document_is_substantially_thinner(best_document, draft_document, candidate_data):
-            logger.warning(
-                "resume_quality_falling_back_to_richer_baseline",
-                best_roles=self._experience_role_count(best_document),
-                baseline_roles=self._experience_role_count(draft_document),
-            )
-            best_document = self._enforce_document_reliability(draft_document, candidate_data, metadata)
-            best_issues = self._resume_quality_feedback(candidate_data, best_document)
+        else:
+            logger.info("resume_section_quality_passed", warnings=len(final_findings))
 
         logger.info(
             "resume_quality_document_selected",
+            mode=mode,
             baseline_issues=len(draft_issues),
             final_issues=len(best_issues),
-            critical_remaining=self._has_critical_quality_issues(best_issues),
-            llm_compose_used=bool(generated_document),
+            section_critical_remaining=len(final_critical),
+            critical_remaining=bool(final_critical) or self._has_critical_quality_issues(best_issues),
+            llm_compose_used=llm_used,
         )
-        return self._enforce_document_reliability(best_document, candidate_data, metadata)
+        return best_document
 
     def _polish_summary_only(self, candidate_data: dict[str, Any], summary: str) -> str:
         """Optional light polish for summary text only — never touches experience/skills."""
@@ -1082,7 +1071,13 @@ class ResumeGenerationService:
             # Skip contact field keys accidentally present in field_mapping.
             if canonical_key in {"header", "name", "email", "phone", "location"}:
                 continue
-            titled = titled.upper()
+            # Never allow body lines / long phrases as section titles.
+            clean = titled[:-1].strip() if titled.endswith(":") else titled
+            if len(clean) > 36 or len(clean.split()) > 4 or "," in clean or "|" in clean:
+                continue
+            if not self._looks_like_section_heading(clean):
+                continue
+            titled = clean.upper()
             section_titles[canonical_key] = titled if titled.endswith(":") else f"{titled}:"
 
         cleaned_sections: list[dict[str, Any]] = []
@@ -1529,8 +1524,12 @@ class ResumeGenerationService:
 
     def _repair_bullet_sentences(self, values: list[Any], header_contact: str = "") -> list[str]:
         """Repair parser-split bullet lines into clean sentence bullets."""
+        from app.services.structured_resume_store import expand_to_bullets
+
+        # First expand paragraph streams into discrete bullets.
+        expanded = expand_to_bullets(self._as_list(values))
         repaired: list[str] = []
-        for raw in values:
+        for raw in expanded:
             text = self._clean_inline_text(raw)
             if not text:
                 continue
@@ -1539,7 +1538,7 @@ class ResumeGenerationService:
             # Drop obvious split artifacts.
             if self._looks_like_artifact_fragment(text):
                 continue
-            if repaired and self._should_merge_with_previous(text):
+            if repaired and self._should_merge_with_previous(text, repaired[-1]):
                 repaired[-1] = f"{repaired[-1]} {text}".strip()
                 continue
             repaired.append(text)
@@ -1563,13 +1562,26 @@ class ResumeGenerationService:
             return True
         return False
 
-    def _should_merge_with_previous(self, text: str) -> bool:
+    def _should_merge_with_previous(self, text: str, previous: str = "") -> bool:
+        """Merge only true wrap continuations — never glue separate achievements."""
         low = text.lower()
-        if len(text.split()) <= 5:
+        prev = (previous or "").rstrip()
+        # Previous already a complete sentence → keep as separate bullet.
+        if prev.endswith((".", "!", "?")) and text[:1].isupper():
+            return False
+        if re.match(
+            r"^(architected|developed|designed|implemented|built|led|created|improved|"
+            r"optimized|deployed|integrated|managed|delivered|engineered)\b",
+            low,
+        ):
+            return False
+        if len(text.split()) <= 4 and not text[:1].isupper():
             return True
-        if low.startswith(("and ", "or ", "with ", "for ", "to ", "in ", "on ", "by ", "where ", "while ", "through ", "before ", "after ")):
+        if low.startswith(
+            ("and ", "or ", "with ", "for ", "to ", "in ", "on ", "by ", "where ", "while ", "through ", "before ", "after ")
+        ):
             return True
-        if re.match(r"^[a-z].*", text):
+        if re.match(r"^[a-z].*", text) and len(text.split()) <= 12:
             return True
         return False
 
@@ -1839,7 +1851,61 @@ class ResumeGenerationService:
                         "Experience contains broken split fragments; merge into complete sentence bullets."
                     )
 
+        # Detect jammed/mashed text (missing spaces between words).
+        mashed_samples: list[str] = []
+        summary_sec = _find_section("summary")
+        if isinstance(summary_sec, dict) and self._text_looks_mashed(str(summary_sec.get("content") or "")):
+            mashed_samples.append("summary")
+        if isinstance(exp_sec, dict):
+            for item in self._as_list(exp_sec.get("content")):
+                if not isinstance(item, dict):
+                    continue
+                for b in self._as_list(item.get("description") or item.get("details")):
+                    if self._text_looks_mashed(str(b)):
+                        mashed_samples.append("experience")
+                        break
+                if "experience" in mashed_samples:
+                    break
+        if mashed_samples:
+            issues.append(
+                "Mashed/jammed text detected (missing spaces between words) in "
+                f"{', '.join(mashed_samples)}; restore normal word spacing and professional sentences."
+            )
+
+        # Paragraph-stream detection: experience should be bullet-wise, not walls of text.
+        if isinstance(exp_sec, dict):
+            paragraph_roles = 0
+            for item in self._as_list(exp_sec.get("content")):
+                if not isinstance(item, dict):
+                    continue
+                bullets = self._as_list(item.get("description") or item.get("details"))
+                if not bullets:
+                    continue
+                long_para = sum(1 for b in bullets if len(str(b)) > 350 and str(b).count(". ") >= 2)
+                if len(bullets) <= 2 and long_para:
+                    paragraph_roles += 1
+            if paragraph_roles:
+                issues.append(
+                    "Experience uses paragraph streams instead of discrete bullets; "
+                    "split into Action + Context + Result bullet points."
+                )
+
         return issues
+
+    def _text_looks_mashed(self, text: str) -> bool:
+        """True when letters are jammed together with almost no spaces."""
+        sample = re.sub(r"\s+", " ", str(text or "").strip())
+        if len(sample) < 40:
+            return False
+        letters = sum(1 for c in sample if c.isalpha())
+        if letters < 40:
+            return False
+        spaces = sample.count(" ")
+        if spaces / max(letters, 1) < 0.08:
+            return True
+        # Very long alphabetic tokens are a strong mashed-text signal.
+        long_tokens = re.findall(r"[A-Za-z]{22,}", sample)
+        return len(long_tokens) >= 2
 
     def _has_critical_quality_issues(self, issues: list[str]) -> bool:
         critical_markers = (
@@ -1850,6 +1916,18 @@ class ResumeGenerationService:
             "incomplete",
             "missing in the resume",
             "no sections",
+            "mashed/jammed",
+            "environment/tech lines",
+            "paragraph streams",
+            "fewer than 2 bullets",
+            "education is missing",
+            "skills section is too thin",
+            "non-canonical section title",
+            "truncated email",
+            "valid email",
+            "candidate name is missing",
+            "certifications were mashed",
+            "[critical]",
         )
         for issue in issues or []:
             low = str(issue).lower()
@@ -2078,11 +2156,37 @@ class ResumeGenerationService:
             "logo_count",
             "preview_text",
         }
-        return {
+        cleaned = {
             key: metadata[key]
             for key in allowed_keys
             if key in metadata and metadata[key] not in (None, "")
         }
+        labels = cleaned.get("section_labels")
+        if isinstance(labels, dict):
+            defaults = {
+                "summary": "PROFESSIONAL SUMMARY",
+                "skills": "TECHNICAL SKILLS",
+                "experience": "PROFESSIONAL EXPERIENCE",
+                "projects": "PROJECTS",
+                "education": "EDUCATION",
+                "certifications": "CERTIFICATIONS",
+                "achievements": "ACHIEVEMENTS",
+                "languages": "LANGUAGES",
+            }
+            safe: dict[str, str] = {}
+            for key, value in labels.items():
+                canonical = self._canonical_resume_section(key)
+                if canonical not in defaults:
+                    continue
+                text = str(value or "").strip()
+                clean = text[:-1].strip() if text.endswith(":") else text
+                if not clean or len(clean) > 36 or len(clean.split()) > 4:
+                    continue
+                if not self._looks_like_section_heading(clean):
+                    continue
+                safe[canonical] = clean.upper()
+            cleaned["section_labels"] = safe or defaults
+        return cleaned
 
     def _valid_logos(self, logos: Any) -> list[dict]:
         import base64
@@ -2420,6 +2524,8 @@ class ResumeGenerationService:
         return self._dedupe_text(skills)
 
     def _normalize_skill_name(self, value: Any) -> str:
+        from app.services.tech_glossary import normalize_skill_token
+
         skill = self._clean_inline_text(value)
         if not skill:
             return ""
@@ -2433,45 +2539,7 @@ class ResumeGenerationService:
         skill = re.sub(r"\s*/\s*", "/", skill)
         skill = re.sub(r"\s*&\s*", " & ", skill)
         skill = re.sub(r"\s+", " ", skill).strip()
-
-        canonical = {
-            "aws": "AWS",
-            "gcp": "GCP",
-            "sql": "SQL",
-            "html": "HTML",
-            "css": "CSS",
-            "ci/cd": "CI/CD",
-            "api": "API",
-            "rest api": "REST API",
-            "graphql": "GraphQL",
-            "javascript": "JavaScript",
-            "typescript": "TypeScript",
-            "nodejs": "Node.js",
-            "node.js": "Node.js",
-            "nextjs": "Next.js",
-            "next.js": "Next.js",
-            "postgres": "PostgreSQL",
-            "postgresql": "PostgreSQL",
-            "mongodb": "MongoDB",
-            "mysql": "MySQL",
-            "redis": "Redis",
-            "docker": "Docker",
-            "kubernetes": "Kubernetes",
-            "k8s": "Kubernetes",
-            "spring boot": "Spring Boot",
-            "fastapi": "FastAPI",
-            "django": "Django",
-            "flask": "Flask",
-            "react": "React",
-            "angular": "Angular",
-            "vue": "Vue",
-            "jira": "Jira",
-            "git": "Git",
-            "github": "GitHub",
-            "gitlab": "GitLab",
-            "power bi": "Power BI",
-        }
-        return canonical.get(skill.casefold(), skill)
+        return normalize_skill_token(skill)
 
     def _normalize_skill_category(self, value: Any) -> str:
         category = self._clean_inline_text(value).strip(" :")
@@ -3557,22 +3625,35 @@ class ResumeGenerationService:
         if item.get("cgpa"):
             details.insert(0, f"CGPA: {item['cgpa']}")
         technologies = self._as_list(item.get("technologies"))
-        if technologies:
-            details.append(f"Technologies: {', '.join(str(t) for t in technologies if str(t).strip())}")
+        # Only show a short Environment-derived tech line — never keyword-inferred junk.
+        clean_techs = [
+            str(t).strip()
+            for t in technologies
+            if str(t).strip()
+            and len(str(t).strip()) <= 40
+            and len(str(t).split()) <= 4
+            and not str(t).lower().startswith("environment")
+        ][:8]
+        if clean_techs and len(clean_techs) >= 3:
+            details.append(f"Environment: {', '.join(clean_techs)}")
         for bullet in details:
             if not bullet or not str(bullet).strip():
                 continue
-            clean_bullet = self._clean_inline_text(bullet)
-            if not clean_bullet:
-                continue
-            bullet_p = doc.add_paragraph(style="List Bullet")
-            bullet_p.paragraph_format.left_indent = Inches(0.2)
-            bullet_p.paragraph_format.first_line_indent = Inches(-0.15)
-            bullet_p.paragraph_format.space_after = Pt(2)
-            bullet_run = bullet_p.add_run(clean_bullet)
-            bullet_run.font.name = font_family
-            bullet_run.font.size = Pt(body_size)
-            bullet_run.font.color.rgb = RGBColor(0x00, 0x00, 0x00)
+            # Safety: never render a paragraph stream as a single bullet.
+            from app.services.structured_resume_store import expand_to_bullets
+
+            for piece in expand_to_bullets([bullet], max_bullets=8):
+                clean_bullet = self._clean_inline_text(piece)
+                if not clean_bullet:
+                    continue
+                bullet_p = doc.add_paragraph(style="List Bullet")
+                bullet_p.paragraph_format.left_indent = Inches(0.2)
+                bullet_p.paragraph_format.first_line_indent = Inches(-0.15)
+                bullet_p.paragraph_format.space_after = Pt(2)
+                bullet_run = bullet_p.add_run(clean_bullet)
+                bullet_run.font.name = font_family
+                bullet_run.font.size = Pt(body_size)
+                bullet_run.font.color.rgb = RGBColor(0x00, 0x00, 0x00)
 
     def _append_section(
         self,

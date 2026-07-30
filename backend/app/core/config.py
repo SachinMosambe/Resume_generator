@@ -21,6 +21,14 @@ class Settings(BaseSettings):
     RESUME_LLM_CONDENSE: bool = True
     # When false (default), skip slow full-document LLM polish loops.
     RESUME_LLM_POLISH: bool = False
+
+    # Multi-agent pipeline (extract -> plan -> write -> critique -> refine).
+    # Runs inside the same service; enable per-deploy to compare against classic.
+    RESUME_AGENT_PIPELINE: bool = False
+    AGENT_MAX_ROUNDS: int = 2
+    AGENT_MAX_LLM_CALLS: int = 8
+    AGENT_SCORE_THRESHOLD: float = 85.0
+    AGENT_TIME_BUDGET_SECONDS: float = 90.0
     INTERVIEW_FALLBACK_MODELS: str = ""
     AWS_BEARER_TOKEN_BEDROCK: str | None = None
     AWS_REGION: str = "ap-south-1"

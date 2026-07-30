@@ -205,25 +205,25 @@ def _fit_experience(
         return []
 
     n = len(normalized)
-    # Budget bullets for ~target pages after summary/skills/education overhead (~1 page).
-    body_pages = max(1.2, target_pages - 1.0)
-    total_budget = int(body_pages * 10)  # ~10 bullets/page body density
+    # Budget bullets for ~target pages after summary/skills/education overhead (~0.9 page).
+    body_pages = max(1.5, target_pages - 0.9)
+    total_budget = int(body_pages * 16)  # denser, more readable Capgemini-style body
     if tight:
-        total_budget = max(18, int(total_budget * 0.75))
-    total_budget = max(n * 2, min(total_budget, 55))  # at least 2 bullets/role when possible
+        total_budget = max(28, int(total_budget * 0.8))
+    total_budget = max(n * 3, min(total_budget, 72))  # prefer ~3+ bullets/role when possible
 
     # Recency weights: first roles assumed reverse-chronological.
     weights = [max(1.0, float(n - i)) for i in range(n)]
     weight_sum = sum(weights) or 1.0
-    quotas = [max(2 if not tight else 1, int(round(total_budget * (w / weight_sum)))) for w in weights]
-    # Cap per-role so one job doesn't dominate.
-    max_each = 6 if not tight else 4
+    quotas = [max(3 if not tight else 2, int(round(total_budget * (w / weight_sum)))) for w in weights]
+    # Cap per-role so one job doesn't dominate — still keep recent roles rich.
+    max_each = 8 if not tight else 5
     quotas = [min(max_each, q) for q in quotas]
     # Adjust to budget.
     while sum(quotas) > total_budget:
         # Trim from oldest roles first.
         for i in range(n - 1, -1, -1):
-            if quotas[i] > (1 if tight else 2):
+            if quotas[i] > (2 if tight else 3):
                 quotas[i] -= 1
                 break
         else:
@@ -242,13 +242,18 @@ def _fit_experience(
 
     fitted: list[dict[str, Any]] = []
     for role, quota in zip(normalized, quotas):
+        techs = [
+            str(t).strip()
+            for t in (role.get("technologies") or [])
+            if str(t).strip() and len(str(t).strip()) <= 60 and len(str(t).split()) <= 6
+        ][:10]
         clone = {
             "title": role.get("title") or "",
             "company": role.get("company") or "",
             "location": role.get("location") or "",
             "duration": role.get("duration") or "",
             "description": _select_bullets(list(role.get("description") or []), quota),
-            "technologies": list(role.get("technologies") or [])[:12],
+            "technologies": techs,
         }
         fitted.append(clone)
     return fitted

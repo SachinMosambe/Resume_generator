@@ -24,6 +24,16 @@ services:
         value: "true"
       - key: RESUME_LLM_POLISH
         value: "false"
+      - key: RESUME_AGENT_PIPELINE
+        value: "false"
+      - key: AGENT_MAX_ROUNDS
+        value: "2"
+      - key: AGENT_MAX_LLM_CALLS
+        value: "8"
+      - key: AGENT_SCORE_THRESHOLD
+        value: "85"
+      - key: AGENT_TIME_BUDGET_SECONDS
+        value: "90"
       - key: MAX_FILE_SIZE_MB
         value: "10"
       - key: UPLOAD_DIR

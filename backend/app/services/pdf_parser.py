@@ -76,12 +76,138 @@ def extract_text_from_document(path: str) -> str:
     """Extract text from a supported document type."""
     ext = Path(path).suffix.lower()
     if ext == ".pdf":
-        return _extract_pdf(path).strip()
-    if ext == ".docx":
-        return _extract_docx(path).strip()
-    if ext == ".doc":
-        return _extract_doc(path).strip()
-    return ""
+        text = _extract_pdf(path).strip()
+    elif ext == ".docx":
+        text = _extract_docx(path).strip()
+    elif ext == ".doc":
+        text = _extract_doc(path).strip()
+    else:
+        return ""
+    return repair_collapsed_spaces(text)
+
+
+def repair_collapsed_spaces(text: str) -> str:
+    """Repair PDF/DOCX extraction that jammed words together (missing spaces)."""
+    import re
+
+    from app.services.tech_glossary import (
+        protect_tech_and_emails,
+        restore_tech_names,
+        unprotect_placeholders,
+    )
+
+    if not text or len(text) < 24:
+        return text
+    letters = sum(1 for c in text if c.isalpha())
+    spaces = text.count(" ")
+    if letters < 24:
+        return restore_tech_names(text)
+    density = spaces / max(letters, 1)
+    force_scan = density < 0.10
+
+    protected, restore_map = protect_tech_and_emails(text)
+    repaired = protected
+    # Avoid splitting protected placeholders; operate on the rest.
+    repaired = re.sub(r"([a-z])([A-Z])", r"\1 \2", repaired)
+    # Do NOT split letter/digit around emails/tech (already protected). Still skip digit splits
+    # inside placeholders by leaving ⟦KEEP…⟧ alone (no [A-Za-z](\d) match on digits-only keep ids).
+    repaired = re.sub(r"([A-Za-z])(\d)", r"\1 \2", repaired)
+    repaired = re.sub(r"(\d)([A-Za-z])", r"\1 \2", repaired)
+    # Undo accidental splits inside placeholders like ⟦ KEEP 0 ⟧
+    repaired = re.sub(r"⟦\s*KEEP\s*(\d+)\s*⟧", r"⟦KEEP\1⟧", repaired)
+
+    lexicon = {
+        "the", "and", "with", "for", "from", "into", "using", "based", "ready", "native",
+        "system", "systems", "service", "services", "agent", "agents", "model", "models",
+        "data", "cloud", "backend", "frontend", "platform", "platforms", "interview",
+        "candidate", "resume", "parsing", "evaluation", "workflow", "workflows", "tool",
+        "tools", "search", "vector", "database", "databases", "context", "protocol",
+        "semantic", "multi", "real", "time", "voice", "question", "generation", "insights",
+        "production", "grade", "business", "impact", "strong", "focus", "world",
+        "architected", "developed", "designed", "implemented", "built", "improved",
+        "enabled", "processed", "optimized", "deployed", "integrated", "containerized",
+        "reducing", "achieving", "performing", "engineering", "learning", "language",
+        "processing", "specialization", "certified", "program", "committee", "member",
+        "mentored", "students", "teaching", "assistant", "championship", "table", "tennis",
+        "specializing", "building", "applications", "experienced", "developing",
+        "scalable", "solutions", "enterprise", "integrations", "reliability",
+        "observability", "graduate", "expertise", "institute", "college", "university",
+        "bachelor", "master", "technology", "computer", "science", "python",
+        "docker", "kubernetes", "machine", "deep", "natural", "large", "prompt",
+        "retrieval", "augmented", "protocol", "engineer", "developer", "technologies",
+        "celery", "redis", "intelligent", "matching", "analysis", "structured",
+        "outputs", "fallback", "strategies", "guardrails", "routing", "bedrock",
+        "transcribe", "polly", "enabling", "automated", "recruiter", "velocity",
+        "windsurf", "delivering", "across", "multiple", "document", "sources",
+        "measured", "citation", "backed", "answer", "financial", "records", "cleaning",
+        "feature", "imputation", "outlier", "handling", "robust", "classification",
+        "streamlit", "experiment", "tracking", "loan", "conversational", "assistant",
+        "external", "capabilities", "interactive", "experiences", "kharagpur",
+        "leadership", "achievements", "certifications", "conference",
+    }
+
+    def _segment_token(word: str) -> str:
+        original = word
+        if "⟦KEEP" in original:
+            return original
+        w = word.lower()
+        if len(w) < 10:
+            return original
+        if any(ch.isdigit() for ch in w) and len(w) < 16:
+            return original
+        parts: list[str] = []
+        i = 0
+        while i < len(w):
+            match = None
+            for j in range(min(len(w), i + 24), i + 3, -1):
+                piece = w[i:j]
+                if piece in lexicon:
+                    match = piece
+                    break
+            if match:
+                parts.append(match)
+                i += len(match)
+            else:
+                if parts and parts[-1] not in lexicon:
+                    parts[-1] += w[i]
+                else:
+                    parts.append(w[i])
+                i += 1
+        lexicon_hits = sum(1 for p in parts if p in lexicon)
+        if lexicon_hits < 2 or len(parts) <= 1:
+            return original
+        return " ".join(parts)
+
+    out_lines: list[str] = []
+    changed = False
+    for line in repaired.splitlines():
+        if not line.strip():
+            out_lines.append(line)
+            continue
+        # Never aggressively rewrite pure contact lines.
+        if "@" in line or "⟦KEEP" in line:
+            out_lines.append(line)
+            continue
+        line_letters = sum(1 for c in line if c.isalpha())
+        dens = line.count(" ") / max(line_letters, 1)
+        long_tokens = re.findall(r"[A-Za-z]{18,}", line)
+        needs_fix = dens < 0.10 or len(long_tokens) >= 1
+        if not needs_fix or line_letters < 18:
+            out_lines.append(line)
+            continue
+        chunks = re.findall(r"[A-Za-z]+|[^A-Za-z]+", line)
+        rebuilt = "".join(_segment_token(ch) if ch.isalpha() else ch for ch in chunks)
+        rebuilt = re.sub(r"\s+", " ", rebuilt).strip()
+        if rebuilt != line.strip():
+            changed = True
+        out_lines.append(rebuilt)
+
+    if not force_scan and not changed and density >= 0.10:
+        result = text
+    else:
+        result = "\n".join(out_lines)
+    result = unprotect_placeholders(result, restore_map)
+    return restore_tech_names(result)
 
 
 def extract_text_from_pdf(path: str) -> str:

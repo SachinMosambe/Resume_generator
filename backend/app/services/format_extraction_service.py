@@ -844,8 +844,19 @@ class FormatExtractionService:
         return found, labels
 
     def _heading_matches(self, line: str, alias: str) -> bool:
+        """True only for real headings — not body lines that start with a keyword."""
         alias_norm = re.sub(r"[^a-z0-9 ]+", "", alias.lower()).strip()
-        return line == alias_norm or line.startswith(f"{alias_norm} ")
+        if not alias_norm or not line:
+            return False
+        if line == alias_norm:
+            return True
+        # Reject long body content like "Experience in AI coding agent tools..."
+        if len(line.split()) > 6 or "," in line or len(line) > 48:
+            return False
+        if line.startswith(f"{alias_norm} "):
+            rest = line[len(alias_norm) :].strip()
+            return len(rest.split()) <= 3 and len(rest) <= 36
+        return False
 
     def _build_field_mapping(
         self,

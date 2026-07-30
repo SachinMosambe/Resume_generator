@@ -132,8 +132,15 @@ async def generate_resume(
             format_metadata=metadata,
         )
 
+    if settings.RESUME_AGENT_PIPELINE:
+        from app.agent_pipeline import AgentResumeGenerationService
+
+        service: ResumeGenerationService = AgentResumeGenerationService()
+    else:
+        service = ResumeGenerationService()
+
     try:
-        docx_bytes = ResumeGenerationService().generate(candidate, client_format)
+        docx_bytes = service.generate(candidate, client_format)
     except ResumeGenerationError as exc:
         logger.exception("resume_generation_failed")
         raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail=str(exc)) from exc
