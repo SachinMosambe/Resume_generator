@@ -1199,7 +1199,7 @@ def _extract_bullet_list(text: str, section_key: str) -> list[str]:
             if not clean or len(clean) <= 3:
                 continue
         # Split pipe-glued certification mega-lines.
-        if "|" in clean and len(clean) > 80:
+        if section_key == "certifications" and "|" in clean and len(clean) > 80:
             parts = [p.strip() for p in clean.split("|") if p.strip()]
             expanded: list[str] = []
             for part in parts:
@@ -1213,8 +1213,13 @@ def _extract_bullet_list(text: str, section_key: str) -> list[str]:
             if section_key == "certifications" and _is_non_cert_item(clean):
                 continue
             items.append(clean)
-        elif items and not re.match(r"(?i)^(leadership|achievements?|awards?)\b", clean):
+        elif items and not (
+            section_key == "certifications"
+            and re.match(r"(?i)^(leadership|achievements?|awards?)\b", clean)
+        ):
             # Soft-wrap continuation (e.g. "Specialization (DeepLearning.AI)").
+            # Only block cert→achievements section bleed; never refuse merging
+            # achievement wraps that start with "Award" / "leadership …".
             if section_key == "certifications" and re.fullmatch(
                 r"(?i)specialization(?:\s*\([^)]*\))?",
                 clean,
@@ -1228,18 +1233,20 @@ def _extract_bullet_list(text: str, section_key: str) -> list[str]:
             if section_key == "certifications" and _is_non_cert_item(clean):
                 continue
             items.append(clean)
-    # Final split of leftover mega-items.
+    # Final cleanup: strip leadership/awards bleed only from certifications.
     final: list[str] = []
     for item in items:
-        if "|" in item and len(item) > 100:
+        if section_key == "certifications" and "|" in item and len(item) > 100:
             for p in item.split("|"):
-                cut = p.strip()
-                if len(cut) > 3 and not _is_non_cert_item(cut):
+                cut = non_cert_bleed.split(p, maxsplit=1)[0].strip(" |")
+                if cut and len(cut) > 3 and not _is_non_cert_item(cut):
                     final.append(cut)
-        else:
+        elif section_key == "certifications":
             cut = non_cert_bleed.split(item, maxsplit=1)[0].strip(" |")
             if cut and not _is_non_cert_item(cut):
                 final.append(cut)
+        else:
+            final.append(item)
     # Merge wrap fragments: "Natural Language Processing" + "Specialization (Deep Learning.AI)"
     merged: list[str] = []
     for item in final:

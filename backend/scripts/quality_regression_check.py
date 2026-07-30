@@ -163,6 +163,18 @@ Indian Instituteof Technology(IIT) Kharagpur
     assert any("Amravati" in str(e.get("institution") or "") for e in mashed), mashed
     assert any("Kharagpur" in str(e.get("institution") or "") for e in mashed), mashed
 
+    # Achievements must keep "Award" / "leadership" wording — cert bleed strip
+    # must not chop them mid-phrase.
+    achiev_text = """ACHIEVEMENTS
+• A-Team Award, Nagarro — Recognized 3x for exceptional performance and measurable team contributions.
+• Cheer Board Nominations, Nagarro — Acknowledged 6x for innovative AI ideas and outstanding individual impact.
+• NAGP (Nagarro Accelerated Growth Program) — Designated top performer demonstrating exceptional leadership and business impact.
+"""
+    achievs = _extract_bullet_list(achiev_text, "achievements")
+    assert any("A-Team Award" in a and "Recognized 3x" in a for a in achievs), achievs
+    assert any("leadership and business impact" in a for a in achievs), achievs
+    assert all(not a.rstrip().endswith("exceptional") for a in achievs), achievs
+
     wrap_exp = """PROFESSIONAL EXPERIENCE
 Staff Engineer — AI/ML | Nagarro India July 2025 – Present
 • Mentor 8+ junior and mid-level engineers on ML best practices
