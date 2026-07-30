@@ -213,6 +213,15 @@ def _repair_and_check_experience(
                 gap_roles += 1
                 continue
 
+            # Bare location crumbs must never stay as titles.
+            if role_title and re.fullmatch(
+                r"(?i)remote|onsite|hybrid|[A-Z]{2}|india|usa|[A-Za-z .'-]+,\s*([A-Z]{2}|[A-Za-z .'-]+)",
+                role_title,
+            ):
+                if not location:
+                    location = role_title
+                role_title = ""
+
             # Environment lines must never be titles/locations.
             if re.match(r"(?i)^environment\s*:", role_title):
                 env_payload = role_title.split(":", 1)[1].strip() if ":" in role_title else ""
@@ -240,6 +249,26 @@ def _repair_and_check_experience(
                     src_title = str(src.get("title") or "").strip()
                     if src_title and not _looks_like_bullet_as_title(src_title):
                         role_title = src_title
+
+            # Promote Dice-style "Technology Lead| Project..." first bullets into title.
+            if not role_title:
+                seed = role.get("description") if isinstance(role.get("description"), list) else []
+                if seed:
+                    first = str(seed[0] or "").strip()
+                    left = first.split("|", 1)[0].strip()
+                    if (
+                        left
+                        and not _looks_like_bullet_as_title(left)
+                        and re.search(
+                            r"(?i)\b(engineer|developer|analyst|manager|architect|lead|"
+                            r"consultant|specialist|programmer|freelancer)\b",
+                            left,
+                        )
+                        and len(left.split()) <= 10
+                    ):
+                        role_title = left
+                        right = first.split("|", 1)[1].strip() if "|" in first else ""
+                        role["description"] = ([right] if right and len(right) > 24 else []) + list(seed[1:])
 
             bullets_raw = role.get("description") or role.get("details") or []
             bullets: list[str] = []
@@ -521,7 +550,11 @@ def _repair_and_check_skills(
             if isinstance(content, dict):
                 soft = content.get("Soft Skills") or content.get("soft skills") or []
                 soft_text = " ".join(str(x).lower() for x in soft)
-                if re.search(r"microservices|distributed systems|spring boot|ci/cd|kafka", soft_text):
+                if re.search(
+                    r"microservices|distributed systems|spring boot|ci/cd|kafka|soa|"
+                    r"rest|soap|event-driven|api gateway|oauth|kubernetes",
+                    soft_text,
+                ):
                     bad_soft = True
                 joined_skills = " | ".join(
                     f"{k}::{v}" for k, vals in content.items() for v in (vals or [])[:3]
@@ -550,6 +583,14 @@ def _repair_and_check_skills(
         if isinstance(content, dict):
             cleaned = {}
             for cat, vals in content.items():
+                cat_name = str(cat).strip()
+                # Template labels like Soft Skills must not hold architecture/tooling lists.
+                sample = " ".join(str(v).lower() for v in (vals or [])[:8])
+                if re.search(r"(?i)^soft\s*skills?$", cat_name) and re.search(
+                    r"microservices|distributed|spring|kafka|ci/cd|soa|rest|soap|api gateway",
+                    sample,
+                ):
+                    cat_name = "Software Development"
                 skills = []
                 for v in vals or []:
                     name = restore_tech_names(normalize_skill_token(str(v)))
@@ -557,12 +598,14 @@ def _repair_and_check_skills(
                         continue
                     if re.search(r"(?i)\b(responsible for|architected and|developed a)\b", name):
                         continue
+                    if re.match(r"(?i)^environment\s*:", name):
+                        continue
                     # Close truncated parentheticals like "AWS(EC2, S3, Docker"
                     if name.count("(") > name.count(")"):
                         name = name.rstrip(",; ") + ")"
                     skills.append(name)
                 if skills:
-                    cleaned[str(cat).strip()] = skills[:16]
+                    cleaned[cat_name] = skills[:16]
             section["content"] = cleaned
             section["type"] = "skills"
             if sum(len(v) for v in cleaned.values()) < 8:

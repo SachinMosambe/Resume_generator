@@ -530,6 +530,14 @@ def _extract_experience(text: str) -> list[dict[str, Any]]:
                         continue
                     if _DATE_PATTERN.search(candidate) or _is_bullet(candidate):
                         break
+                    # Location crumbs like "TX" / "India" / "Irving, TX" — keep as location.
+                    if _looks_like_location_only(candidate):
+                        if not parsed.get("location"):
+                            parsed["location"] = _clean_text(candidate)
+                        lines[look] = ""
+                        look += 1
+                        scanned += 1
+                        continue
                     if (
                         not _is_section_heading_line(candidate)
                         and not re.match(r"(?i)^environment\s*:", candidate)
@@ -541,7 +549,7 @@ def _extract_experience(text: str) -> list[dict[str, Any]]:
                         # Consume only the title line; later loop continues after header.
                         lines[look] = ""
                         break
-                    # Location crumbs like "TX" / "India" — skip; sentences stay for bullets.
+                    # Short non-title crumbs — skip.
                     if len(candidate.split()) <= 3 and len(candidate) <= 40:
                         look += 1
                         scanned += 1
@@ -635,7 +643,62 @@ def _extract_experience(text: str) -> list[dict[str, Any]]:
         i += 1
 
     _save_current()
-    return _dedupe_experience_roles(experiences)
+    roles = _dedupe_experience_roles(experiences)
+    return [_promote_title_from_first_bullet(role) for role in roles]
+
+
+def _looks_like_embedded_role_title(text: str) -> bool:
+    """True for Dice lines like 'Technology Lead| Project...' or 'Jr. Java Back-End Engineer | ...'."""
+    t = str(text or "").strip()
+    if not t or _is_invalid_job_title(t.split("|", 1)[0].strip()):
+        return False
+    left = t.split("|", 1)[0].strip()
+    words = left.split()
+    if not (1 <= len(words) <= 10):
+        return False
+    if _ACTION_VERB_START.match(left):
+        return False
+    if re.search(
+        r"(?i)\b(engineer|developer|analyst|manager|architect|consultant|lead|intern|"
+        r"specialist|programmer|freelancer)\b",
+        left,
+    ):
+        return True
+    if "|" in t and len(left) <= 60:
+        return True
+    return False
+
+
+def _promote_title_from_first_bullet(role: dict[str, Any]) -> dict[str, Any]:
+    """Recover missing titles that Dice dumps as the first detail line."""
+    if not isinstance(role, dict):
+        return role
+    title = str(role.get("title") or "").strip()
+    bullets = role.get("description") if isinstance(role.get("description"), list) else []
+    # Location crumbs wrongly captured as title → move to location and recover title.
+    if title and _looks_like_location_only(title):
+        if not str(role.get("location") or "").strip():
+            role = {**role, "location": title}
+        title = ""
+        role = {**role, "title": ""}
+    if title or not bullets:
+        return role
+    first = str(bullets[0] or "").strip()
+    if not _looks_like_embedded_role_title(first):
+        return role
+    left, _, right = first.partition("|")
+    left = left.strip()
+    right = right.strip()
+    if _is_invalid_job_title(left):
+        return role
+    role = dict(role)
+    role["title"] = _clean_text(left)
+    remaining = list(bullets[1:])
+    if right and len(right) > 24 and not re.match(r"(?i)^environment\s*:", right):
+        # Keep project/domain context as a normal bullet.
+        remaining.insert(0, right)
+    role["description"] = remaining
+    return role
 
 
 def _add_environment_techs(job: dict[str, Any], payload: str) -> None:
@@ -720,18 +783,43 @@ def _experience_role_key(company: Any, duration: Any) -> str:
     return f"{company_key}|{duration_key}"
 
 
+def _looks_like_location_only(text: str) -> bool:
+    """True for bare location crumbs like 'TX', 'Remote', 'Irving, TX', 'India'."""
+    t = str(text or "").strip()
+    if not t:
+        return True
+    if re.fullmatch(r"(?i)remote|onsite|on-site|hybrid|wfh", t):
+        return True
+    if re.fullmatch(r"[A-Z]{2}", t):
+        return True
+    if re.fullmatch(r"(?i)india|usa|u\.s\.a\.?|united states|canada|uk|u\.k\.?", t):
+        return True
+    # City, ST / City, Country
+    if re.fullmatch(r"(?i)[A-Za-z][A-Za-z .'-]{0,40},\s*([A-Z]{2}|[A-Za-z][A-Za-z .'-]{1,20})", t):
+        if not re.search(
+            r"(?i)\b(engineer|developer|analyst|manager|architect|lead|consultant|intern)\b",
+            t,
+        ):
+            return True
+    return False
+
+
 def _is_invalid_job_title(text: str) -> bool:
     """True when a line is clearly a bullet/sentence, not a job title."""
     t = str(text or "").strip()
     if not t:
         return True
-    if len(t) > 110 or t.count(". ") >= 1:
+    if _looks_like_location_only(t):
+        return True
+    # Ignore common abbreviations (Jr./Sr./St.) when detecting sentence periods.
+    t_for_sentence = re.sub(r"\b(Jr|Sr|Dr|Mr|Mrs|Ms|St|Dept)\.", r"\1", t, flags=re.I)
+    if len(t) > 110 or t_for_sentence.count(". ") >= 1:
         return True
     words = t.split()
     # Lowercase sentence fragments / wrap crumbs are never titles.
     if t[:1].islower():
         return True
-    if t.endswith(".") and len(words) >= 2:
+    if t_for_sentence.endswith(".") and len(words) >= 2:
         # Titles almost never end with a period; bullets/wraps often do.
         if not re.search(
             r"(?i)\b(engineer|developer|analyst|manager|architect|consultant|intern|lead|director|specialist)\b",

@@ -2595,6 +2595,13 @@ class ResumeGenerationService:
     def _normalize_skill_category(self, value: Any) -> str:
         category = self._clean_inline_text(value).strip(" :")
         low = category.casefold()
+        # Exact-ish aliases first — never let "soft" match inside "software".
+        if re.search(r"\bsoft\s*skills?\b", low):
+            return "Soft Skills"
+        if "software development" in low or re.search(r"\bsoftware\b", low):
+            return "Software Development"
+        if "generative" in low or "llm" in low:
+            return "Data & AI"
         mapping = {
             "language": "Programming Languages",
             "programming": "Programming Languages",
@@ -2606,8 +2613,6 @@ class ResumeGenerationService:
             "database": "Databases",
             "cloud": "Cloud & DevOps",
             "devops": "Cloud & DevOps",
-            "data": "Data & AI",
-            "ai": "Data & AI",
             "machine learning": "Data & AI",
             "testing": "Testing & QA",
             "qa": "Testing & QA",
@@ -2618,13 +2623,16 @@ class ResumeGenerationService:
             "methodolog": "Architecture & Practices",
             "business": "Business & Domain",
             "domain": "Business & Domain",
-            "soft": "Soft Skills",
             "additional": "Additional Skills",
             "other": "Additional Skills",
         }
-        for marker, normalized in mapping.items():
+        # Prefer longer markers first to avoid partial collisions.
+        for marker, normalized in sorted(mapping.items(), key=lambda x: len(x[0]), reverse=True):
             if marker in low:
                 return normalized
+        # Short tokens that are unsafe as substrings.
+        if re.search(r"(?i)\b(data|ai)\b", low):
+            return "Data & AI"
         if category and len(category) <= 36:
             return category
         return "Additional Skills"
@@ -3693,18 +3701,8 @@ class ResumeGenerationService:
         details = self._as_list(desc)
         if item.get("cgpa"):
             details.insert(0, f"CGPA: {item['cgpa']}")
-        technologies = self._as_list(item.get("technologies"))
-        # Only show a short Environment-derived tech line — never keyword-inferred junk.
-        clean_techs = [
-            str(t).strip()
-            for t in technologies
-            if str(t).strip()
-            and len(str(t).strip()) <= 40
-            and len(str(t).split()) <= 4
-            and not str(t).lower().startswith("environment")
-        ][:8]
-        if clean_techs and len(clean_techs) >= 3:
-            details.append(f"Environment: {', '.join(clean_techs)}")
+        # Do not re-append Environment: tech dumps into bullets — they look dated and
+        # duplicate the skills section. Technologies stay on the role object only.
         for bullet in details:
             if not bullet or not str(bullet).strip():
                 continue
@@ -3714,6 +3712,8 @@ class ResumeGenerationService:
             for piece in expand_to_bullets([bullet], max_bullets=8):
                 clean_bullet = self._clean_inline_text(piece)
                 if not clean_bullet:
+                    continue
+                if re.match(r"(?i)^environment\s*:", clean_bullet):
                     continue
                 bullet_p = doc.add_paragraph(style="List Bullet")
                 bullet_p.paragraph_format.left_indent = Inches(0.2)

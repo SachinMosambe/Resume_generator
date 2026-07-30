@@ -68,6 +68,50 @@ def main() -> None:
     assert "AWS Bedrock" in text, text
     text2 = restore_tech_names("integrated with bedrock and Spring AI")
     assert "AWS Bedrock" in text2, text2
+    spaced = restore_tech_names(
+        "Mule Soft, Spring Web Flux, You tube, Rx JS, g RPC, Io T, 5 G, Angular JS, "
+        "HTML 5, CSS 3, Service Now, DB 2, J 2 EE, K 8 s, Open Shift, Web Sphere"
+    )
+    for good in (
+        "MuleSoft",
+        "WebFlux",
+        "YouTube",
+        "RxJS",
+        "gRPC",
+        "IoT",
+        "5G",
+        "AngularJS",
+        "HTML5",
+        "CSS3",
+        "ServiceNow",
+        "DB2",
+        "J2EE",
+        "K8s",
+        "OpenShift",
+        "WebSphere",
+    ):
+        assert good in spaced, spaced
+
+    wrap_exp = """PROFESSIONAL EXPERIENCE
+Verizon Communications January 2021 to September 2022
+Irving, TX
+Technology Lead| IVAPP Platform & IOT Development Project
+Built responsive micro-frontend applications using Angular.
+Vanguard August 2019 to January 2021
+Malvern, PA
+Technology Lead| Vanguard Participant Experience Project
+Architected Spring Boot microservices.
+Adnig Technologies - Rai-Power, Gurugram June 2013 to September 2014
+Haryana, India
+Jr. Java Back-End Engineer | Rai-Power In-House Project | Java payment gateway
+Environment: Java, J2EE, Spring, Hibernate, DB2
+"""
+    exp2 = _extract_experience(wrap_exp)
+    verizon = next(r for r in exp2 if "Verizon" in str(r.get("company") or ""))
+    assert "Technology Lead" in str(verizon.get("title") or ""), verizon
+    adnig = next(r for r in exp2 if "Adnig" in str(r.get("company") or ""))
+    assert "Java" in str(adnig.get("title") or ""), adnig
+    assert not any(str(b).lower().startswith("environment:") for b in (adnig.get("description") or []))
 
     parts = _split_skills_payload("AWS (EC2, S3, Bedrock), Docker, LangSmith")
     assert parts[0].startswith("AWS ("), parts
