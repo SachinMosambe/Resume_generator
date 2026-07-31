@@ -13,8 +13,22 @@ run under hard budgets so the create -> criticise -> refine loop stays timely:
     6. RefinerAgent     — repair only flagged sections, then back to the Critic
 
 Enabled via RESUME_AGENT_PIPELINE=true; deploys inside the same FastAPI service.
+
+Import of AgentResumeGenerationService is lazy so modules like format_validator can
+import FormatSpec from app.agent_pipeline.state without circular imports through
+resume_generation_service.
 """
 
-from app.agent_pipeline.service import AgentResumeGenerationService
+from __future__ import annotations
+
+from typing import Any
 
 __all__ = ["AgentResumeGenerationService"]
+
+
+def __getattr__(name: str) -> Any:
+    if name == "AgentResumeGenerationService":
+        from app.agent_pipeline.service import AgentResumeGenerationService
+
+        return AgentResumeGenerationService
+    raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
