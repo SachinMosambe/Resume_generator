@@ -330,9 +330,12 @@ Associate Staff Engineer — AI/ML | Nagarro India Jan 2024 – July 2025
     )
     from app.services.resume_llm_condense import _backfill_bullets, _merge_condensed, _role_lost_too_much_detail
 
-    assert resolve_target_pages(9.0, 4.0) == 4.5, resolve_target_pages(9.0, 4.0)
-    assert resolve_target_pages(3.0, 4.0) == 4.0
-    assert resolve_target_pages(12.0, 4.0) == 5.0
+    assert resolve_target_pages(9.0, 5.5) == 6.3, resolve_target_pages(9.0, 5.5)
+    assert resolve_target_pages(3.0, 5.5) == 5.5
+    assert resolve_target_pages(12.0, 5.5) == 8.0
+
+    from app.services.resume_page_fitter import light_trim_store
+    from app.services.structured_resume_store import is_large_resume
 
     unique_bullets = [
         "Implemented GraphQL federation across order and inventory services.",
@@ -379,12 +382,12 @@ Associate Staff Engineer — AI/ML | Nagarro India Jan 2024 – July 2025
         "certifications": [],
         "achievements": [],
     }
-    fitted = fit_store_to_pages(long_store, target_pages=4.0)
+    fitted = fit_store_to_pages(long_store, target_pages=5.5)
     assert len(fitted.get("experience") or []) == 5
     kept_bullets = sum(len(r.get("description") or []) for r in fitted["experience"])
-    assert kept_bullets >= 30, kept_bullets
+    assert kept_bullets >= 40, kept_bullets
     assert len(fitted.get("projects") or []) >= 4, fitted.get("projects")
-    assert (fitted.get("fit") or {}).get("target_pages", 0) >= 4.0
+    assert (fitted.get("fit") or {}).get("target_pages", 0) >= 5.0
     pages_after = float((fitted.get("fit") or {}).get("pages_after") or 0)
     assert pages_after >= 3.0, pages_after  # must not collapse to ~2 pages
     fitted_blob = " ".join(
@@ -395,6 +398,16 @@ Associate Staff Engineer — AI/ML | Nagarro India Jan 2024 – July 2025
         " ".join(p.get("description") or []) for p in (fitted.get("projects") or [])
     ).lower()
     assert "graphql" in project_blob or "mulesoft" in project_blob, project_blob
+
+    # Large resumes keep nearly all bullets via light_trim (no hard drop).
+    assert is_large_resume(long_store)
+    dense = light_trim_store(long_store)
+    dense_bullets = sum(len(r.get("description") or []) for r in dense["experience"])
+    source_bullets = sum(len(r.get("description") or []) for r in long_store["experience"])
+    assert dense_bullets == source_bullets, (dense_bullets, source_bullets)
+    assert len(dense.get("projects") or []) == len(long_store.get("projects") or [])
+    assert float((dense.get("fit") or {}).get("pages_after") or 0) >= 3.0
+    assert (dense.get("fit") or {}).get("mode") == "light_trim"
 
     # Merge must reject over-summarized LLM roles and restore source density.
     source_role = {

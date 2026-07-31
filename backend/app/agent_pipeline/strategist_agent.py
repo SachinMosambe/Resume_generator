@@ -1,17 +1,18 @@
 """
 Content Strategist — length-aware content plan.
 
-Short resumes pass through untouched. Long resumes are reduced by scored
-selection of the most important genuine facts (recency + impact + unique tech).
-No LLM length-compression — that over-summarized careers into thin stubs.
-The full KB store always survives for traceability.
+Short resumes pass through untouched. Long careers use light trim only
+(keep nearly all bullets). Medium oversized resumes use scored selection.
+Never LLM-compress length — that collapses long resumes to ~2 pages.
 """
 from __future__ import annotations
 
 from app.core.logging import logger
+from app.services.structured_resume_store import is_large_resume
 from app.services.resume_page_fitter import (
     estimate_pages,
     fit_store_to_pages,
+    light_trim_store,
     needs_page_fit,
     resolve_target_pages,
 )
@@ -23,6 +24,25 @@ def plan_content(kb: ResumeKB, spec: FormatSpec, budgets: Budgets) -> ContentPla
     full_store = kb.store
     pages_before = estimate_pages(full_store)
     target = resolve_target_pages(pages_before, spec.target_pages)
+    _ = budgets
+
+    if is_large_resume(full_store):
+        fitted = light_trim_store(full_store)
+        plan = ContentPlan(
+            render_store=fitted,
+            pages_before=pages_before,
+            pages_after=estimate_pages(fitted),
+            fitted=False,
+            llm_condensed=False,
+        )
+        plan.selected_fact_ids = list(kb.facts.keys())
+        logger.info(
+            "agent_plan_keep_dense",
+            pages_before=round(pages_before, 2),
+            pages_after=round(plan.pages_after, 2),
+            target=target,
+        )
+        return plan
 
     if not needs_page_fit(full_store, target_pages=target):
         plan = ContentPlan(
@@ -34,10 +54,7 @@ def plan_content(kb: ResumeKB, spec: FormatSpec, budgets: Budgets) -> ContentPla
         logger.info("agent_plan_keep_all", pages=round(pages_before, 2), target=target)
         return plan
 
-    # Deterministic importance selection only — every role kept, strongest bullets win.
     fitted = fit_store_to_pages(full_store, target_pages=target)
-    _ = budgets  # budgets reserved for critic/repair loops; no LLM length pass here
-
     plan = ContentPlan(
         render_store=fitted,
         pages_before=pages_before,

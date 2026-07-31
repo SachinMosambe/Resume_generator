@@ -47,6 +47,7 @@ from app.services.structured_resume_store import (
 from app.services.resume_page_fitter import (
     estimate_pages,
     fit_store_to_pages,
+    light_trim_store,
     needs_page_fit,
     resolve_target_pages,
 )
@@ -767,51 +768,39 @@ class ResumeGenerationService:
         # 1) Full section store — source of truth, no mixing across sections.
         full_store = build_structured_resume(candidate_data)
         pages_full = estimate_pages(full_store)
-        configured_pages = float(getattr(settings, "RESUME_TARGET_PAGES", 4.0) or 4.0)
+        configured_pages = float(getattr(settings, "RESUME_TARGET_PAGES", 5.5) or 5.5)
         target_pages = resolve_target_pages(pages_full, configured_pages)
+        large = is_large_resume(full_store)
 
-        # 2) Fast path: deterministic importance-based selection for length.
-        #    Do NOT LLM-compress after fit (that was collapsing 9 pages → ~2).
-        #    LLM polish only when text is mashed/broken.
-        if needs_page_fit(full_store, target_pages=target_pages):
+        # 2) Long careers: keep nearly ALL content (light trim only).
+        #    Medium: importance-based fit. Never LLM-compress length.
+        #    LLM polish only for small mashed resumes.
+        if large:
+            render_store = light_trim_store(full_store)
+            mode = "store_keep_dense"
+        elif needs_page_fit(full_store, target_pages=target_pages):
             render_store = fit_store_to_pages(full_store, target_pages=target_pages)
             mode = "store_page_fit"
-            if (
-                bool(getattr(settings, "RESUME_LLM_CONDENSE", True))
-                and store_needs_llm_polish(render_store)
-                and not is_large_resume(full_store)
-            ):
-                polished = polish_store_with_llm(render_store)
-                if polished:
-                    render_store = polished
-                    mode = "store_page_fit_polish"
-            elif store_needs_llm_polish(render_store):
-                logger.info(
-                    "resume_llm_polish_skipped",
-                    reason="oversized_use_importance_selection",
-                    pages_full=round(pages_full, 2),
-                    target_pages=target_pages,
-                )
         else:
             render_store = full_store
             mode = "store_keep_all"
-            # Skip slow polish for clean text and for large resumes (was timing out ~6 min).
-            needs_polish = store_needs_llm_polish(render_store)
-            if (
-                bool(getattr(settings, "RESUME_LLM_CONDENSE", True))
-                and needs_polish
-                and not is_large_resume(full_store)
-            ):
-                polished = polish_store_with_llm(render_store)
-                if polished:
-                    render_store = polished
-                    mode = "store_keep_all_llm"
-            elif needs_polish and is_large_resume(full_store):
-                logger.info(
-                    "resume_llm_polish_skipped",
-                    reason="large_resume_use_deterministic_bullets",
-                    pages=round(pages_full, 2),
-                )
+
+        needs_polish = store_needs_llm_polish(render_store)
+        if (
+            bool(getattr(settings, "RESUME_LLM_CONDENSE", True))
+            and needs_polish
+            and not large
+        ):
+            polished = polish_store_with_llm(render_store)
+            if polished:
+                render_store = polished
+                mode = f"{mode}_polish"
+        elif needs_polish and large:
+            logger.info(
+                "resume_llm_polish_skipped",
+                reason="large_resume_preserve_density",
+                pages=round(pages_full, 2),
+            )
 
         candidate_data = apply_store_to_candidate_data(candidate_data, render_store)
         if isinstance(candidate_data.get("extracted_data"), dict):
@@ -831,11 +820,7 @@ class ResumeGenerationService:
         draft_document = self._enforce_document_reliability(draft_document, candidate_data, metadata)
         agent_metrics: dict[str, Any] = {"llm_calls": 0, "sections_repaired": [], "rounds": 0}
         # Large/long resumes: deterministic repair only. LLM section agents over-summarize.
-        if (
-            critical_findings(section_findings)
-            and bool(getattr(settings, "RESUME_LLM_CONDENSE", True))
-            and not is_large_resume(full_store)
-        ):
+        if critical_findings(section_findings) and bool(getattr(settings, "RESUME_LLM_CONDENSE", True)) and not large:
             draft_document, section_findings, agent_metrics = run_section_quality_agents(
                 draft_document,
                 candidate_data,
@@ -843,7 +828,7 @@ class ResumeGenerationService:
                 max_llm_calls=5,
             )
             draft_document = self._enforce_document_reliability(draft_document, candidate_data, metadata)
-        elif critical_findings(section_findings) and is_large_resume(full_store):
+        elif critical_findings(section_findings) and large:
             logger.info(
                 "resume_section_llm_skipped",
                 reason="large_resume_preserve_density",
@@ -874,11 +859,11 @@ class ResumeGenerationService:
         best_findings = section_findings
         llm_used = mode.endswith("_llm") or bool(agent_metrics.get("llm_calls"))
 
-        # Fallback full rewrite only if critical section issues remain after agents.
+        # Fallback full rewrite — NEVER for long resumes (this was collapsing 9 pages → 2).
         needs_quality_repair = bool(critical_findings(section_findings)) and not agent_metrics.get(
             "sections_repaired"
         )
-        if needs_quality_repair and bool(getattr(settings, "RESUME_LLM_CONDENSE", True)):
+        if needs_quality_repair and bool(getattr(settings, "RESUME_LLM_CONDENSE", True)) and not large:
             logger.info(
                 "resume_section_quality_repair_started",
                 critical=len(critical_findings(section_findings)),
@@ -899,6 +884,7 @@ class ResumeGenerationService:
                     "- Projects must be separate entries with their own bullets.",
                     "- Section titles must be canonical (PROFESSIONAL SUMMARY, TECHNICAL SKILLS, etc).",
                     "- Header must include full candidate name only (no email, phone, or address).",
+                    "- Do NOT aggressively summarize. Keep nearly all source bullets and roles.",
                     *findings_as_feedback(critical_findings(section_findings) or section_findings)[:10],
                     *draft_issues[:6],
                 ],
@@ -924,7 +910,7 @@ class ResumeGenerationService:
                         best_findings = repaired_findings
 
             # If still critical on a non-huge resume, one compose pass as last resort.
-            if critical_findings(best_findings) and not is_large_resume(full_store):
+            if critical_findings(best_findings) and not large:
                 composed = self._compose_document_with_llm(
                     candidate_data=candidate_data,
                     metadata=metadata,
@@ -944,6 +930,12 @@ class ResumeGenerationService:
                             best_document = composed
                             best_issues = composed_issues
                             best_findings = composed_findings
+        elif needs_quality_repair and large:
+            logger.info(
+                "resume_full_rewrite_skipped",
+                reason="large_resume_preserve_density",
+                critical=len(critical_findings(section_findings)),
+            )
 
         # Final mandatory section audit before DOCX.
         best_document, final_findings = audit_and_repair_document(best_document, candidate_data)
@@ -1019,12 +1011,12 @@ class ResumeGenerationService:
         base_roles = self._experience_role_count(baseline_doc)
         cand_roles = self._experience_role_count(candidate_doc)
         expected_roles = max(src_roles, base_roles)
-        if expected_roles >= 3 and cand_roles < max(2, int(expected_roles * 0.6)):
+        if expected_roles >= 3 and cand_roles < max(2, int(expected_roles * 0.85)):
             return True
 
         base_bullets = self._experience_bullet_count(baseline_doc)
         cand_bullets = self._experience_bullet_count(candidate_doc)
-        if base_bullets >= 12 and cand_bullets < max(6, int(base_bullets * 0.45)):
+        if base_bullets >= 12 and cand_bullets < max(8, int(base_bullets * 0.75)):
             return True
         return False
 

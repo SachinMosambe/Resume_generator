@@ -288,13 +288,27 @@ def normalize_education_entries(entries: Any) -> list[dict[str, Any]]:
 
 
 def is_large_resume(store: dict[str, Any]) -> bool:
-    """True when a single LLM full-document rewrite is likely to truncate."""
+    """True when a single LLM full-document rewrite is likely to truncate/over-summarize."""
     stats = store.get("stats") or {}
-    return (
-        int(stats.get("experience_count") or 0) >= 4
-        or int(stats.get("experience_bullets") or 0) >= 25
-        or int(stats.get("raw_chars") or 0) >= 12000
-    )
+    roles = int(stats.get("experience_count") or 0)
+    bullets = int(stats.get("experience_bullets") or 0)
+    raw_chars = int(stats.get("raw_chars") or 0)
+    if not roles:
+        roles = len([r for r in (store.get("experience") or []) if isinstance(r, dict)])
+    if not bullets:
+        bullets = sum(
+            len(r.get("description") or [])
+            for r in (store.get("experience") or [])
+            if isinstance(r, dict)
+        )
+    if not raw_chars:
+        raw_chars = len(str(store.get("summary") or "")) + sum(
+            len(str(b))
+            for r in (store.get("experience") or [])
+            if isinstance(r, dict)
+            for b in (r.get("description") or [])
+        )
+    return roles >= 4 or bullets >= 25 or raw_chars >= 12000
 
 
 def document_from_store(

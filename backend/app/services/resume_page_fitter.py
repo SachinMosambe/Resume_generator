@@ -40,20 +40,72 @@ _GENERIC_VERB_RE = re.compile(
 )
 
 
-def resolve_target_pages(pages_full: float, configured: float = 4.0) -> float:
+def resolve_target_pages(pages_full: float, configured: float = 5.5) -> float:
     """
     Scale the fit target with source length.
 
-    A ~9 page career resume should land around 4–5 pages (important facts kept),
-    not collapse to ~2 pages.
+    A ~9 page career resume should land around 5–7 pages (important facts kept),
+    never collapse to ~2 pages.
     """
-    configured = max(3.0, float(configured or 4.0))
+    configured = max(4.0, float(configured or 5.5))
     pages_full = max(0.5, float(pages_full or 0.5))
     if pages_full <= configured + 0.2:
         return configured
-    # Keep about half the source length for very long resumes, capped for client formats.
-    scaled = pages_full * 0.5
-    return round(min(5.0, max(configured, scaled)), 2)
+    # Keep ~70% of source length for very long resumes, capped for client formats.
+    scaled = pages_full * 0.7
+    return round(min(8.0, max(configured, scaled)), 2)
+
+
+def light_trim_store(store: dict[str, Any]) -> dict[str, Any]:
+    """
+    Keep nearly all content for long careers.
+
+    Only soft-shortens mega-paragraph bullets; never drops roles/projects/bullets.
+    """
+    fitted = copy.deepcopy(store)
+    fitted["summary"] = _fit_summary(str(fitted.get("summary") or ""), max_chars=2200)
+    experience = []
+    for role in fitted.get("experience") or []:
+        if not isinstance(role, dict):
+            continue
+        clone = dict(role)
+        clone["description"] = [
+            _shorten_bullet_keep_core(str(b), max_chars=340)
+            for b in (role.get("description") or [])
+            if str(b).strip()
+        ]
+        experience.append(clone)
+    fitted["experience"] = experience
+    projects = []
+    for proj in fitted.get("projects") or []:
+        if not isinstance(proj, dict):
+            continue
+        clone = dict(proj)
+        clone["description"] = [
+            _shorten_bullet_keep_core(str(b), max_chars=300)
+            for b in (proj.get("description") or [])
+            if str(b).strip()
+        ]
+        projects.append(clone)
+    fitted["projects"] = projects
+    fitted["stats"] = {
+        **(fitted.get("stats") or {}),
+        "experience_count": len(experience),
+        "experience_bullets": sum(len(r.get("description") or []) for r in experience),
+        "projects_count": len(projects),
+        "light_trimmed": True,
+    }
+    fitted["fit"] = {
+        "applied": False,
+        "mode": "light_trim",
+        "pages_before": round(estimate_pages(store), 2),
+        "pages_after": round(estimate_pages(fitted), 2),
+        "roles_kept": len(experience),
+        "bullets_kept": fitted["stats"]["experience_bullets"],
+        "projects_kept": len(projects),
+    }
+    logger.info("resume_light_trim_applied", **fitted["fit"])
+    return fitted
 
 
 def estimate_pages(store: dict[str, Any]) -> float:
@@ -122,20 +174,20 @@ def fit_store_to_pages(
         fitted.get("experience") or [],
         target_pages=effective_target,
     )
-    # Retention floor: never throw away most of a long career's substance.
+    # Retention floor: keep the vast majority of a long career's substance.
     source_bullets = sum(len(r.get("description") or []) for r in (original.get("experience") or []) if isinstance(r, dict))
     kept_bullets = sum(len(r.get("description") or []) for r in (fitted.get("experience") or []) if isinstance(r, dict))
-    min_keep = max(source_bullets * 65 // 100, len(original.get("experience") or []) * 5)
+    min_keep = max(source_bullets * 85 // 100, len(original.get("experience") or []) * 6)
     if source_bullets and kept_bullets < min_keep:
         fitted["experience"] = _fit_experience(
             original.get("experience") or [],
             target_pages=effective_target,
             min_total_bullets=min_keep,
         )
-    fitted["projects"] = _fit_projects(fitted.get("projects") or [], keep=5, bullets=5)
+    fitted["projects"] = _fit_projects(fitted.get("projects") or [], keep=6, bullets=6)
     fitted["education"] = _fit_education(fitted.get("education") or [])
-    fitted["certifications"] = list(fitted.get("certifications") or [])[:14]
-    fitted["achievements"] = list(fitted.get("achievements") or [])[:12]
+    fitted["certifications"] = list(fitted.get("certifications") or [])[:16]
+    fitted["achievements"] = list(fitted.get("achievements") or [])[:14]
     fitted["languages"] = _fit_spoken_languages(fitted.get("languages") or [])
 
     fitted["stats"] = {
@@ -150,16 +202,17 @@ def fit_store_to_pages(
     }
     after = estimate_pages(fitted)
 
-    # Only tighten if still well over budget — prefer information over extreme brevity.
-    if after > effective_target + 0.6:
+    # Almost never tighten — extreme brevity is worse than a longer client resume.
+    if after > effective_target + 2.0:
         fitted["experience"] = _fit_experience(
             fitted.get("experience") or [],
             target_pages=effective_target,
             tight=True,
+            min_total_bullets=max(source_bullets * 75 // 100, len(original.get("experience") or []) * 5),
         )
-        fitted["skills_by_category"] = _fit_skills(fitted.get("skills_by_category") or {}, max_per_category=14)
+        fitted["skills_by_category"] = _fit_skills(fitted.get("skills_by_category") or {}, max_per_category=16)
         fitted["skills"] = _flatten_skills(fitted["skills_by_category"])
-        fitted["projects"] = _fit_projects(fitted.get("projects") or [], keep=4, bullets=4)
+        fitted["projects"] = _fit_projects(fitted.get("projects") or [], keep=5, bullets=5)
         fitted["stats"]["experience_bullets"] = sum(
             len(e.get("description") or []) for e in (fitted.get("experience") or [])
         )
@@ -245,20 +298,20 @@ def _fit_experience(
 
     n = len(normalized)
     # Body after summary/skills/education overhead (~1.0 page).
-    body_pages = max(2.0, target_pages - 1.0)
-    total_budget = int(body_pages * 26)
+    body_pages = max(2.5, target_pages - 1.0)
+    total_budget = int(body_pages * 28)
     if tight:
-        total_budget = max(56, int(total_budget * 0.9))
+        total_budget = max(64, int(total_budget * 0.92))
     # Floor scales with role count so multi-employer careers stay informative.
-    total_budget = max(n * 6, min(total_budget, 180))
+    total_budget = max(n * 7, min(total_budget, 220))
     if min_total_bullets:
         total_budget = max(total_budget, int(min_total_bullets))
 
     weights = [max(1.0, float(n - i)) for i in range(n)]
     weight_sum = sum(weights) or 1.0
-    min_each = 5 if not tight else 4
+    min_each = 6 if not tight else 5
     quotas = [max(min_each, int(round(total_budget * (w / weight_sum)))) for w in weights]
-    max_each = 20 if not tight else 14
+    max_each = 24 if not tight else 16
     quotas = [min(max_each, q) for q in quotas]
 
     while sum(quotas) > total_budget:
