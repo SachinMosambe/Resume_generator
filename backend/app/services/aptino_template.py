@@ -20,12 +20,9 @@ APTINO_SECTION_ORDER = [
     "header",
     "summary",
     "skills",
-    "experience",
-    "projects",
     "education",
     "certifications",
-    "achievements",
-    "languages",
+    "experience",
 ]
 
 _ASSETS_DIR = Path(__file__).resolve().parent.parent / "assets"
@@ -83,13 +80,10 @@ def get_aptino_default_metadata() -> dict[str, Any]:
 
     field_mapping = {
         "summary": "PROFESSIONAL SUMMARY",
-        "skills": "TECHNICAL SKILLS",
-        "experience": "PROFESSIONAL EXPERIENCE",
-        "projects": "PROJECTS",
-        "education": "EDUCATION",
+        "skills": "SKILL SET OVERVIEW",
+        "education": "EDUCATIONAL DETAILS",
         "certifications": "CERTIFICATIONS",
-        "achievements": "ACHIEVEMENTS",
-        "languages": "LANGUAGES",
+        "experience": "WORK EXPERIENCE",
     }
 
     return normalize_format_metadata(
@@ -103,10 +97,10 @@ def get_aptino_default_metadata() -> dict[str, Any]:
             "sections": [s for s in APTINO_SECTION_ORDER if s != "header"],
             "section_order": list(APTINO_SECTION_ORDER),
             "styling": {
-                "font_family": "Calibri",
-                "font_size_body": 11,
-                "font_size_header": 12,
-                "font_size_name": 20,
+                "font_family": "Arial",
+                "font_size_body": 10,
+                "font_size_header": 10,
+                "font_size_name": 14,
                 "color_text": "#000000",
                 "color_muted": "#333333",
                 "margin_inches": 0.7,
@@ -126,14 +120,14 @@ def get_aptino_default_metadata() -> dict[str, Any]:
             "company_header": company_sign,
             "field_mapping": field_mapping,
             "section_labels": dict(field_mapping),
-            "completeness_contract": ["summary", "skills", "experience", "education"],
+            "completeness_contract": ["summary", "skills", "education", "experience"],
             "logo_count": len(logos),
             "logos": logos,
             "preview_text": (
-                "Section order: PROFESSIONAL SUMMARY → TECHNICAL SKILLS → PROFESSIONAL EXPERIENCE → "
-                "PROJECTS → EDUCATION → CERTIFICATIONS → ACHIEVEMENTS → LANGUAGES || "
-                "Template headings: PROFESSIONAL SUMMARY | TECHNICAL SKILLS | PROFESSIONAL EXPERIENCE | "
-                "PROJECTS | EDUCATION | CERTIFICATIONS"
+                "Section order: PROFESSIONAL SUMMARY → SKILL SET OVERVIEW → EDUCATIONAL DETAILS → "
+                "CERTIFICATIONS → WORK EXPERIENCE || "
+                "Template headings: PROFESSIONAL SUMMARY | SKILL SET OVERVIEW | EDUCATIONAL DETAILS | "
+                "CERTIFICATIONS | WORK EXPERIENCE || Font: Arial 10"
             ),
         }
     )

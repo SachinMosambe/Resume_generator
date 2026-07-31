@@ -1282,7 +1282,7 @@ class ResumeGenerationService:
         # Word-aware matching avoids false hits (e.g. "network" containing "work").
         if re.search(r"\b(experience|employment|work history|work experience|professional experience)\b", normalized):
             return "experience"
-        if re.search(r"\b(education|academic|qualification|academics)\b", normalized):
+        if re.search(r"\b(education|educational|academic|qualification|academics)\b", normalized):
             return "education"
         if re.search(r"\b(skills?|competenc\w*|expertise|technical skills)\b", normalized):
             return "skills"
@@ -1339,7 +1339,7 @@ class ResumeGenerationService:
             "summary": ("summary", "objective", "profile"),
             "skills": ("skill", "competenc", "expertise"),
             "experience": ("experience", "employment", "work history"),
-            "education": ("education", "academic", "qualification"),
+            "education": ("education", "educational", "academic", "qualification"),
             "projects": ("project",),
             "certifications": ("certif", "license"),
             "achievements": ("achievement", "award", "honor"),

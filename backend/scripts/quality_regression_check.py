@@ -224,16 +224,16 @@ Associate Staff Engineer — AI/ML | Nagarro India Jan 2024 – July 2025
         "header": {"name": "Jane Doe", "contact": ["jane@example.com"]},
         "sections": [
             {"type": "summary", "title": "PROFESSIONAL SUMMARY", "content": "Leader."},
-            {"type": "skills", "title": "TECHNICAL SKILLS", "content": {"Languages": ["Python"]}},
-            {
-                "type": "experience",
-                "title": "PROFESSIONAL EXPERIENCE",
-                "content": [{"company": "Acme", "title": "Engineer", "duration": "2020-2024"}],
-            },
+            {"type": "skills", "title": "SKILL SET OVERVIEW", "content": {"Languages": ["Python"]}},
             {
                 "type": "education",
-                "title": "EDUCATION",
+                "title": "EDUCATIONAL DETAILS",
                 "content": [{"degree": "BS", "institution": "State U", "year": "2019"}],
+            },
+            {
+                "type": "experience",
+                "title": "WORK EXPERIENCE",
+                "content": [{"company": "Acme", "title": "Engineer", "duration": "2020-2024"}],
             },
         ],
     }
