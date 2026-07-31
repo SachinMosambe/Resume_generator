@@ -758,7 +758,7 @@ class ResumeGenerationService:
         # 1) Full section store — source of truth, no mixing across sections.
         full_store = build_structured_resume(candidate_data)
         pages_full = estimate_pages(full_store)
-        target_pages = float(getattr(settings, "RESUME_TARGET_PAGES", 3.0) or 3.0)
+        target_pages = float(getattr(settings, "RESUME_TARGET_PAGES", 3.5) or 3.5)
 
         # 2) Fast path: deterministic bullets/format first.
         #    LLM only when oversized (condense) OR small resume still has mashed/broken text.

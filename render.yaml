@@ -19,7 +19,7 @@ services:
       - key: RESUME_GENERATION_MAX_TOKENS
         value: "16384"
       - key: RESUME_TARGET_PAGES
-        value: "3"
+        value: "3.5"
       - key: RESUME_LLM_CONDENSE
         value: "true"
       - key: RESUME_LLM_POLISH

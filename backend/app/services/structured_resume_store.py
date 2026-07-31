@@ -24,7 +24,8 @@ def build_structured_resume(candidate_data: dict[str, Any]) -> dict[str, Any]:
     experience = [item for item in experience if item.get("company") or item.get("title")]
     for role in experience:
         role["description"] = expand_to_bullets(
-            [repair_collapsed_spaces(str(b)) for b in (role.get("description") or []) if str(b).strip()]
+            [repair_collapsed_spaces(str(b)) for b in (role.get("description") or []) if str(b).strip()],
+            max_bullets=20,
         )
 
     education = normalize_education_entries(
@@ -35,7 +36,8 @@ def build_structured_resume(candidate_data: dict[str, Any]) -> dict[str, Any]:
     projects = [item for item in projects if item.get("name")]
     for project in projects:
         project["description"] = expand_to_bullets(
-            [repair_collapsed_spaces(str(b)) for b in (project.get("description") or []) if str(b).strip()]
+            [repair_collapsed_spaces(str(b)) for b in (project.get("description") or []) if str(b).strip()],
+            max_bullets=16,
         )
 
     store = {
@@ -499,11 +501,12 @@ _ACTION_VERB_START = re.compile(
 )
 
 
-def expand_to_bullets(values: list[Any], *, max_bullets: int = 12) -> list[str]:
+def expand_to_bullets(values: list[Any], *, max_bullets: int = 20) -> list[str]:
     """
     Turn paragraph streams into discrete professional bullets.
 
     Splits on bullet glyphs and on sentence boundaries that start with action verbs.
+    Page-fit (not this helper) is the length gate for oversized resumes.
     """
     out: list[str] = []
     for raw in values or []:

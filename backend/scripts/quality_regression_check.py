@@ -257,6 +257,88 @@ Associate Staff Engineer — AI/ML | Nagarro India Jan 2024 – July 2025
     required = set(aptino.get("completeness_contract") or [])
     assert {"summary", "skills", "experience", "education"} <= required
 
+    # --- Content preservation: page-fit must keep unique tech/info root ---
+    from app.services.resume_page_fitter import _select_bullets, fit_store_to_pages
+    from app.services.resume_llm_condense import _backfill_bullets, _merge_condensed, _role_lost_too_much_detail
+
+    unique_bullets = [
+        "Implemented GraphQL federation across order and inventory services.",
+        "Led migration of MuleSoft Anypoint APIs to AWS EKS with Terraform.",
+        "Mentored junior engineers on code reviews and delivery practices.",
+        "Improved sprint predictability through refined estimation workshops.",
+        "Collaborated with product managers on roadmap prioritization.",
+        "Documented runbooks for on-call incident response.",
+        "Participated in weekly architecture sync with platform teams.",
+        "Supported QA with regression planning for release trains.",
+    ]
+    selected = _select_bullets(unique_bullets, quota=4)
+    selected_blob = " ".join(selected).lower()
+    assert "mulesoft" in selected_blob and "graphql" in selected_blob, selected
+
+    long_store = {
+        "summary": "Senior engineer with deep platform experience across APIs, cloud, and delivery. "
+        * 8,
+        "skills_by_category": {"Cloud": ["AWS", "EKS", "Terraform", "MuleSoft"]},
+        "skills": ["AWS", "EKS", "Terraform", "MuleSoft"],
+        "experience": [
+            {
+                "company": f"Company {i}",
+                "title": "Senior Engineer",
+                "duration": f"202{i}-01 to 202{i}-12",
+                "description": unique_bullets + [f"Delivered feature set {j} for platform reliability." for j in range(8)],
+                "technologies": ["AWS", "MuleSoft", "Terraform"],
+            }
+            for i in range(5)
+        ],
+        "education": [{"degree": "BS CS", "institution": "State University", "year": "2015"}],
+        "projects": [],
+        "certifications": [],
+        "achievements": [],
+    }
+    fitted = fit_store_to_pages(long_store, target_pages=3.5)
+    assert len(fitted.get("experience") or []) == 5
+    kept_bullets = sum(len(r.get("description") or []) for r in fitted["experience"])
+    assert kept_bullets >= 25, kept_bullets
+    fitted_blob = " ".join(
+        " ".join(r.get("description") or []) for r in fitted["experience"]
+    ).lower()
+    assert "mulesoft" in fitted_blob, fitted_blob[:500]
+
+    # Merge must reject over-summarized LLM roles and restore source density.
+    source_role = {
+        "company": "Acme",
+        "title": "Engineer",
+        "duration": "2020-2024",
+        "description": unique_bullets[:6],
+        "technologies": ["MuleSoft", "GraphQL", "AWS"],
+    }
+    thin_llm = {
+        "summary": "Engineer with cloud experience across APIs and delivery platforms.",
+        "experience": [
+            {
+                "company": "Acme",
+                "title": "Engineer",
+                "duration": "2020-2024",
+                "description": ["Worked on cloud APIs and mentoring."],
+                "technologies": ["AWS"],
+            }
+        ],
+        "skills_by_category": {},
+        "education": [],
+    }
+    assert _role_lost_too_much_detail(unique_bullets[:6], thin_llm["experience"][0]["description"])
+    merged = _merge_condensed({"experience": [source_role], "summary": "x" * 200, "skills_by_category": {}}, thin_llm)
+    assert merged is not None
+    assert len(merged["experience"][0]["description"]) >= 4, merged["experience"][0]["description"]
+    assert "mulesoft" in " ".join(merged["experience"][0]["description"]).lower()
+
+    backfilled = _backfill_bullets(
+        ["Led migration of MuleSoft Anypoint APIs to AWS EKS with Terraform."],
+        unique_bullets[:5],
+        max_bullets=5,
+    )
+    assert len(backfilled) >= 4, backfilled
+
     print("quality_regression_ok")
 
 

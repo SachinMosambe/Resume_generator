@@ -3,9 +3,9 @@ Content Strategist — length-aware content plan.
 
 Short resumes pass through untouched. Long resumes are reduced by scored
 selection of genuine facts (recency + quantified impact, all role identities
-kept), then one grounded LLM condense pass compresses wording. Information is
-dropped by choice, never by truncation — and the full KB store always survives
-for traceability.
+kept), then one grounded LLM polish pass lightly cleans wording while
+preserving originality. Information is dropped by choice, never by truncation —
+and the full KB store always survives for traceability.
 """
 from __future__ import annotations
 

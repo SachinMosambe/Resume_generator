@@ -1,11 +1,12 @@
 """
-Fit a full structured resume into a 2–3 page professional layout.
+Fit a full structured resume into a ~3–4 page professional layout.
 
 Rules:
 - Never invent employers, dates, skills, or bullets.
 - Never move content across sections.
 - Small/medium resumes: keep everything as-is.
 - Oversized resumes: select genuine excerpts section-wise to fit the page budget.
+- Prefer information preservation over aggressive shortening.
 """
 from __future__ import annotations
 
@@ -17,20 +18,33 @@ from app.core.logging import logger
 from app.services.structured_resume_store import normalize_education_entries
 
 # Approximate DOCX density for Calibri ~10–11pt client templates.
-_CHARS_PER_PAGE = 3200
+# Slightly denser estimate so page-fit triggers less aggressively on long careers.
+_CHARS_PER_PAGE = 3600
 _SUMMARY_OVERHEAD = 450
 _SKILLS_OVERHEAD = 500
 _EDU_PER_ITEM = 90
 _ROLE_HEADER = 120
 _CHARS_PER_BULLET = 140
 _TECH_LINE = 80
+_UNIQUE_TOKEN_RE = re.compile(r"[a-z0-9][a-z0-9+.#-]{3,}", re.I)
+_HIGH_SIGNAL_RE = re.compile(
+    r"(?i)\b(mulesoft|camp|forge|bedrock|oauth|graphql|terraform|eks|fargate|"
+    r"databricks|anypoint|raml|dataweave|wcag|openai|langgraph|langchain|"
+    r"aws|azure|kafka|kubernetes|spring|microservices|react|angular|python|java|"
+    r"docker|jenkins|salesforce|snowflake|redshift|dynamodb|postgres|mongodb|"
+    r"spark|flink|airflow|redis|elasticsearch|rabbitmq|grpc|webpack|nextjs)\b"
+)
+_GENERIC_VERB_RE = re.compile(
+    r"(?i)^(implemented|developed|designed|improved|delivered|collaborated|supported|"
+    r"participated|documented|mentored|worked|built|created|managed|led|helped)$"
+)
 
 
 def estimate_pages(store: dict[str, Any]) -> float:
     """Rough page estimate from structured content volume."""
     chars = 0
     summary = str(store.get("summary") or "")
-    chars += min(len(summary), 1200) + (_SUMMARY_OVERHEAD if summary else 0)
+    chars += min(len(summary), 1600) + (_SUMMARY_OVERHEAD if summary else 0)
 
     skills = store.get("skills_by_category") or {}
     if isinstance(skills, dict) and skills:
@@ -84,18 +98,18 @@ def fit_store_to_pages(
         return original
 
     fitted = copy.deepcopy(original)
-    fitted["summary"] = _fit_summary(str(fitted.get("summary") or ""), max_chars=950)
-    fitted["skills_by_category"] = _fit_skills(fitted.get("skills_by_category") or {}, max_per_category=14)
-    fitted["skills"] = _flatten_skills(fitted["skills_by_category"]) or list(fitted.get("skills") or [])[:80]
+    fitted["summary"] = _fit_summary(str(fitted.get("summary") or ""), max_chars=1400)
+    fitted["skills_by_category"] = _fit_skills(fitted.get("skills_by_category") or {}, max_per_category=18)
+    fitted["skills"] = _flatten_skills(fitted["skills_by_category"]) or list(fitted.get("skills") or [])[:100]
     fitted["experience"] = _fit_experience(
         fitted.get("experience") or [],
         target_pages=target_pages,
     )
-    fitted["projects"] = _fit_projects(fitted.get("projects") or [], keep=2, bullets=3)
+    fitted["projects"] = _fit_projects(fitted.get("projects") or [], keep=3, bullets=4)
     fitted["education"] = _fit_education(fitted.get("education") or [])
     # Keep certs/achievements short; drop noisy "languages" skill dumps.
-    fitted["certifications"] = list(fitted.get("certifications") or [])[:8]
-    fitted["achievements"] = list(fitted.get("achievements") or [])[:6]
+    fitted["certifications"] = list(fitted.get("certifications") or [])[:12]
+    fitted["achievements"] = list(fitted.get("achievements") or [])[:10]
     fitted["languages"] = _fit_spoken_languages(fitted.get("languages") or [])
 
     # Recompute stats for the fitted view (full store remains in raw if needed).
@@ -112,15 +126,15 @@ def fit_store_to_pages(
     after = estimate_pages(fitted)
 
     # If still over budget, tighten bullets once more (still genuine selection).
-    if after > target_pages + 0.25:
+    if after > target_pages + 0.35:
         fitted["experience"] = _fit_experience(
             fitted.get("experience") or [],
             target_pages=target_pages,
             tight=True,
         )
-        fitted["skills_by_category"] = _fit_skills(fitted.get("skills_by_category") or {}, max_per_category=10)
+        fitted["skills_by_category"] = _fit_skills(fitted.get("skills_by_category") or {}, max_per_category=12)
         fitted["skills"] = _flatten_skills(fitted["skills_by_category"])
-        fitted["projects"] = _fit_projects(fitted.get("projects") or [], keep=1, bullets=2)
+        fitted["projects"] = _fit_projects(fitted.get("projects") or [], keep=2, bullets=3)
         fitted["stats"]["experience_bullets"] = sum(
             len(e.get("description") or []) for e in (fitted.get("experience") or [])
         )
@@ -138,7 +152,7 @@ def fit_store_to_pages(
     return fitted
 
 
-def _fit_summary(text: str, max_chars: int = 950) -> str:
+def _fit_summary(text: str, max_chars: int = 1400) -> str:
     text = re.sub(r"\s+", " ", (text or "").strip())
     if len(text) <= max_chars:
         return text
@@ -153,7 +167,7 @@ def _fit_summary(text: str, max_chars: int = 950) -> str:
             break
         kept.append(part)
         total += len(part) + 1
-        if len(kept) >= 5:
+        if len(kept) >= 8:
             break
     out = " ".join(kept).strip()
     return out or text[:max_chars].rsplit(" ", 1)[0].strip()
@@ -207,23 +221,23 @@ def _fit_experience(
     n = len(normalized)
     # Budget bullets for ~target pages after summary/skills/education overhead (~0.9 page).
     body_pages = max(1.5, target_pages - 0.9)
-    total_budget = int(body_pages * 16)  # denser, more readable Capgemini-style body
+    total_budget = int(body_pages * 20)  # keep denser careers informative
     if tight:
-        total_budget = max(28, int(total_budget * 0.8))
-    total_budget = max(n * 4, min(total_budget, 96))  # prefer ~4+ bullets/role when possible
+        total_budget = max(36, int(total_budget * 0.85))
+    total_budget = max(n * 5, min(total_budget, 120))  # prefer ~5+ bullets/role when possible
 
     # Recency weights: first roles assumed reverse-chronological.
     weights = [max(1.0, float(n - i)) for i in range(n)]
     weight_sum = sum(weights) or 1.0
-    quotas = [max(3 if not tight else 2, int(round(total_budget * (w / weight_sum)))) for w in weights]
+    quotas = [max(4 if not tight else 3, int(round(total_budget * (w / weight_sum)))) for w in weights]
     # Cap per-role so one job doesn't dominate — still keep recent roles rich.
-    max_each = 12 if not tight else 7
+    max_each = 16 if not tight else 10
     quotas = [min(max_each, q) for q in quotas]
     # Adjust to budget.
     while sum(quotas) > total_budget:
         # Trim from oldest roles first.
         for i in range(n - 1, -1, -1):
-            if quotas[i] > (2 if tight else 3):
+            if quotas[i] > (3 if tight else 4):
                 quotas[i] -= 1
                 break
         else:
@@ -246,7 +260,7 @@ def _fit_experience(
             str(t).strip()
             for t in (role.get("technologies") or [])
             if str(t).strip() and len(str(t).strip()) <= 60 and len(str(t).split()) <= 6
-        ][:10]
+        ][:14]
         clone = {
             "title": role.get("title") or "",
             "company": role.get("company") or "",
@@ -265,11 +279,63 @@ def _select_bullets(bullets: list[str], quota: int) -> list[str]:
     cleaned = [b for b in cleaned if len(b) >= 25]
     if len(cleaned) <= quota:
         return cleaned
-    ranked = sorted(cleaned, key=_bullet_score, reverse=True)
-    chosen = ranked[:quota]
+
+    # Protect bullets that carry unique high-signal tech/product/metric facts.
+    token_owners: dict[str, list[int]] = {}
+    for idx, bullet in enumerate(cleaned):
+        for token in _unique_info_tokens(bullet):
+            token_owners.setdefault(token, []).append(idx)
+    must_keep: set[int] = set()
+    for _token, owners in token_owners.items():
+        if len(owners) == 1:
+            must_keep.add(owners[0])
+    # Also keep any bullet with digits/metrics or high-signal stack keywords.
+    for idx, bullet in enumerate(cleaned):
+        if re.search(r"\d", bullet) or _HIGH_SIGNAL_RE.search(bullet):
+            must_keep.add(idx)
+
+    ranked_idxs = sorted(range(len(cleaned)), key=lambda i: _bullet_score(cleaned[i]), reverse=True)
+    chosen_idxs: list[int] = []
+    for idx in ranked_idxs:
+        if idx in must_keep and len(chosen_idxs) < quota:
+            chosen_idxs.append(idx)
+    for idx in ranked_idxs:
+        if len(chosen_idxs) >= quota:
+            break
+        if idx not in chosen_idxs:
+            chosen_idxs.append(idx)
     # Preserve original order for readability.
-    chosen_set = set(chosen)
-    return [b for b in cleaned if b in chosen_set][:quota]
+    chosen_set = set(chosen_idxs[:quota])
+    return [cleaned[i] for i in range(len(cleaned)) if i in chosen_set][:quota]
+
+
+def _unique_info_tokens(text: str) -> set[str]:
+    """Tokens that look like tech/product/domain entities — not generic English."""
+    stop = {
+        "with", "from", "using", "that", "this", "have", "been", "were", "their",
+        "team", "project", "system", "application", "applications", "services",
+        "based", "across", "including", "through", "while", "into", "over",
+        "feature", "features", "platform", "reliability", "delivery", "practices",
+        "engineers", "managers", "planning", "release", "weekly", "sprint",
+    }
+    out: set[str] = set()
+    for raw in _UNIQUE_TOKEN_RE.findall(text or ""):
+        token = raw.lower().strip(".-+")
+        if len(token) < 4 or token in stop:
+            continue
+        if token.isdigit() or _GENERIC_VERB_RE.match(token):
+            continue
+        # Prefer tech-ish tokens: mixed alnum, separators, or known high-signal names.
+        if (
+            any(ch.isdigit() for ch in token)
+            or "+" in raw
+            or "#" in raw
+            or "." in raw
+            or _HIGH_SIGNAL_RE.search(token)
+            or len(token) >= 8
+        ):
+            out.add(token)
+    return out
 
 
 def _bullet_score(text: str) -> float:
