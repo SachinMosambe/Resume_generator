@@ -277,7 +277,7 @@ def _repair_and_check_experience(
                     repair_collapsed_spaces(str(x))
                     for x in (bullets_raw if isinstance(bullets_raw, list) else [bullets_raw])
                 ],
-                max_bullets=12,
+                max_bullets=20,
             ):
                 text = re.sub(r"\s+", " ", str(b).strip())
                 if not text or len(text) < 12:

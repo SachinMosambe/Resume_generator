@@ -29,7 +29,11 @@ from app.agents.resume_generation_agent import build_resume_document, normalize_
 from app.agents.tools.llm_client import llm_call_json_with_metrics
 from app.models.candidate import Candidate
 from app.models.client_format import ClientFormat
-from app.services.aptino_template import get_aptino_company_footer_lines, is_aptino_template
+from app.services.aptino_template import (
+    get_aptino_company_footer_lines,
+    get_aptino_default_metadata,
+    is_aptino_template,
+)
 from app.services.s3_service import download_to_local_path, sanitize_filename, upload_bytes_to_key
 from app.services.detailed_resume_parser import parse_resume_detailed
 from app.services.pdf_parser import extract_text_from_document
@@ -826,7 +830,12 @@ class ResumeGenerationService:
         draft_document, section_findings = audit_and_repair_document(draft_document, candidate_data)
         draft_document = self._enforce_document_reliability(draft_document, candidate_data, metadata)
         agent_metrics: dict[str, Any] = {"llm_calls": 0, "sections_repaired": [], "rounds": 0}
-        if critical_findings(section_findings) and bool(getattr(settings, "RESUME_LLM_CONDENSE", True)):
+        # Large/long resumes: deterministic repair only. LLM section agents over-summarize.
+        if (
+            critical_findings(section_findings)
+            and bool(getattr(settings, "RESUME_LLM_CONDENSE", True))
+            and not is_large_resume(full_store)
+        ):
             draft_document, section_findings, agent_metrics = run_section_quality_agents(
                 draft_document,
                 candidate_data,
@@ -834,6 +843,12 @@ class ResumeGenerationService:
                 max_llm_calls=5,
             )
             draft_document = self._enforce_document_reliability(draft_document, candidate_data, metadata)
+        elif critical_findings(section_findings) and is_large_resume(full_store):
+            logger.info(
+                "resume_section_llm_skipped",
+                reason="large_resume_preserve_density",
+                critical=len(critical_findings(section_findings)),
+            )
         draft_issues = self._resume_quality_feedback(candidate_data, draft_document)
         draft_issues = list(dict.fromkeys([*findings_as_feedback(section_findings), *draft_issues]))
 
@@ -1062,22 +1077,26 @@ class ResumeGenerationService:
         if not isinstance(sections, list):
             sections = []
 
-        # Prefer client order but always keep data-backed fallback sections.
-        requested_order = metadata.get("sections") or metadata.get("section_order") or []
+        # Prefer client section_order (strip header); fall back to sections list.
+        raw_order = metadata.get("section_order") or metadata.get("sections") or []
+        requested_order = [
+            sec_name
+            for sec_name in (raw_order if isinstance(raw_order, list) else [])
+            if str(sec_name or "").strip().lower() not in {"", "header"}
+        ]
         rank: dict[str, int] = {}
-        if isinstance(requested_order, list):
-            for idx, sec_name in enumerate(requested_order):
-                canonical = self._canonical_resume_section(sec_name)
-                if canonical and canonical not in rank:
-                    rank[canonical] = idx
+        for idx, sec_name in enumerate(requested_order):
+            canonical = self._canonical_resume_section(sec_name)
+            if canonical and canonical not in rank:
+                rank[canonical] = idx
 
         default_rank = {
             "summary": 0,
             "skills": 1,
-            "experience": 2,
-            "projects": 3,
-            "education": 4,
-            "certifications": 5,
+            "education": 2,
+            "certifications": 3,
+            "experience": 4,
+            "projects": 5,
             "achievements": 6,
             "languages": 7,
         }
@@ -1092,34 +1111,38 @@ class ResumeGenerationService:
             "achievements": "ACHIEVEMENTS:",
             "languages": "LANGUAGES:",
         }
-
-        # Prefer human labels detected from the uploaded template; never use path-like
-        # keys such as "summary.text" / "experience.items" as visible titles.
-        section_labels = (metadata or {}).get("section_labels") or {}
-        field_mapping = (metadata or {}).get("field_mapping") or {}
-        label_sources: list[tuple[str, Any]] = []
-        if isinstance(section_labels, dict):
-            label_sources.extend(section_labels.items())
-        if isinstance(field_mapping, dict):
-            label_sources.extend(field_mapping.items())
-        for key, label in label_sources:
-            canonical_key = self._canonical_resume_section(key)
-            if canonical_key not in section_titles or not label:
-                continue
-            titled = str(label).strip()
-            if not titled or "." in titled:
-                continue
-            # Skip contact field keys accidentally present in field_mapping.
-            if canonical_key in {"header", "name", "email", "phone", "location"}:
-                continue
-            # Never allow body lines / long phrases as section titles.
-            clean = titled[:-1].strip() if titled.endswith(":") else titled
-            if len(clean) > 36 or len(clean.split()) > 4 or "," in clean or "|" in clean:
-                continue
-            if not self._looks_like_section_heading(clean):
-                continue
-            titled = clean.upper()
-            section_titles[canonical_key] = titled if titled.endswith(":") else f"{titled}:"
+        # Aptino / template labels always win when present.
+        if is_aptino_template(metadata):
+            aptino_labels = (get_aptino_default_metadata().get("section_labels") or {})
+            for key, label in aptino_labels.items():
+                canonical_key = self._canonical_resume_section(key)
+                if canonical_key in section_titles and label:
+                    titled = str(label).strip().upper()
+                    section_titles[canonical_key] = titled if titled.endswith(":") else f"{titled}:"
+        else:
+            section_labels = (metadata or {}).get("section_labels") or {}
+            field_mapping = (metadata or {}).get("field_mapping") or {}
+            label_sources: list[tuple[str, Any]] = []
+            if isinstance(section_labels, dict):
+                label_sources.extend(section_labels.items())
+            if isinstance(field_mapping, dict):
+                label_sources.extend(field_mapping.items())
+            for key, label in label_sources:
+                canonical_key = self._canonical_resume_section(key)
+                if canonical_key not in section_titles or not label:
+                    continue
+                titled = str(label).strip()
+                if not titled or "." in titled:
+                    continue
+                if canonical_key in {"header", "name", "email", "phone", "location"}:
+                    continue
+                clean = titled[:-1].strip() if titled.endswith(":") else titled
+                if len(clean) > 40 or len(clean.split()) > 5 or "," in clean or "|" in clean:
+                    continue
+                if not self._looks_like_section_heading(clean):
+                    continue
+                titled = clean.upper()
+                section_titles[canonical_key] = titled if titled.endswith(":") else f"{titled}:"
 
         cleaned_sections: list[dict[str, Any]] = []
         seen_sections: set[str] = set()
@@ -1213,8 +1236,14 @@ class ResumeGenerationService:
 
         cleaned_sections.sort(
             key=lambda sec: (
-                rank.get(self._canonical_resume_section(sec.get("title") or sec.get("type")), 999),
-                default_rank.get(self._canonical_resume_section(sec.get("title") or sec.get("type")), 999),
+                rank.get(
+                    self._resolve_section_canonical(sec.get("title"), sec.get("type")),
+                    999,
+                ),
+                default_rank.get(
+                    self._resolve_section_canonical(sec.get("title"), sec.get("type")),
+                    999,
+                ),
             )
         )
         normalized["sections"] = cleaned_sections
@@ -2270,6 +2299,17 @@ class ResumeGenerationService:
                 "achievements": "ACHIEVEMENTS",
                 "languages": "LANGUAGES",
             }
+            if is_aptino_template(cleaned) or is_aptino_template(metadata):
+                defaults = {
+                    "summary": "PROFESSIONAL SUMMARY",
+                    "skills": "SKILL SET OVERVIEW",
+                    "experience": "WORK EXPERIENCE",
+                    "projects": "PROJECTS",
+                    "education": "EDUCATIONAL DETAILS",
+                    "certifications": "CERTIFICATIONS",
+                    "achievements": "ACHIEVEMENTS",
+                    "languages": "LANGUAGES",
+                }
             safe: dict[str, str] = {}
             for key, value in labels.items():
                 canonical = self._canonical_resume_section(key)
@@ -2277,12 +2317,17 @@ class ResumeGenerationService:
                     continue
                 text = str(value or "").strip()
                 clean = text[:-1].strip() if text.endswith(":") else text
-                if not clean or len(clean) > 36 or len(clean.split()) > 4:
+                if not clean or len(clean) > 40 or len(clean.split()) > 5:
                     continue
                 if not self._looks_like_section_heading(clean):
                     continue
                 safe[canonical] = clean.upper()
-            cleaned["section_labels"] = safe or defaults
+            # Always keep Aptino/template defaults for any missing keys.
+            cleaned["section_labels"] = {**defaults, **safe}
+        # Keep logos for Aptino/header rendering (previously stripped).
+        if isinstance(metadata.get("logos"), list) and metadata.get("logos"):
+            cleaned["logos"] = metadata["logos"]
+            cleaned["logo_count"] = len(metadata["logos"])
         return cleaned
 
     def _valid_logos(self, logos: Any) -> list[dict]:

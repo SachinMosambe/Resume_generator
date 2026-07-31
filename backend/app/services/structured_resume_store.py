@@ -303,17 +303,25 @@ def document_from_store(
 ) -> dict[str, Any]:
     """Build client-formatted document JSON directly from the section store."""
     metadata = format_metadata or {}
-    section_order = metadata.get("sections") or metadata.get("section_order") or [
+    # Prefer explicit client section_order (drop header); else sections; else Aptino-ish default.
+    raw_order = metadata.get("section_order") or metadata.get("sections") or [
         "summary",
         "skills",
-        "experience",
-        "projects",
         "education",
         "certifications",
+        "experience",
+        "projects",
         "achievements",
         "languages",
     ]
+    section_order = [
+        name
+        for name in raw_order
+        if str(name or "").strip() and str(name).strip().lower() != "header"
+    ]
     labels = metadata.get("section_labels") if isinstance(metadata.get("section_labels"), dict) else {}
+    if not labels and isinstance(metadata.get("field_mapping"), dict):
+        labels = metadata.get("field_mapping") or {}
 
     default_titles = {
         "summary": "PROFESSIONAL SUMMARY:",
@@ -325,6 +333,19 @@ def document_from_store(
         "achievements": "ACHIEVEMENTS:",
         "languages": "LANGUAGES:",
     }
+    try:
+        from app.services.aptino_template import is_aptino_template
+
+        if is_aptino_template(metadata):
+            default_titles.update(
+                {
+                    "skills": "SKILL SET OVERVIEW:",
+                    "education": "EDUCATIONAL DETAILS:",
+                    "experience": "WORK EXPERIENCE:",
+                }
+            )
+    except Exception:
+        pass
 
     header = store.get("header") or {}
     contact = [

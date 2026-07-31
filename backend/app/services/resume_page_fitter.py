@@ -122,6 +122,16 @@ def fit_store_to_pages(
         fitted.get("experience") or [],
         target_pages=effective_target,
     )
+    # Retention floor: never throw away most of a long career's substance.
+    source_bullets = sum(len(r.get("description") or []) for r in (original.get("experience") or []) if isinstance(r, dict))
+    kept_bullets = sum(len(r.get("description") or []) for r in (fitted.get("experience") or []) if isinstance(r, dict))
+    min_keep = max(source_bullets * 65 // 100, len(original.get("experience") or []) * 5)
+    if source_bullets and kept_bullets < min_keep:
+        fitted["experience"] = _fit_experience(
+            original.get("experience") or [],
+            target_pages=effective_target,
+            min_total_bullets=min_keep,
+        )
     fitted["projects"] = _fit_projects(fitted.get("projects") or [], keep=5, bullets=5)
     fitted["education"] = _fit_education(fitted.get("education") or [])
     fitted["certifications"] = list(fitted.get("certifications") or [])[:14]
@@ -226,6 +236,7 @@ def _fit_experience(
     *,
     target_pages: float = 4.0,
     tight: bool = False,
+    min_total_bullets: int | None = None,
 ) -> list[dict[str, Any]]:
     """Keep every role identity; keep the strongest genuine bullets by recency weight."""
     normalized = [r for r in roles if isinstance(r, dict)]
@@ -235,17 +246,19 @@ def _fit_experience(
     n = len(normalized)
     # Body after summary/skills/education overhead (~1.0 page).
     body_pages = max(2.0, target_pages - 1.0)
-    total_budget = int(body_pages * 24)
+    total_budget = int(body_pages * 26)
     if tight:
-        total_budget = max(48, int(total_budget * 0.88))
+        total_budget = max(56, int(total_budget * 0.9))
     # Floor scales with role count so multi-employer careers stay informative.
-    total_budget = max(n * 6, min(total_budget, 160))
+    total_budget = max(n * 6, min(total_budget, 180))
+    if min_total_bullets:
+        total_budget = max(total_budget, int(min_total_bullets))
 
     weights = [max(1.0, float(n - i)) for i in range(n)]
     weight_sum = sum(weights) or 1.0
     min_each = 5 if not tight else 4
     quotas = [max(min_each, int(round(total_budget * (w / weight_sum)))) for w in weights]
-    max_each = 18 if not tight else 12
+    max_each = 20 if not tight else 14
     quotas = [min(max_each, q) for q in quotas]
 
     while sum(quotas) > total_budget:
@@ -275,7 +288,6 @@ def _fit_experience(
             if str(t).strip() and len(str(t).strip()) <= 60 and len(str(t).split()) <= 6
         ][:16]
         bullets = _select_bullets(list(role.get("description") or []), quota)
-        # Soften mega-paragraphs while keeping the important lead facts.
         bullets = [_shorten_bullet_keep_core(b) for b in bullets]
         clone = {
             "title": role.get("title") or "",

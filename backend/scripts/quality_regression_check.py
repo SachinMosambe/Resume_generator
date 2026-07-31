@@ -257,6 +257,48 @@ Associate Staff Engineer — AI/ML | Nagarro India Jan 2024 – July 2025
     required = set(aptino.get("completeness_contract") or [])
     assert {"summary", "skills", "experience", "education"} <= required
 
+    # Aptino labels + order must survive document_from_store / reliability enforce path.
+    from app.services.structured_resume_store import document_from_store, build_structured_resume
+    from app.services.resume_generation_service import ResumeGenerationService
+
+    sample = {
+        "name": "Harkaran Sidhu",
+        "email": "h@example.com",
+        "phone": "5551234567",
+        "location": "Austin, TX",
+        "summary": "Java full-stack engineer with 13+ years across banking and telecom.",
+        "skills_by_category": {"Backend": ["Java", "Spring Boot"], "Cloud": ["AWS", "EKS"]},
+        "skills": ["Java", "Spring Boot", "AWS", "EKS"],
+        "experience": [
+            {
+                "company": "JP Morgan",
+                "title": "Engineer",
+                "duration": "2025-2026",
+                "description": ["Built Spring Boot services.", "Deployed on AWS EKS with Terraform."],
+            }
+        ],
+        "education": [{"degree": "MS CS", "institution": "UIS", "year": "2017"}],
+    }
+    store = build_structured_resume(sample)
+    aptino_doc = document_from_store(store, aptino)
+    titles = [str(s.get("title") or "") for s in (aptino_doc.get("sections") or [])]
+    types = [str(s.get("type") or "") for s in (aptino_doc.get("sections") or [])]
+    assert any("SKILL SET OVERVIEW" in t for t in titles), titles
+    assert any("EDUCATIONAL DETAILS" in t for t in titles), titles
+    assert any("WORK EXPERIENCE" in t for t in titles), titles
+    # Order: summary, skills, education, then experience
+    assert types.index("skills") < types.index("experience"), types
+    assert types.index("education") < types.index("experience"), types
+
+    svc = ResumeGenerationService()
+    enforced = svc._enforce_document_reliability(aptino_doc, sample, aptino)
+    etitles = [str(s.get("title") or "") for s in (enforced.get("sections") or [])]
+    etypes = [str(s.get("type") or "") for s in (enforced.get("sections") or [])]
+    assert any("SKILL SET OVERVIEW" in t for t in etitles), etitles
+    assert any("EDUCATIONAL DETAILS" in t for t in etitles), etitles
+    assert etypes.index("skills") < etypes.index("experience"), etypes
+    assert etypes.index("education") < etypes.index("experience"), etypes
+
     # --- Content preservation: page-fit must keep unique tech/info root ---
     from app.services.resume_page_fitter import (
         _select_bullets,
