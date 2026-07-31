@@ -188,14 +188,12 @@ def _apply_section_payload(doc: dict[str, Any], section: str, payload: Any) -> d
     out = copy.deepcopy(doc)
     if section == "header" and isinstance(payload, dict):
         header = out.setdefault("header", {})
-        for key in ("name", "role", "contact"):
-            if key in payload and payload[key] not in (None, ""):
-                header[key] = payload[key]
-        # Normalize contact list + tech/email cleanup.
-        contact = header.get("contact") if isinstance(header.get("contact"), list) else []
-        header["contact"] = [restore_tech_names(str(c)) for c in contact if str(c).strip()]
         if payload.get("name"):
             header["name"] = str(payload["name"]).strip()
+        if payload.get("role") not in (None, ""):
+            header["role"] = str(payload["role"]).strip()
+        # Client policy: never keep personal contact details on the resume.
+        header["contact"] = []
         out["header"] = header
         return out
 
@@ -290,7 +288,7 @@ def _repair_section(
 ) -> dict[str, Any] | None:
     try:
         schema_hint = {
-            "header": {"name": "string", "contact": ["email", "phone", "location"]},
+            "header": {"name": "string", "role": "string", "contact": []},
             "summary": {"title": "PROFESSIONAL SUMMARY:", "content": "string"},
             "experience": {
                 "title": "PROFESSIONAL EXPERIENCE:",

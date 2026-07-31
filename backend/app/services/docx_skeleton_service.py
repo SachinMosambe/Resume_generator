@@ -85,14 +85,7 @@ def render_from_docx_skeleton(
     name_run.font.size = Pt(name_size)
     name_run.font.color.rgb = color_text
 
-    contact = [str(c).strip() for c in (header.get("contact") or []) if str(c).strip()]
-    if contact:
-        contact_para = doc.add_paragraph()
-        contact_para.paragraph_format.space_after = Pt(space_after)
-        contact_run = contact_para.add_run("  |  ".join(contact))
-        contact_run.font.name = font_family
-        contact_run.font.size = Pt(max(9.5, body_size - 0.5))
-        contact_run.font.color.rgb = color_muted
+    # Client policy: name only — never email/phone/address on generated resumes.
 
     for section in document.get("sections") or []:
         if not isinstance(section, dict):

@@ -156,12 +156,12 @@ def validate_format_document(
             }
         )
     contact = header.get("contact") or []
-    if not any(str(c).strip() for c in contact):
+    if any(str(c).strip() for c in contact):
         findings.append(
             {
                 "section": "header",
                 "severity": "warn",
-                "issue": "Contact line empty on composed resume",
+                "issue": "Personal contact details should not appear on client resume (name only)",
             }
         )
 

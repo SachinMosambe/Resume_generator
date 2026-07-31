@@ -85,53 +85,12 @@ def _check_header(doc: dict[str, Any], candidate_data: dict[str, Any]) -> list[d
         header["name"] = name
         doc["header"] = header
 
-    contact = header.get("contact") if isinstance(header.get("contact"), list) else []
-    contact = [str(c).strip() for c in contact if str(c).strip()]
-    email = str(candidate_data.get("email") or "").strip()
-    phone = str(candidate_data.get("phone") or "").strip()
-    location = str(candidate_data.get("location") or "").strip()
-
-    # Fix truncated / missing email in contact.
-    contact_emails = [c for c in contact if "@" in c]
-    bad_email = False
-    for em in contact_emails:
-        local = em.split("@", 1)[0]
-        if len(local) < 5 or local.isdigit():
-            bad_email = True
-    if email and ("@" not in " ".join(contact) or bad_email):
-        contact = [c for c in contact if "@" not in c]
-        contact.insert(0, email)
-    if phone and not any(re.search(r"\d{5,}", c) for c in contact):
-        contact.append(phone)
-    if location:
-        # Avoid duplicate city tokens.
-        if not any(location.casefold() in c.casefold() or c.casefold() in location.casefold() for c in contact):
-            contact.append(location)
-    # Dedupe contact while preserving order.
-    seen = set()
-    clean_contact = []
-    for c in contact:
-        key = c.casefold()
-        if key in seen:
-            continue
-        seen.add(key)
-        clean_contact.append(c)
-    header["contact"] = clean_contact
+    # Client policy: never put personal contact details on the generated resume.
+    header["contact"] = []
+    for key in ("email", "phone", "location", "linkedin", "portfolio", "address"):
+        if key in header:
+            header[key] = ""
     doc["header"] = header
-
-    final_emails = [c for c in clean_contact if "@" in c]
-    if not final_emails:
-        findings.append(
-            {"section": "header", "severity": "critical", "issue": "Valid email is missing from contact."}
-        )
-    elif any(len(e.split("@")[0]) < 5 for e in final_emails):
-        findings.append(
-            {
-                "section": "header",
-                "severity": "critical",
-                "issue": "Email looks truncated; restore full address from source.",
-            }
-        )
     return findings
 
 

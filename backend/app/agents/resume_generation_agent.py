@@ -57,12 +57,8 @@ def normalize_resume_document(document: dict[str, Any], candidate_data: dict[str
     header = _build_header(candidate_data)
     if not header.get("role") and raw_header.get("role"):
         header["role"] = str(raw_header["role"]).strip()
-    if not header["contact"]:
-        header["contact"] = [
-            str(item).strip()
-            for item in _list(raw_header.get("contact"))
-            if str(item).strip()
-        ]
+    # Client policy: never surface personal contact details on generated resumes.
+    header["contact"] = []
 
     sections: list[dict[str, Any]] = []
     for section in _list(document.get("sections")):
@@ -156,37 +152,11 @@ def _section_canonical(section: dict[str, Any]) -> str:
 
 
 def _build_header(candidate_data: dict[str, Any]) -> dict[str, Any]:
-    """Build header with full contact information."""
-    contact_parts = []
-    
-    # Add email
-    if candidate_data.get("email"):
-        contact_parts.append(str(candidate_data["email"]))
-    
-    # Add phone
-    if candidate_data.get("phone"):
-        contact_parts.append(str(candidate_data["phone"]))
-    
-    # Add location
-    if candidate_data.get("location"):
-        contact_parts.append(str(candidate_data["location"]))
-    
-    # Add LinkedIn if available
-    if candidate_data.get("linkedin"):
-        contact_parts.append(str(candidate_data["linkedin"]))
-    
-    # Add portfolio if available
-    if candidate_data.get("portfolio"):
-        contact_parts.append(str(candidate_data["portfolio"]))
-
-    # Add GitHub if available
-    if candidate_data.get("github"):
-        contact_parts.append(str(candidate_data["github"]))
-    
+    """Build header with candidate name only (no personal contact details)."""
     return {
         "name": candidate_data.get("name") or "Candidate",
         "role": candidate_data.get("job_role") or candidate_data.get("job_applied") or "",
-        "contact": contact_parts,
+        "contact": [],
     }
 
 

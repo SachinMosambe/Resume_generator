@@ -258,7 +258,11 @@ Associate Staff Engineer — AI/ML | Nagarro India Jan 2024 – July 2025
     assert {"summary", "skills", "experience", "education"} <= required
 
     # Aptino labels + order must survive document_from_store / reliability enforce path.
-    from app.services.structured_resume_store import document_from_store, build_structured_resume
+    from app.services.structured_resume_store import (
+        document_from_store,
+        build_structured_resume,
+        strip_personal_contact_from_document,
+    )
     from app.services.resume_generation_service import ResumeGenerationService
 
     sample = {
@@ -281,6 +285,8 @@ Associate Staff Engineer — AI/ML | Nagarro India Jan 2024 – July 2025
     }
     store = build_structured_resume(sample)
     aptino_doc = document_from_store(store, aptino)
+    assert aptino_doc["header"]["name"] == "Harkaran Sidhu"
+    assert aptino_doc["header"].get("contact") in ([], None)
     titles = [str(s.get("title") or "") for s in (aptino_doc.get("sections") or [])]
     types = [str(s.get("type") or "") for s in (aptino_doc.get("sections") or [])]
     assert any("SKILL SET OVERVIEW" in t for t in titles), titles
@@ -291,13 +297,30 @@ Associate Staff Engineer — AI/ML | Nagarro India Jan 2024 – July 2025
     assert types.index("education") < types.index("experience"), types
 
     svc = ResumeGenerationService()
-    enforced = svc._enforce_document_reliability(aptino_doc, sample, aptino)
+    enforced = svc._enforce_document_reliability(
+        {
+            **aptino_doc,
+            "header": {
+                "name": "Harkaran Sidhu",
+                "contact": ["h@example.com", "5551234567", "Austin, TX"],
+            },
+        },
+        sample,
+        aptino,
+    )
     etitles = [str(s.get("title") or "") for s in (enforced.get("sections") or [])]
     etypes = [str(s.get("type") or "") for s in (enforced.get("sections") or [])]
     assert any("SKILL SET OVERVIEW" in t for t in etitles), etitles
     assert any("EDUCATIONAL DETAILS" in t for t in etitles), etitles
     assert etypes.index("skills") < etypes.index("experience"), etypes
     assert etypes.index("education") < etypes.index("experience"), etypes
+    assert enforced["header"].get("contact") == []
+    assert "h@example.com" not in str(enforced.get("header"))
+    stripped = strip_personal_contact_from_document(
+        {"header": {"name": "A B", "contact": ["a@b.c", "123"], "email": "a@b.c"}, "sections": []}
+    )
+    assert stripped["header"]["contact"] == []
+    assert stripped["header"]["name"] == "A B"
 
     # --- Content preservation: page-fit must keep unique tech/info root ---
     from app.services.resume_page_fitter import (

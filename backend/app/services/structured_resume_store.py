@@ -348,17 +348,8 @@ def document_from_store(
         pass
 
     header = store.get("header") or {}
-    contact = [
-        v
-        for v in (
-            header.get("email"),
-            header.get("phone"),
-            header.get("location"),
-            header.get("linkedin"),
-            header.get("portfolio"),
-        )
-        if v
-    ]
+    # Client-facing resumes: name only — never email, phone, address, LinkedIn, or portfolio.
+    contact: list[str] = []
 
     sections: list[dict[str, Any]] = []
     seen: set[str] = set()
@@ -388,6 +379,21 @@ def document_from_store(
         },
         "sections": sections,
     }
+
+
+def strip_personal_contact_from_document(document: dict[str, Any] | None) -> dict[str, Any]:
+    """Keep candidate name (and optional role) only — never email/phone/address/links."""
+    import copy
+
+    doc = copy.deepcopy(document or {})
+    header = doc.get("header") if isinstance(doc.get("header"), dict) else {}
+    cleaned = {
+        "name": str(header.get("name") or "").strip(),
+        "role": str(header.get("role") or "").strip(),
+        "contact": [],
+    }
+    doc["header"] = cleaned
+    return doc
 
 
 def _section_payload(store: dict[str, Any], canonical: str, title: str) -> dict[str, Any] | None:

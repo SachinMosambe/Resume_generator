@@ -898,7 +898,7 @@ class ResumeGenerationService:
                     "- Certifications must be separate items; never mix Leadership/Achievements into Certifications.",
                     "- Projects must be separate entries with their own bullets.",
                     "- Section titles must be canonical (PROFESSIONAL SUMMARY, TECHNICAL SKILLS, etc).",
-                    "- Header must include full name and full email.",
+                    "- Header must include full candidate name only (no email, phone, or address).",
                     *findings_as_feedback(critical_findings(section_findings) or section_findings)[:10],
                     *draft_issues[:6],
                 ],
@@ -1247,7 +1247,10 @@ class ResumeGenerationService:
             )
         )
         normalized["sections"] = cleaned_sections
-        return normalized
+        # Client output policy: name only — no email/phone/address/links on any template.
+        from app.services.structured_resume_store import strip_personal_contact_from_document
+
+        return strip_personal_contact_from_document(normalized)
 
     def _restore_missing_roles(
         self,
@@ -3143,8 +3146,7 @@ class ResumeGenerationService:
         story.append(Paragraph(escape(str(header.get("name") or "Candidate")), title_style))
         if header.get("role"):
             story.append(Paragraph(escape(str(header["role"])), role_style))
-        if header.get("contact"):
-            story.append(Paragraph(escape(" | ".join(header["contact"])), contact_style))
+        # Client policy: name only — never email/phone/address on generated resumes.
 
         for section in document.get("sections") or []:
             story.append(Paragraph(escape(str(section["title"])), section_style))
@@ -3375,15 +3377,7 @@ class ResumeGenerationService:
         name_run.font.size = Pt(max(name_size, body_size + 2))
         name_run.font.bold = True
         name_run.font.color.rgb = self._theme_text()
-        if header.get("contact"):
-            contact_para = doc.add_paragraph()
-            contact_para.paragraph_format.space_before = Pt(2)
-            contact_para.paragraph_format.space_after = Pt(space_after)
-            contact_items = [str(c).strip() for c in header["contact"] if str(c).strip()]
-            contact_run = contact_para.add_run("  |  ".join(contact_items))
-            contact_run.font.name = font_family
-            contact_run.font.size = Pt(max(9.5, body_size - 0.5))
-            contact_run.font.color.rgb = self._theme_muted()
+        # Intentionally omit email/phone/address/links from client resumes.
 
         self._add_horizontal_line(doc)
 
