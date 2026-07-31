@@ -8,20 +8,20 @@ from app.core.logging import setup_logging
 
 setup_logging()
 
-app = FastAPI(title="Resume Generator", version="1.0.0")
+app = FastAPI(title='Resume Generator', version='1.0.0')
 
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=settings.cors_origin_list or ["*"],
+    allow_origins=settings.cors_origin_list or ['*'],
     allow_credentials=True,
-    allow_methods=["*"],
-    allow_headers=["*"],
+    allow_methods=['*'],
+    allow_headers=['*'],
 )
 
-app.include_router(generate_router, prefix="/api"))
-app.include_router(formats_router, prefix="/api"))
+app.include_router(generate_router, prefix='/api')
+app.include_router(formats_router, prefix='/api')
 
 
-@app.get("/")
+@app.get('/')
 async def root() -> dict[str, str]:
-    return {"service": "resume-generator", "docs": "/docs"}
+    return {'service': 'resume-generator', 'docs': '/docs'}
