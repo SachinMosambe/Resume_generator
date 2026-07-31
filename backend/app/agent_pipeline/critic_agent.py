@@ -51,6 +51,13 @@ def review(
     findings.extend(_check_completeness(doc, kb))
     findings.extend(_check_length(doc, spec))
 
+    try:
+        from app.services.format_validator import validate_format_document
+
+        findings.extend(validate_format_document(doc, spec, kb=kb))
+    except Exception as exc:
+        logger.warning("agent_critic_format_gate_failed", error=str(exc))
+
     score = _deterministic_score(findings)
     llm_used = False
 

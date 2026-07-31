@@ -48,6 +48,12 @@ from app.services.resume_section_quality import (
     findings_as_feedback,
 )
 from app.services.resume_quality_agent import run_section_quality_agents
+from app.models.format_schema import normalize_format_metadata, parse_hex_rgb
+from app.services.format_validator import (
+    format_findings_message,
+    has_critical_findings,
+    validate_format_document,
+)
 from app.core.config import settings
 from app.core.logging import logger
 
@@ -90,10 +96,21 @@ class ResumeGenerationService:
         )
         
         document = self._generate_professional_document(detailed_data, client_format.format_metadata)
-        
+
         # Reuse visual branding from the uploaded client format (logo + company sign).
         # Never copy sample candidate body text from the template.
-        format_metadata = dict(client_format.format_metadata or {})
+        format_metadata = normalize_format_metadata(dict(client_format.format_metadata or {}))
+        client_format.format_metadata = format_metadata
+
+        # Dual gate: format structure + completeness before render (fail closed).
+        format_findings = validate_format_document(document, format_metadata, kb=None)
+        # Soften required-section criticals when source store simply lacks that section.
+        store = (candidate.extracted_data or {}).get("structured_resume") or {}
+        format_findings = self._soften_missing_section_findings(format_findings, store, document)
+        if has_critical_findings(format_findings):
+            raise ResumeGenerationError(
+                f"Format/completeness validation failed: {format_findings_message(format_findings)}"
+            )
         logos = self._valid_logos(format_metadata.get("logos", []))
         if not logos:
             # Built-in Aptino assets when using Aptino template OR uploaded Aptino-branded format
@@ -157,9 +174,15 @@ class ResumeGenerationService:
         document["client_header_text"] = ""
         document["client_footer_text"] = ""
 
-        # Generate DOCX with the client logo + company sign (editable format)
+        # Generate DOCX: prefer DOCX/.doc skeleton fill when original template is available.
         try:
-            docx_bytes = self._render_docx(document, format_metadata, header_logos, footer_logos)
+            docx_bytes = self._render_with_format_strategy(
+                document,
+                format_metadata,
+                header_logos,
+                footer_logos,
+                client_format=client_format,
+            )
             logger.info(
                 "docx_rendered_successfully",
                 candidate_id=str(candidate.id),
@@ -2192,8 +2215,10 @@ class ResumeGenerationService:
 
     def _metadata_for_generation(self, metadata: dict[str, Any]) -> dict[str, Any]:
         """Keep layout hints but remove sample resume content and large logo payloads."""
+        metadata = normalize_format_metadata(metadata)
         allowed_keys = {
             "source_type",
+            "source_filename",
             "template_id",
             "template_name",
             "sections",
@@ -2206,6 +2231,9 @@ class ResumeGenerationService:
             "company_footer",
             "logo_count",
             "preview_text",
+            "completeness_contract",
+            "extraction_confidence",
+            "extraction_notes",
         }
         cleaned = {
             key: metadata[key]
@@ -3063,6 +3091,128 @@ class ResumeGenerationService:
         buffer.seek(0)
         return buffer.read()
 
+    def _soften_missing_section_findings(
+        self,
+        findings: list[dict[str, str]],
+        store: dict[str, Any],
+        document: dict[str, Any],
+    ) -> list[dict[str, str]]:
+        """Downgrade required-section criticals when source data never had that section."""
+        present_types = {
+            str(s.get("type") or "").lower()
+            for s in (document.get("sections") or [])
+            if isinstance(s, dict)
+        }
+        # Also map title-based types (summary often stored as type=text).
+        from app.services.format_validator import document_section_types
+
+        present_types |= set(document_section_types(document))
+        softened: list[dict[str, str]] = []
+        for finding in findings:
+            issue = str(finding.get("issue") or "")
+            section = str(finding.get("section") or "").lower()
+            if finding.get("severity") == "critical" and "Candidate name missing" in issue:
+                # Soften placeholder-only names; composition may still render a usable filename stem.
+                header = document.get("header") if isinstance(document.get("header"), dict) else {}
+                name = str(header.get("name") or "").strip()
+                if name and name.lower() not in {"candidate", "unknown"}:
+                    softened.append({**finding, "severity": "warn"})
+                    continue
+                if name:
+                    softened.append({**finding, "severity": "warn"})
+                    continue
+            if (
+                finding.get("severity") == "critical"
+                and "Required section" in issue
+                and section
+                and section not in present_types
+            ):
+                # If the structured store also lacks usable content, warn instead of fail.
+                store_val = store.get(section) if isinstance(store, dict) else None
+                empty_store = store_val in (None, "", [], {})
+                if empty_store:
+                    softened.append({**finding, "severity": "warn"})
+                    continue
+            softened.append(finding)
+        return softened
+
+    def _render_with_format_strategy(
+        self,
+        document: dict[str, Any],
+        metadata: dict[str, Any],
+        logos: list[dict],
+        footer_logos: list[dict] | None = None,
+        *,
+        client_format: ClientFormat | None = None,
+    ) -> bytes:
+        """Prefer DOCX skeleton fill when a Word template path is available; else schema render."""
+        template_path = ""
+        if client_format is not None:
+            template_path = str(getattr(client_format, "template_bytes_path", "") or "")
+        source_type = str((metadata or {}).get("source_type") or "").lower()
+
+        if template_path and source_type in {"docx", "doc"}:
+            from pathlib import Path as _Path
+
+            path = _Path(template_path)
+            if path.exists():
+                try:
+                    from app.services.docx_skeleton_service import render_from_docx_skeleton
+
+                    result = render_from_docx_skeleton(
+                        path,
+                        document,
+                        metadata,
+                        source_type=source_type,
+                    )
+                    if result:
+                        logger.info("docx_skeleton_render_used", path=str(path), source_type=source_type)
+                        return result
+                except Exception as exc:
+                    logger.warning("docx_skeleton_render_failed", error=str(exc))
+
+        return self._render_docx(document, metadata, logos, footer_logos)
+
+    def _docx_theme_from_metadata(self, metadata: dict[str, Any] | None) -> dict[str, Any]:
+        from docx.shared import RGBColor
+
+        styling = (metadata or {}).get("styling") or {}
+        text_rgb = parse_hex_rgb(str(styling.get("color_text") or "#000000"))
+        muted_rgb = parse_hex_rgb(str(styling.get("color_muted") or "#333333"))
+        try:
+            space_after = float(styling.get("space_after_para") or 6)
+        except (TypeError, ValueError):
+            space_after = 6.0
+        try:
+            line_spacing = float(styling.get("line_spacing") or 1.0)
+        except (TypeError, ValueError):
+            line_spacing = 1.0
+        return {
+            "color_text": RGBColor(*text_rgb),
+            "color_muted": RGBColor(*muted_rgb),
+            "space_after_para": space_after,
+            "line_spacing": line_spacing,
+        }
+
+    def _theme_text(self) -> Any:
+        from docx.shared import RGBColor
+
+        theme = getattr(self, "_docx_theme", None) or {}
+        return theme.get("color_text") or RGBColor(0x00, 0x00, 0x00)
+
+    def _theme_muted(self) -> Any:
+        from docx.shared import RGBColor
+
+        theme = getattr(self, "_docx_theme", None) or {}
+        return theme.get("color_muted") or RGBColor(0x33, 0x33, 0x33)
+
+    def _theme_space_after(self) -> float:
+        theme = getattr(self, "_docx_theme", None) or {}
+        try:
+            return float(theme.get("space_after_para") or 6)
+        except (TypeError, ValueError):
+            return 6.0
+
     def _render_docx(
         self,
         document: dict[str, Any],
@@ -3079,6 +3229,8 @@ class ResumeGenerationService:
         except ImportError as exc:
             raise ResumeGenerationError("python-docx is required to generate DOCX resumes") from exc
 
+        metadata = normalize_format_metadata(metadata)
+        self._docx_theme = self._docx_theme_from_metadata(metadata)
         doc = Document()
         styling = (metadata or {}).get("styling") or {}
         body_size = float(styling.get("font_size_body") or 11)
@@ -3086,11 +3238,17 @@ class ResumeGenerationService:
         name_size = float(styling.get("font_size_name") or 20)
         font_family = styling.get("font_family") or "Calibri"
         margin_inches = float(styling.get("margin_inches") or 0.65)
+        space_after = self._theme_space_after()
+        line_spacing = float(styling.get("line_spacing") or 1.0)
 
         style = doc.styles["Normal"]
         style.font.name = font_family
         style.font.size = Pt(body_size)
         style._element.rPr.rFonts.set(qn("w:eastAsia"), font_family)
+        try:
+            style.paragraph_format.line_spacing = line_spacing
+        except Exception:
+            pass
 
         section = doc.sections[0]
         section.top_margin = Inches(margin_inches)
@@ -3153,16 +3311,16 @@ class ResumeGenerationService:
         name_run.font.name = font_family
         name_run.font.size = Pt(max(name_size, body_size + 2))
         name_run.font.bold = True
-        name_run.font.color.rgb = RGBColor(0x11, 0x11, 0x11)
+        name_run.font.color.rgb = self._theme_text()
         if header.get("contact"):
             contact_para = doc.add_paragraph()
             contact_para.paragraph_format.space_before = Pt(2)
-            contact_para.paragraph_format.space_after = Pt(6)
+            contact_para.paragraph_format.space_after = Pt(space_after)
             contact_items = [str(c).strip() for c in header["contact"] if str(c).strip()]
             contact_run = contact_para.add_run("  |  ".join(contact_items))
             contact_run.font.name = font_family
             contact_run.font.size = Pt(max(9.5, body_size - 0.5))
-            contact_run.font.color.rgb = RGBColor(0x33, 0x33, 0x33)
+            contact_run.font.color.rgb = self._theme_muted()
 
         self._add_horizontal_line(doc)
 
@@ -3219,7 +3377,7 @@ class ResumeGenerationService:
                 role_run = role_para.add_run(str(header["role"]))
                 role_run.font.name = font_family
                 role_run.font.size = Pt(body_size + 0.5)
-                role_run.font.color.rgb = RGBColor(0x33, 0x33, 0x33)
+                role_run.font.color.rgb = self._theme_muted()
 
             right_cell = table.cell(0, 1)
             right_cell.paragraphs[0].clear()
@@ -3255,7 +3413,7 @@ class ResumeGenerationService:
             role_run = role_para.add_run(str(header["role"]))
             role_run.font.name = font_family
             role_run.font.size = Pt(body_size + 0.5)
-            role_run.font.color.rgb = RGBColor(0x33, 0x33, 0x33)
+            role_run.font.color.rgb = self._theme_muted()
 
     def _fill_docx_page_footer(
         self,
@@ -3307,7 +3465,7 @@ class ResumeGenerationService:
             run.font.name = font_family
             run.font.size = Pt(9 if idx > 0 else 10)
             run.bold = idx == 0
-            run.font.color.rgb = RGBColor(0x00, 0x00, 0x00)
+            run.font.color.rgb = self._theme_text()
 
     def _decode_logo_bytes(self, logo: dict | None, strip_black_bg: bool = False) -> bytes | None:
         import base64
@@ -3408,7 +3566,7 @@ class ResumeGenerationService:
         name_run.bold = True
         name_run.font.name = font_family
         name_run.font.size = Pt(header_size)
-        name_run.font.color.rgb = RGBColor(0x00, 0x00, 0x00)
+        name_run.font.color.rgb = self._theme_text()
 
         if header.get("role"):
             role_para = doc.add_paragraph()
@@ -3417,7 +3575,7 @@ class ResumeGenerationService:
             role_run = role_para.add_run(str(header["role"]))
             role_run.font.name = font_family
             role_run.font.size = Pt(body_size + 0.5)
-            role_run.font.color.rgb = RGBColor(0x33, 0x33, 0x33)
+            role_run.font.color.rgb = self._theme_muted()
 
     def _add_docx_section(
         self,
@@ -3443,9 +3601,9 @@ class ResumeGenerationService:
             title_run.bold = True
             title_run.font.name = font_family
             title_run.font.size = Pt(header_size)
-            title_run.font.color.rgb = RGBColor(0x00, 0x00, 0x00)
+            title_run.font.color.rgb = self._theme_text()
             title_para.paragraph_format.space_before = Pt(14)
-            title_para.paragraph_format.space_after = Pt(6)
+            title_para.paragraph_format.space_after = Pt(self._theme_space_after())
             self._apply_bottom_border(title_para)
 
         if not content:
@@ -3456,8 +3614,8 @@ class ResumeGenerationService:
             run = p.add_run(str(content))
             run.font.name = font_family
             run.font.size = Pt(body_size)
-            run.font.color.rgb = RGBColor(0x00, 0x00, 0x00)
-            p.paragraph_format.space_after = Pt(6)
+            run.font.color.rgb = self._theme_text()
+            p.paragraph_format.space_after = Pt(self._theme_space_after())
 
         elif section_type == "skills":
             if isinstance(content, dict):
@@ -3471,11 +3629,11 @@ class ResumeGenerationService:
                     cat_run.bold = True
                     cat_run.font.name = font_family
                     cat_run.font.size = Pt(body_size)
-                    cat_run.font.color.rgb = RGBColor(0x00, 0x00, 0x00)
+                    cat_run.font.color.rgb = self._theme_text()
                     skills_run = cat_para.add_run(", ".join(skills))
                     skills_run.font.name = font_family
                     skills_run.font.size = Pt(body_size)
-                    skills_run.font.color.rgb = RGBColor(0x00, 0x00, 0x00)
+                    skills_run.font.color.rgb = self._theme_text()
             else:
                 skills = [str(item) for item in self._as_list(content) if str(item).strip()]
                 if skills:
@@ -3483,6 +3641,7 @@ class ResumeGenerationService:
                     run = p.add_run(", ".join(skills))
                     run.font.name = font_family
                     run.font.size = Pt(body_size)
+                    run.font.color.rgb = self._theme_text()
 
         elif section_type in {"experience", "education", "projects"}:
             for item in self._as_list(content):
@@ -3501,6 +3660,7 @@ class ResumeGenerationService:
                 run = p.add_run(clean_item)
                 run.font.name = font_family
                 run.font.size = Pt(body_size)
+                run.font.color.rgb = self._theme_text()
 
     def _add_docx_education(
         self,
@@ -3548,13 +3708,13 @@ class ResumeGenerationService:
         run.bold = True
         run.font.name = font_family
         run.font.size = Pt(body_size)
-        run.font.color.rgb = RGBColor(0x00, 0x00, 0x00)
+        run.font.color.rgb = self._theme_text()
         if year:
             line.add_run("\t")
             date_run = line.add_run(year)
             date_run.font.name = font_family
             date_run.font.size = Pt(body_size)
-            date_run.font.color.rgb = RGBColor(0x33, 0x33, 0x33)
+            date_run.font.color.rgb = self._theme_muted()
 
         # Line 2: Institution, Location
         secondary_parts = [p for p in (institution if degree else "", location) if p]
@@ -3573,7 +3733,7 @@ class ResumeGenerationService:
             inst_run.italic = True
             inst_run.font.name = font_family
             inst_run.font.size = Pt(body_size)
-            inst_run.font.color.rgb = RGBColor(0x00, 0x00, 0x00)
+            inst_run.font.color.rgb = self._theme_text()
 
         if item.get("cgpa"):
             gpa_line = doc.add_paragraph(style="List Bullet")
@@ -3648,13 +3808,13 @@ class ResumeGenerationService:
                 run.bold = True
                 run.font.name = font_family
                 run.font.size = Pt(body_size)
-                run.font.color.rgb = RGBColor(0x00, 0x00, 0x00)
+                run.font.color.rgb = self._theme_text()
             if duration:
                 line.add_run("\t")
                 date_run = line.add_run(duration)
                 date_run.font.name = font_family
                 date_run.font.size = Pt(body_size)
-                date_run.font.color.rgb = RGBColor(0x33, 0x33, 0x33)
+                date_run.font.color.rgb = self._theme_muted()
 
         if secondary:
             role_line = doc.add_paragraph()
@@ -3664,7 +3824,7 @@ class ResumeGenerationService:
             role_run.italic = True
             role_run.font.name = font_family
             role_run.font.size = Pt(body_size)
-            role_run.font.color.rgb = RGBColor(0x00, 0x00, 0x00)
+            role_run.font.color.rgb = self._theme_text()
 
         if project_name:
             proj_line = doc.add_paragraph()
@@ -3682,7 +3842,7 @@ class ResumeGenerationService:
             loc_run = loc_p.add_run(location)
             loc_run.font.name = font_family
             loc_run.font.size = Pt(max(9.5, body_size - 0.5))
-            loc_run.font.color.rgb = RGBColor(0x33, 0x33, 0x33)
+            loc_run.font.color.rgb = self._theme_muted()
 
         desc = (
             item.get("description")
@@ -3715,7 +3875,7 @@ class ResumeGenerationService:
                 bullet_run = bullet_p.add_run(clean_bullet)
                 bullet_run.font.name = font_family
                 bullet_run.font.size = Pt(body_size)
-                bullet_run.font.color.rgb = RGBColor(0x00, 0x00, 0x00)
+                bullet_run.font.color.rgb = self._theme_text()
 
     def _append_section(
         self,

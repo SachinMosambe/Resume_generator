@@ -95,6 +95,19 @@ class FormatExtractionService:
 
         preview_text = self._build_format_preview(text, sections, section_labels)
 
+        source_type = ext.replace(".", "")
+        confidence = "high" if source_type in {"docx", "doc"} else "medium" if source_type == "pdf" else "low"
+        notes = ""
+        if source_type == "pdf":
+            notes = "PDF styles are approximate (sampled fonts/sizes/colors); DOCX recommended for closest match."
+        elif source_type == "doc":
+            notes = "Legacy DOC converted to DOCX for style extraction."
+
+        # Ensure styling has full FormatSchema defaults.
+        styling = dict(styling or self._default_styling())
+        for key, value in self._default_styling().items():
+            styling.setdefault(key, value)
+
         logger.info(
             "Extraction complete: %s sections, %s logos, header_branding=%s, footer_branding=%s",
             len(sections),
@@ -107,32 +120,44 @@ class FormatExtractionService:
                 data_len = len(logo.get("data", "")) if logo.get("data") else 0
                 logger.info("  Logo %s: %s (%s chars, source=%s)", i + 1, logo.get("position"), data_len, logo.get("source"))
 
-        return {
-            "source_filename": filename,
-            "source_type": ext.replace(".", ""),
-            "sections": sections,
-            "section_order": list(range(len(sections))),
-            "styling": styling,
-            "field_mapping": self._build_field_mapping(sections, section_labels),
-            "section_labels": section_labels,
-            "layout": {
-                "type": self._infer_layout(text),
-                "logo_position": "top_right",
-                "name_position": "top_left",
-                "company_header": "center" if company_header else None,
-                "company_footer": "center" if company_footer else None,
-                "dates": "right_aligned",
-                "section_dividers": True,
-            },
-            "company_header": company_header,
-            "company_footer": company_footer,
-            "preview_text": preview_text,
-            "logos": logos,
-            "logo_count": len(logos),
-            # Intentionally blank: sample resume candidate names must not be copied.
-            "header_text": "",
-            "footer_text": "",
-        }
+        from app.models.format_schema import DEFAULT_REQUIRED_SECTIONS, normalize_format_metadata
+
+        body_sections = [s for s in sections if s != "header"] or list(sections)
+        required = [s for s in DEFAULT_REQUIRED_SECTIONS if s in body_sections]
+        if not required:
+            required = list(DEFAULT_REQUIRED_SECTIONS)
+
+        return normalize_format_metadata(
+            {
+                "source_filename": filename,
+                "source_type": source_type,
+                "extraction_confidence": confidence,
+                "extraction_notes": notes,
+                "sections": body_sections,
+                "section_order": list(body_sections),
+                "styling": styling,
+                "field_mapping": self._build_field_mapping(sections, section_labels),
+                "section_labels": section_labels,
+                "layout": {
+                    "type": self._infer_layout(text),
+                    "logo_position": "top_right",
+                    "name_position": "top_left",
+                    "company_header": "center" if company_header else None,
+                    "company_footer": "center" if company_footer else None,
+                    "dates": "right_aligned",
+                    "section_dividers": True,
+                },
+                "company_header": company_header,
+                "company_footer": company_footer,
+                "preview_text": preview_text,
+                "logos": logos,
+                "logo_count": len(logos),
+                "completeness_contract": required,
+                # Intentionally blank: sample resume candidate names must not be copied.
+                "header_text": "",
+                "footer_text": "",
+            }
+        )
 
     def _extract_document(self, ext: str, content: bytes) -> tuple[str, dict[str, Any], list[dict], str, str]:
         """Extract document content, styling, logos, header text, and footer text."""
@@ -180,17 +205,21 @@ class FormatExtractionService:
         pages: list[str] = []
         font_names: list[str] = []
         font_sizes: list[float] = []
+        color_counts: dict[str, int] = {}
         with pdfplumber.open(str(path)) as pdf:
             for page in pdf.pages:
                 page_text = page.extract_text()
                 if page_text:
                     pages.append(page_text)
-                
+
                 for char in page.chars[:300]:
                     if char.get("fontname"):
                         font_names.append(str(char["fontname"]))
                     if char.get("size"):
                         font_sizes.append(float(char["size"]))
+                    color = self._pdf_char_color_hex(char)
+                    if color:
+                        color_counts[color] = color_counts.get(color, 0) + 1
 
         # Extract top/bottom page bands for company branding (not candidate bio).
         first_page_lines, last_page_lines = self._pdf_edge_lines(path, pages)
@@ -206,10 +235,18 @@ class FormatExtractionService:
 
         body_size = round(sum(font_sizes) / len(font_sizes), 1) if font_sizes else 11
         font_family = self._clean_font_name(font_names[0]) if font_names else "Helvetica"
+        color_text = max(color_counts, key=color_counts.get) if color_counts else "#000000"
         styling = {
             "font_family": font_family,
-            "font_size_header": max(14, int(body_size + 3)),
+            "font_size_header": max(12, int(body_size + 3)),
             "font_size_body": int(body_size) or 11,
+            "font_size_name": max(18, int(body_size + 8)),
+            "color_text": color_text,
+            "color_muted": "#333333",
+            "margin_inches": 0.65,
+            "line_spacing": 1.0,
+            "space_after_para": 6.0,
+            "layout": "single_column_ats",
         }
         return "\n".join(pages), styling, logos, header_text, footer_text
     
@@ -454,13 +491,7 @@ class FormatExtractionService:
         normal_style = document.styles["Normal"]
         font = normal_style.font
         font_size = int(font.size.pt) if font.size else 11
-        styling = {
-            "font_family": font.name or "Calibri",
-            "font_size_header": max(14, font_size + 3),
-            "font_size_body": font_size,
-            "font_size_name": max(18, font_size + 8),
-            "margin_inches": 0.65,
-        }
+        styling = self._extract_docx_rich_styling(document, fallback_body=font_size, fallback_family=font.name or "Calibri")
         logger.info(
             "DOCX extraction complete: %s text lines, %s logos, header=%s, footer=%s",
             len(lines),
@@ -469,6 +500,110 @@ class FormatExtractionService:
             bool(footer_text),
         )
         return "\n".join(lines), styling, logos, header_text, footer_text
+
+    def _extract_docx_rich_styling(
+        self,
+        document: Any,
+        *,
+        fallback_body: int = 11,
+        fallback_family: str = "Calibri",
+    ) -> dict[str, Any]:
+        """Walk paragraph/run styles for fonts, sizes, margins, and colors."""
+        body_sizes: list[float] = []
+        header_sizes: list[float] = []
+        name_sizes: list[float] = []
+        font_names: list[str] = []
+        color_counts: dict[str, int] = {}
+
+        for para in document.paragraphs[:200]:
+            text = (para.text or "").strip()
+            style_name = str(getattr(para.style, "name", "") or "").lower()
+            is_heading = "heading" in style_name or "title" in style_name
+            for run in para.runs:
+                run_font = run.font
+                if run_font.name:
+                    font_names.append(str(run_font.name))
+                size_pt = None
+                if run_font.size:
+                    try:
+                        size_pt = float(run_font.size.pt)
+                    except Exception:
+                        size_pt = None
+                if size_pt:
+                    if is_heading or (text and text.isupper() and len(text) < 60):
+                        header_sizes.append(size_pt)
+                    elif len(text) <= 48 and run_font.bold and size_pt >= (fallback_body + 4):
+                        name_sizes.append(size_pt)
+                    else:
+                        body_sizes.append(size_pt)
+                color_hex = self._docx_run_color_hex(run)
+                if color_hex:
+                    color_counts[color_hex] = color_counts.get(color_hex, 0) + 1
+
+        # Margins from first section
+        margin_inches = 0.65
+        try:
+            section = document.sections[0]
+            if section.left_margin:
+                margin_inches = round(float(section.left_margin.inches), 2)
+        except Exception:
+            pass
+
+        body_size = round(sum(body_sizes) / len(body_sizes), 1) if body_sizes else float(fallback_body)
+        header_size = (
+            round(sum(header_sizes) / len(header_sizes), 1)
+            if header_sizes
+            else max(12.0, body_size + 1)
+        )
+        name_size = (
+            round(sum(name_sizes) / len(name_sizes), 1)
+            if name_sizes
+            else max(18.0, body_size + 8)
+        )
+        font_family = font_names[0] if font_names else fallback_family
+        color_text = max(color_counts, key=color_counts.get) if color_counts else "#000000"
+
+        return {
+            "font_family": font_family or "Calibri",
+            "font_size_header": header_size,
+            "font_size_body": body_size,
+            "font_size_name": name_size,
+            "color_text": color_text,
+            "color_muted": "#333333",
+            "margin_inches": margin_inches,
+            "line_spacing": 1.0,
+            "space_after_para": 6.0,
+            "layout": "single_column_ats",
+        }
+
+    def _docx_run_color_hex(self, run: Any) -> str | None:
+        try:
+            color = run.font.color
+            if color is None or color.rgb is None:
+                return None
+            rgb = str(color.rgb)
+            if len(rgb) == 6:
+                return f"#{rgb.upper()}"
+        except Exception:
+            return None
+        return None
+
+    def _pdf_char_color_hex(self, char: dict[str, Any]) -> str | None:
+        """Best-effort PDF character color → #RRGGBB."""
+        non_stroking = char.get("non_stroking_color") or char.get("stroking_color")
+        if non_stroking is None:
+            return None
+        try:
+            if isinstance(non_stroking, (int, float)):
+                # Grayscale 0-1
+                v = max(0, min(255, int(float(non_stroking) * 255)))
+                return f"#{v:02X}{v:02X}{v:02X}"
+            if isinstance(non_stroking, (list, tuple)) and len(non_stroking) >= 3:
+                r, g, b = [max(0, min(255, int(float(c) * 255 if float(c) <= 1 else float(c)))) for c in non_stroking[:3]]
+                return f"#{r:02X}{g:02X}{b:02X}"
+        except Exception:
+            return None
+        return None
 
     def _docx_region_containers(self, document: Any, region: str) -> list[Any]:
         """Return header/footer containers including first/even page variants."""
@@ -1229,5 +1364,10 @@ class FormatExtractionService:
             "font_size_header": 12,
             "font_size_body": 11,
             "font_size_name": 20,
+            "color_text": "#000000",
+            "color_muted": "#333333",
             "margin_inches": 0.7,
+            "line_spacing": 1.0,
+            "space_after_para": 6.0,
+            "layout": "single_column_ats",
         }

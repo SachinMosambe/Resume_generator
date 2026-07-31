@@ -17,6 +17,10 @@ from app.services.pdf_parser import extract_text_from_document
 from app.services.resume_section_quality import audit_and_repair_document, critical_findings
 from app.services.structured_resume_store import build_structured_resume, document_from_store
 from app.services.tech_glossary import restore_tech_names
+from app.models.format_schema import normalize_format_metadata
+from app.services.aptino_template import get_aptino_default_metadata
+from app.services.format_validator import has_critical_findings, validate_format_document
+from app.agent_pipeline.state import FormatSpec
 
 FIXTURE_DIRS = [
     Path("/test/resume"),
@@ -94,6 +98,21 @@ def check_file(path: Path) -> list[str]:
     header_crit = [f for f in crit if f.get("section") == "header"]
     if header_crit:
         errors.append(f"header_critical:{header_crit[0].get('issue')}")
+
+    # Format gate: Aptino schema must not introduce structural criticals beyond
+    # missing optional sections already absent from the source store.
+    aptino = normalize_format_metadata(get_aptino_default_metadata())
+    format_findings = validate_format_document(doc, FormatSpec.from_metadata(aptino))
+    for finding in format_findings:
+        if finding.get("severity") != "critical":
+            continue
+        issue = str(finding.get("issue") or "")
+        section = str(finding.get("section") or "")
+        if "Required section" in issue and not store.get(section):
+            continue
+        if "Candidate name missing" in issue and not str(data.get("name") or "").strip():
+            continue
+        errors.append(f"format_gate:{section}:{issue[:80]}")
 
     return errors
 

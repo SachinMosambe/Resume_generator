@@ -131,22 +131,30 @@ class FormatSpec:
 
     @classmethod
     def from_metadata(cls, metadata: dict[str, Any] | None) -> "FormatSpec":
-        metadata = dict(metadata or {})
-        order = metadata.get("sections") or metadata.get("section_order") or [
-            "summary",
-            "skills",
-            "experience",
-            "projects",
-            "education",
-            "certifications",
-            "achievements",
-            "languages",
+        from app.models.format_schema import normalize_format_metadata
+
+        metadata = normalize_format_metadata(metadata)
+        order = [
+            s
+            for s in (metadata.get("section_order") or metadata.get("sections") or [])
+            if str(s).strip() and str(s).lower() != "header"
         ]
-        labels = metadata.get("section_labels")
+        if not order:
+            order = [
+                "summary",
+                "skills",
+                "experience",
+                "projects",
+                "education",
+                "certifications",
+                "achievements",
+                "languages",
+            ]
+        labels = metadata.get("section_labels") or metadata.get("field_mapping") or {}
         return cls(
             metadata=metadata,
-            section_order=[str(s) for s in order],
-            labels=dict(labels) if isinstance(labels, dict) else {},
+            section_order=[str(s).lower() for s in order],
+            labels={str(k).lower(): str(v) for k, v in dict(labels).items()},
             target_pages=float(getattr(settings, "RESUME_TARGET_PAGES", 3.0) or 3.0),
         )
 

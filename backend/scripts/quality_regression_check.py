@@ -188,6 +188,75 @@ Associate Staff Engineer — AI/ML | Nagarro India Jan 2024 – July 2025
 
     # Silence unused import warning in some linters.
     assert re is not None
+
+    # --- FormatSchema + format validator gates (no Bedrock) ---
+    from app.models.format_schema import normalize_format_metadata, parse_hex_rgb
+    from app.services.aptino_template import get_aptino_default_metadata
+    from app.services.format_validator import (
+        document_section_types,
+        has_critical_findings,
+        validate_format_document,
+    )
+    from app.agent_pipeline.state import FormatSpec
+
+    aptino = get_aptino_default_metadata()
+    assert isinstance(aptino.get("section_order"), list)
+    assert all(isinstance(s, str) and not str(s).isdigit() for s in aptino["section_order"]), aptino[
+        "section_order"
+    ]
+    assert aptino["styling"]["font_family"]
+    assert aptino["styling"]["color_text"].startswith("#")
+    assert aptino.get("completeness_contract")
+
+    normalized = normalize_format_metadata(
+        {
+            "sections": ["summary", "experience", "skills"],
+            "section_order": [0, 1, 2],  # legacy indices must be ignored
+            "styling": {"font_family": "Arial", "font_size_body": 11, "color_text": "112233"},
+            "source_type": "docx",
+        }
+    )
+    assert normalized["section_order"] == ["summary", "experience", "skills"], normalized["section_order"]
+    assert normalized["styling"]["color_text"] == "#112233"
+    assert parse_hex_rgb("#FF5050") == (255, 80, 80)
+
+    good_doc = {
+        "header": {"name": "Jane Doe", "contact": ["jane@example.com"]},
+        "sections": [
+            {"type": "summary", "title": "PROFESSIONAL SUMMARY", "content": "Leader."},
+            {"type": "skills", "title": "TECHNICAL SKILLS", "content": {"Languages": ["Python"]}},
+            {
+                "type": "experience",
+                "title": "PROFESSIONAL EXPERIENCE",
+                "content": [{"company": "Acme", "title": "Engineer", "duration": "2020-2024"}],
+            },
+            {
+                "type": "education",
+                "title": "EDUCATION",
+                "content": [{"degree": "BS", "institution": "State U", "year": "2019"}],
+            },
+        ],
+    }
+    findings_ok = validate_format_document(good_doc, FormatSpec.from_metadata(aptino))
+    assert not has_critical_findings(findings_ok), findings_ok
+    assert document_section_types(good_doc)[:2] == ["summary", "skills"]
+
+    bad_order = {
+        "header": {"name": "Jane Doe", "contact": ["a@b.c"]},
+        "sections": [
+            {"type": "experience", "title": "EXPERIENCE", "content": [{"company": "Acme"}]},
+            {"type": "summary", "title": "SUMMARY", "content": "x"},
+            {"type": "skills", "title": "SKILLS", "content": ["Python"]},
+            {"type": "education", "title": "EDUCATION", "content": [{"degree": "BS"}]},
+        ],
+    }
+    findings_bad = validate_format_document(bad_order, FormatSpec.from_metadata(aptino))
+    assert has_critical_findings(findings_bad), findings_bad
+
+    # Baseline: Aptino metadata must keep required sections contract for regression.
+    required = set(aptino.get("completeness_contract") or [])
+    assert {"summary", "skills", "experience", "education"} <= required
+
     print("quality_regression_ok")
 
 

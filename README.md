@@ -38,12 +38,19 @@ Open http://localhost:3000 — upload a resume, choose Aptino default or a clien
 ## API
 
 - `GET /api/health` — health check
+- `GET /api/formats` — list saved company format profiles
+- `POST /api/formats` — upload PDF/DOC/DOCX format, extract + save profile
+- `GET /api/formats/{id}` — format detail + schema preview
+- `DELETE /api/formats/{id}` — delete saved format
 - `POST /api/generate` — multipart form:
-  - `resume` (required): PDF/DOCX
-  - `template_source`: `aptino_default` | `client_format`
-  - `template` (required if client_format): PDF/DOCX
+  - `resume` (required): PDF/DOC/DOCX
+  - `template_source`: `aptino_default` | `client_format` | `saved_format`
+  - `template` (required if client_format): PDF/DOC/DOCX company format
+  - `format_id` (required if saved_format): saved profile id
+  - `save_format` (optional): `true` to persist an uploaded client format
+  - `format_name` (optional): name when saving
   - `client_name`, `job_role` (optional)
-  - Response: DOCX file download
+  - Response: DOCX file download (may include `X-Saved-Format-Id` header)
 
 ## Deploy (EC2 backend + Vercel frontend)
 

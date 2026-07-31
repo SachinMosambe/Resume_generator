@@ -1,18 +1,31 @@
 "use client";
 
-import { ChangeEvent, FormEvent, useMemo, useState } from "react";
+import { ChangeEvent, FormEvent, useCallback, useEffect, useMemo, useState } from "react";
 import toast, { Toaster } from "react-hot-toast";
 import {
   FileText,
   Loader2,
   Sparkles,
+  Trash2,
   Upload,
   X,
 } from "lucide-react";
 
-type TemplateMode = "aptino_default" | "client_format";
+type TemplateMode = "aptino_default" | "client_format" | "saved_format";
+
+type SavedFormat = {
+  id: string;
+  name: string;
+  source_type?: string;
+  preview_text?: string;
+  section_count?: number;
+  logo_count?: number;
+  extraction_confidence?: string;
+};
 
 const API_URL = process.env.NEXT_PUBLIC_API_URL || "http://localhost:8000";
+const ACCEPT_DOCS =
+  ".pdf,.doc,.docx,application/pdf,application/msword,application/vnd.openxmlformats-officedocument.wordprocessingml.document";
 
 function FilePicker({
   label,
@@ -86,11 +99,48 @@ export default function HomePage() {
   const [clientName, setClientName] = useState("");
   const [jobRole, setJobRole] = useState("");
   const [isGenerating, setIsGenerating] = useState(false);
+  const [savedFormats, setSavedFormats] = useState<SavedFormat[]>([]);
+  const [selectedFormatId, setSelectedFormatId] = useState("");
+  const [saveFormatAs, setSaveFormatAs] = useState(false);
+  const [formatName, setFormatName] = useState("");
+  const [isLoadingFormats, setIsLoadingFormats] = useState(false);
+
+  const loadFormats = useCallback(async () => {
+    setIsLoadingFormats(true);
+    try {
+      const response = await fetch(`${API_URL}/api/formats`);
+      if (!response.ok) throw new Error("Failed to load saved formats");
+      const data = await response.json();
+      setSavedFormats(Array.isArray(data.formats) ? data.formats : []);
+    } catch {
+      setSavedFormats([]);
+    } finally {
+      setIsLoadingFormats(false);
+    }
+  }, []);
+
+  useEffect(() => {
+    void loadFormats();
+  }, [loadFormats]);
 
   const canSubmit =
     Boolean(resumeFile) &&
     !isGenerating &&
-    (templateMode === "aptino_default" || Boolean(templateFile));
+    (templateMode === "aptino_default" ||
+      (templateMode === "client_format" && Boolean(templateFile)) ||
+      (templateMode === "saved_format" && Boolean(selectedFormatId)));
+
+  const handleDeleteFormat = async (id: string) => {
+    try {
+      const response = await fetch(`${API_URL}/api/formats/${id}`, { method: "DELETE" });
+      if (!response.ok) throw new Error("Delete failed");
+      toast.success("Format deleted");
+      if (selectedFormatId === id) setSelectedFormatId("");
+      await loadFormats();
+    } catch (error) {
+      toast.error(error instanceof Error ? error.message : "Failed to delete format");
+    }
+  };
 
   const handleSubmit = async (event: FormEvent) => {
     event.preventDefault();
@@ -99,7 +149,11 @@ export default function HomePage() {
       return;
     }
     if (templateMode === "client_format" && !templateFile) {
-      toast.error("Upload a client format template");
+      toast.error("Upload a client format template (PDF, DOC, or DOCX)");
+      return;
+    }
+    if (templateMode === "saved_format" && !selectedFormatId) {
+      toast.error("Select a saved company format");
       return;
     }
 
@@ -114,6 +168,13 @@ export default function HomePage() {
       form.append("job_role", jobRole.trim());
       if (templateMode === "client_format" && templateFile) {
         form.append("template", templateFile);
+        if (saveFormatAs) {
+          form.append("save_format", "true");
+          form.append("format_name", formatName.trim() || templateFile.name);
+        }
+      }
+      if (templateMode === "saved_format" && selectedFormatId) {
+        form.append("format_id", selectedFormatId);
       }
 
       const response = await fetch(`${API_URL}/api/generate`, {
@@ -146,7 +207,14 @@ export default function HomePage() {
       link.remove();
       URL.revokeObjectURL(url);
 
-      toast.success("Resume downloaded", { id: toastId });
+      const savedId = response.headers.get("X-Saved-Format-Id");
+      if (savedId) {
+        toast.success("Resume downloaded · format saved", { id: toastId });
+        await loadFormats();
+        setSaveFormatAs(false);
+      } else {
+        toast.success("Resume downloaded", { id: toastId });
+      }
     } catch (error) {
       const message = error instanceof Error ? error.message : "Failed to generate resume";
       toast.error(message, { id: toastId });
@@ -168,8 +236,8 @@ export default function HomePage() {
             Generate a client-ready resume
           </h1>
           <p className="max-w-2xl text-sm text-gray-500 md:text-base">
-            Upload a candidate resume, pick the Aptino default template or a client format,
-            and download a polished DOCX.
+            Upload a candidate resume, pick Aptino default, upload a company format (PDF/DOC/DOCX),
+            or reuse a saved format — then download a polished DOCX.
           </p>
         </header>
 
@@ -181,7 +249,7 @@ export default function HomePage() {
             label="Candidate resume"
             hint="PDF, DOC, or DOCX up to 10 MB"
             file={resumeFile}
-            accept=".pdf,.doc,.docx,application/pdf,application/msword,application/vnd.openxmlformats-officedocument.wordprocessingml.document"
+            accept={ACCEPT_DOCS}
             onChange={setResumeFile}
             onClear={() => setResumeFile(null)}
           />
@@ -215,7 +283,7 @@ export default function HomePage() {
             <p className="text-[11px] font-bold uppercase tracking-wider text-gray-400">
               Template
             </p>
-            <div className="grid gap-3 sm:grid-cols-2">
+            <div className="grid gap-3 sm:grid-cols-3">
               <button
                 type="button"
                 onClick={() => setTemplateMode("aptino_default")}
@@ -226,7 +294,7 @@ export default function HomePage() {
                 }`}
               >
                 <p className="text-sm font-semibold text-gray-900">Aptino default</p>
-                <p className="mt-0.5 text-xs text-gray-500">Built-in logo and company footer</p>
+                <p className="mt-0.5 text-xs text-gray-500">Built-in logo and footer</p>
               </button>
               <button
                 type="button"
@@ -237,21 +305,122 @@ export default function HomePage() {
                     : "border-gray-200 bg-gray-50/40 hover:border-gray-300"
                 }`}
               >
-                <p className="text-sm font-semibold text-gray-900">Upload client format</p>
-                <p className="mt-0.5 text-xs text-gray-500">Match an existing PDF/DOCX layout</p>
+                <p className="text-sm font-semibold text-gray-900">Upload format</p>
+                <p className="mt-0.5 text-xs text-gray-500">PDF, DOC, or DOCX</p>
+              </button>
+              <button
+                type="button"
+                onClick={() => {
+                  setTemplateMode("saved_format");
+                  void loadFormats();
+                }}
+                className={`rounded-xl border px-4 py-3 text-left transition ${
+                  templateMode === "saved_format"
+                    ? "border-[#FF5050] bg-[#FF5050]/5 ring-1 ring-[#FF5050]/30"
+                    : "border-gray-200 bg-gray-50/40 hover:border-gray-300"
+                }`}
+              >
+                <p className="text-sm font-semibold text-gray-900">Saved format</p>
+                <p className="mt-0.5 text-xs text-gray-500">Reuse a stored profile</p>
               </button>
             </div>
           </div>
 
           {templateMode === "client_format" && (
-            <FilePicker
-              label="Client format template"
-              hint="PDF, DOC, or DOCX sample to extract style and logos"
-              file={templateFile}
-              accept=".pdf,.doc,.docx,application/pdf,application/msword,application/vnd.openxmlformats-officedocument.wordprocessingml.document"
-              onChange={setTemplateFile}
-              onClear={() => setTemplateFile(null)}
-            />
+            <div className="space-y-4">
+              <FilePicker
+                label="Company format template"
+                hint="PDF, DOC, or DOCX — DOCX recommended for closest match"
+                file={templateFile}
+                accept={ACCEPT_DOCS}
+                onChange={setTemplateFile}
+                onClear={() => setTemplateFile(null)}
+              />
+              <label className="flex items-start gap-3 rounded-xl border border-gray-200 bg-gray-50/50 px-4 py-3">
+                <input
+                  type="checkbox"
+                  checked={saveFormatAs}
+                  onChange={(e) => setSaveFormatAs(e.target.checked)}
+                  className="mt-1"
+                />
+                <span className="space-y-1">
+                  <span className="block text-sm font-semibold text-gray-900">
+                    Save this format for reuse
+                  </span>
+                  <span className="block text-xs text-gray-500">
+                    Stores fonts, section order, logos, and the original file.
+                  </span>
+                </span>
+              </label>
+              {saveFormatAs && (
+                <input
+                  value={formatName}
+                  onChange={(e) => setFormatName(e.target.value)}
+                  placeholder="Format name (e.g. Acme Corp 2026)"
+                  className="h-10 w-full rounded-lg border border-gray-200 bg-white px-3 text-sm text-gray-900 outline-none transition focus:border-[#FF5050] focus:ring-1 focus:ring-[#FF5050]/30"
+                />
+              )}
+            </div>
+          )}
+
+          {templateMode === "saved_format" && (
+            <div className="space-y-3">
+              <div className="flex items-center justify-between">
+                <label className="text-[11px] font-bold uppercase tracking-wider text-gray-400">
+                  Saved company formats
+                </label>
+                <button
+                  type="button"
+                  onClick={() => void loadFormats()}
+                  className="text-xs font-semibold text-[#FF5050] hover:underline"
+                >
+                  {isLoadingFormats ? "Loading…" : "Refresh"}
+                </button>
+              </div>
+              {savedFormats.length === 0 ? (
+                <p className="rounded-xl border border-dashed border-gray-200 bg-gray-50/60 px-4 py-6 text-center text-sm text-gray-500">
+                  No saved formats yet. Upload a PDF/DOC/DOCX and check “Save this format”.
+                </p>
+              ) : (
+                <ul className="space-y-2">
+                  {savedFormats.map((fmt) => (
+                    <li
+                      key={fmt.id}
+                      className={`flex items-start justify-between gap-3 rounded-xl border px-4 py-3 transition ${
+                        selectedFormatId === fmt.id
+                          ? "border-[#FF5050] bg-[#FF5050]/5"
+                          : "border-gray-200 bg-white hover:border-gray-300"
+                      }`}
+                    >
+                      <button
+                        type="button"
+                        className="min-w-0 flex-1 text-left"
+                        onClick={() => setSelectedFormatId(fmt.id)}
+                      >
+                        <p className="truncate text-sm font-semibold text-gray-900">{fmt.name}</p>
+                        <p className="mt-0.5 text-xs text-gray-500">
+                          {(fmt.source_type || "file").toUpperCase()}
+                          {typeof fmt.section_count === "number" ? ` · ${fmt.section_count} sections` : ""}
+                          {typeof fmt.logo_count === "number" ? ` · ${fmt.logo_count} logos` : ""}
+                          {fmt.extraction_confidence ? ` · ${fmt.extraction_confidence}` : ""}
+                        </p>
+                        {fmt.preview_text ? (
+                          <p className="mt-1 line-clamp-2 text-xs text-gray-400">{fmt.preview_text}</p>
+                        ) : null}
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => void handleDeleteFormat(fmt.id)}
+                        className="rounded-lg p-1.5 text-gray-400 transition hover:bg-gray-100 hover:text-red-500"
+                        aria-label={`Delete ${fmt.name}`}
+                      >
+                        <Trash2 className="h-4 w-4" />
+                      </button>
+                    </li>
+                  ))}
+                </ul>
+              )}
+            </div>
           )}
 
           <button

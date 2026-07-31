@@ -61,6 +61,8 @@ def get_aptino_company_header_lines() -> list[str]:
 
 def get_aptino_default_metadata() -> dict[str, Any]:
     """Return format metadata used as the default Aptino resume template."""
+    from app.models.format_schema import normalize_format_metadata
+
     logos: list[dict[str, Any]] = []
     logo_data = _load_aptino_logo_data_url()
     if logo_data:
@@ -79,53 +81,62 @@ def get_aptino_default_metadata() -> dict[str, Any]:
         "lines": get_aptino_company_footer_lines(),
     }
 
-    return {
-        "template_id": APTINO_TEMPLATE_ID,
-        "template_name": "Aptino Default",
-        "source_type": "aptino_builtin",
-        "sections": [s for s in APTINO_SECTION_ORDER if s != "header"],
-        "section_order": list(APTINO_SECTION_ORDER),
-        "styling": {
-            "font_family": "Calibri",
-            "font_size_body": 11,
-            "font_size_header": 12,
-            "font_size_name": 20,
-            "color_text": "#000000",
-            "color_muted": "#333333",
-            "margin_inches": 0.7,
-            "layout": "single_column_ats",
-        },
-        "layout": {
-            "type": "single_column",
-            "name_position": "top_left",
-            "logo_position": "top_right",
-            "company_footer": "center",
-            "dates": "right_aligned",
-            "section_dividers": True,
-        },
-        # Footer company sign (preferred key).
-        "company_footer": company_sign,
-        # Kept for older clients/uploads that still read company_header.
-        "company_header": company_sign,
-        "field_mapping": {
-            "summary": "PROFESSIONAL SUMMARY",
-            "skills": "TECHNICAL SKILLS",
-            "experience": "PROFESSIONAL EXPERIENCE",
-            "projects": "PROJECTS",
-            "education": "EDUCATION",
-            "certifications": "CERTIFICATIONS",
-            "achievements": "ACHIEVEMENTS",
-            "languages": "LANGUAGES",
-        },
-        "logo_count": len(logos),
-        "logos": logos,
-        "preview_text": (
-            "Section order: PROFESSIONAL SUMMARY → TECHNICAL SKILLS → PROFESSIONAL EXPERIENCE → "
-            "PROJECTS → EDUCATION → CERTIFICATIONS → ACHIEVEMENTS → LANGUAGES || "
-            "Template headings: PROFESSIONAL SUMMARY | TECHNICAL SKILLS | PROFESSIONAL EXPERIENCE | "
-            "PROJECTS | EDUCATION | CERTIFICATIONS"
-        ),
+    field_mapping = {
+        "summary": "PROFESSIONAL SUMMARY",
+        "skills": "TECHNICAL SKILLS",
+        "experience": "PROFESSIONAL EXPERIENCE",
+        "projects": "PROJECTS",
+        "education": "EDUCATION",
+        "certifications": "CERTIFICATIONS",
+        "achievements": "ACHIEVEMENTS",
+        "languages": "LANGUAGES",
     }
+
+    return normalize_format_metadata(
+        {
+            "template_id": APTINO_TEMPLATE_ID,
+            "template_name": "Aptino Default",
+            "source_type": "aptino_builtin",
+            "source_filename": "aptino_default",
+            "extraction_confidence": "high",
+            "extraction_notes": "Built-in Aptino ATS template",
+            "sections": [s for s in APTINO_SECTION_ORDER if s != "header"],
+            "section_order": list(APTINO_SECTION_ORDER),
+            "styling": {
+                "font_family": "Calibri",
+                "font_size_body": 11,
+                "font_size_header": 12,
+                "font_size_name": 20,
+                "color_text": "#000000",
+                "color_muted": "#333333",
+                "margin_inches": 0.7,
+                "line_spacing": 1.0,
+                "space_after_para": 6.0,
+                "layout": "single_column_ats",
+            },
+            "layout": {
+                "type": "single_column",
+                "name_position": "top_left",
+                "logo_position": "top_right",
+                "company_footer": "center",
+                "dates": "right_aligned",
+                "section_dividers": True,
+            },
+            "company_footer": company_sign,
+            "company_header": company_sign,
+            "field_mapping": field_mapping,
+            "section_labels": dict(field_mapping),
+            "completeness_contract": ["summary", "skills", "experience", "education"],
+            "logo_count": len(logos),
+            "logos": logos,
+            "preview_text": (
+                "Section order: PROFESSIONAL SUMMARY → TECHNICAL SKILLS → PROFESSIONAL EXPERIENCE → "
+                "PROJECTS → EDUCATION → CERTIFICATIONS → ACHIEVEMENTS → LANGUAGES || "
+                "Template headings: PROFESSIONAL SUMMARY | TECHNICAL SKILLS | PROFESSIONAL EXPERIENCE | "
+                "PROJECTS | EDUCATION | CERTIFICATIONS"
+            ),
+        }
+    )
 
 
 def build_aptino_client_format(client_id: str) -> Any:
