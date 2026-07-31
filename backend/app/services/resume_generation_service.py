@@ -47,7 +47,7 @@ from app.services.structured_resume_store import (
 from app.services.resume_page_fitter import (
     estimate_pages,
     fit_store_to_pages,
-    light_trim_store,
+    moderate_summarize_store,
     needs_page_fit,
     resolve_target_pages,
 )
@@ -785,14 +785,15 @@ class ResumeGenerationService:
         target_pages = resolve_target_pages(pages_full, configured_pages)
         large = is_large_resume(full_store)
 
-        # 2) Soft importance fit toward readable client length, then LLM readable polish.
+        # 2) Moderate summarize long careers (dedupe + soft caps), then page-fit if still long.
         #    Skills stay exact (locked in merge). Never full-document rewrite for long careers.
-        if needs_page_fit(full_store, target_pages=target_pages):
-            render_store = fit_store_to_pages(full_store, target_pages=target_pages)
-            mode = "store_page_fit"
-        elif large:
-            render_store = light_trim_store(full_store)
-            mode = "store_keep_dense"
+        if needs_page_fit(full_store, target_pages=target_pages) or large:
+            render_store = moderate_summarize_store(full_store)
+            if needs_page_fit(render_store, target_pages=target_pages):
+                render_store = fit_store_to_pages(render_store, target_pages=target_pages)
+                mode = "store_moderate_page_fit"
+            else:
+                mode = "store_moderate_summarize"
         else:
             render_store = full_store
             mode = "store_keep_all"

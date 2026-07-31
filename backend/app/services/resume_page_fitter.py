@@ -5,6 +5,7 @@ Rules:
 - Never invent employers, dates, skills, or bullets.
 - Never move content across sections.
 - Small/medium resumes: keep everything as-is.
+- Long careers: moderate summarize (dedupe + soft caps) before hard page-fit.
 - Oversized resumes: select the most important genuine bullets/projects.
 - Summarize by importance — never collapse a long career into a thin 2-page stub.
 """
@@ -37,6 +38,26 @@ _HIGH_SIGNAL_RE = re.compile(
 _GENERIC_VERB_RE = re.compile(
     r"(?i)^(implemented|developed|designed|improved|delivered|collaborated|supported|"
     r"participated|documented|mentored|worked|built|created|managed|led|helped)$"
+)
+# Code/CLI dumps and misplaced section labels — not client-ready bullets.
+_GARBAGE_BULLET_RE = re.compile(
+    r"(?i)("
+    r"\.builder\s*\(|\.get\s*or\s*create\s*\(|\.getOrCreate\s*\(|"
+    r"Session\.builder|SparkSession|"
+    r"openstack\s+server\s+create|--image\s+|\\\s*--|"
+    r"```|npm\s+install|pip\s+install|"
+    r"^\s*education\s*:"
+    r")"
+)
+_CONTACT_MASH_RE = re.compile(
+    r"(?i)^(?:[A-Z][A-Za-z.'\-]+(?:\s+[A-Z][A-Za-z.'\-]+){0,5}\s*[|•]\s*)?"
+    r"(?:C\s*:\s*\S+\s*)?(?:[|•]\s*)?(?:E\s*:\s*\S+\s*)+"
+)
+_TITLE_ONLY_BULLET_RE = re.compile(
+    r"(?i)^(java|python|full[\s-]?stack|backend|frontend|software|senior|lead|"
+    r"technology|engineer|developer|programmer|architect)"
+    r"([\s/-]+(java|python|full[\s-]?stack|backend|frontend|software|senior|lead|"
+    r"technology|engineer|developer|programmer|architect)){0,4}$"
 )
 
 
@@ -105,6 +126,66 @@ def light_trim_store(store: dict[str, Any]) -> dict[str, Any]:
         "projects_kept": len(projects),
     }
     logger.info("resume_light_trim_applied", **fitted["fit"])
+    return fitted
+
+
+def moderate_summarize_store(store: dict[str, Any]) -> dict[str, Any]:
+    """
+    Better client summary for long careers — not aggressive.
+
+    Keeps every role and nearly all unique substance. Removes contact mash,
+    code/CLI dumps, near-duplicate bullets, and soft-caps density by recency.
+    """
+    fitted = copy.deepcopy(store)
+    before = estimate_pages(store)
+    fitted["summary"] = _fit_summary(str(fitted.get("summary") or ""), max_chars=1800)
+
+    experience: list[dict[str, Any]] = []
+    roles = [r for r in (fitted.get("experience") or []) if isinstance(r, dict)]
+    for idx, role in enumerate(roles):
+        clone = dict(role)
+        cleaned = _clean_role_bullets(list(role.get("description") or []))
+        quota = _moderate_role_quota(idx, len(roles), len(cleaned))
+        selected = _select_bullets(cleaned, quota)
+        clone["description"] = [_shorten_bullet_keep_core(b, max_chars=300) for b in selected]
+        techs = [
+            str(t).strip()
+            for t in (role.get("technologies") or [])
+            if str(t).strip() and len(str(t).strip()) <= 60 and len(str(t).split()) <= 6
+        ][:16]
+        clone["technologies"] = techs
+        experience.append(clone)
+    fitted["experience"] = experience
+
+    projects: list[dict[str, Any]] = []
+    for proj in fitted.get("projects") or []:
+        if not isinstance(proj, dict):
+            continue
+        clone = dict(proj)
+        cleaned = _clean_role_bullets(list(proj.get("description") or []))
+        selected = _select_bullets(cleaned, min(6, max(3, len(cleaned))))
+        clone["description"] = [_shorten_bullet_keep_core(b, max_chars=280) for b in selected]
+        projects.append(clone)
+    fitted["projects"] = projects
+    fitted["education"] = _fit_education(fitted.get("education") or [])
+
+    fitted["stats"] = {
+        **(fitted.get("stats") or {}),
+        "experience_count": len(experience),
+        "experience_bullets": sum(len(r.get("description") or []) for r in experience),
+        "projects_count": len(projects),
+        "moderately_summarized": True,
+    }
+    fitted["fit"] = {
+        "applied": True,
+        "mode": "moderate_summarize",
+        "pages_before": round(before, 2),
+        "pages_after": round(estimate_pages(fitted), 2),
+        "roles_kept": len(experience),
+        "bullets_kept": fitted["stats"]["experience_bullets"],
+        "projects_kept": len(projects),
+    }
+    logger.info("resume_moderate_summarize_applied", **fitted["fit"])
     return fitted
 
 
@@ -232,7 +313,7 @@ def fit_store_to_pages(
 
 
 def _fit_summary(text: str, max_chars: int = 1600) -> str:
-    text = re.sub(r"\s+", " ", (text or "").strip())
+    text = _clean_summary_text(text)
     if len(text) <= max_chars:
         return text
     parts = re.split(r"(?<=[.!?])\s+", text)
@@ -245,10 +326,162 @@ def _fit_summary(text: str, max_chars: int = 1600) -> str:
             break
         kept.append(part)
         total += len(part) + 1
-        if len(kept) >= 10:
+        if len(kept) >= 8:
             break
     out = " ".join(kept).strip()
     return out or text[:max_chars].rsplit(" ", 1)[0].strip()
+
+
+def _clean_summary_text(text: str) -> str:
+    """Strip contact/name mash that leaked into the professional summary."""
+    text = re.sub(r"\s+", " ", (text or "").strip())
+    if not text:
+        return ""
+    # "NAME | C: phone | E: email Summary starts here"
+    text = re.sub(
+        r"(?i)^[A-Z][A-Za-z.'\-]+(?:\s+[A-Z][A-Za-z.'\-]+){0,5}\s*[|•]\s*"
+        r"C\s*:\s*\S+\s*[|•]\s*E\s*:\s*\S+\s*",
+        "",
+        text,
+    ).strip()
+    text = _CONTACT_MASH_RE.sub("", text).strip()
+    text = re.sub(
+        r"(?i)^(?:phone|email|mobile|tel)\s*:\s*\S+(?:\s*[|•,]\s*)?",
+        "",
+        text,
+    ).strip()
+    return text
+
+
+def _moderate_role_quota(role_index: int, role_count: int, available: int) -> int:
+    """Soft density caps by recency — keep substance, trim only redundancy."""
+    _ = role_count
+    if available <= 0:
+        return 0
+    if role_index == 0:
+        cap = 12
+    elif role_index == 1:
+        cap = 11
+    elif role_index <= 3:
+        cap = 10
+    elif role_index <= 5:
+        cap = 8
+    else:
+        cap = 6
+    return min(available, cap)
+
+
+def _clean_role_bullets(bullets: list[str]) -> list[str]:
+    """Drop garbage/code dumps and collapse near-duplicates; keep richer wording."""
+    cleaned: list[str] = []
+    for raw in bullets:
+        text = re.sub(r"\s+", " ", str(raw or "").strip())
+        if len(text) < 25:
+            continue
+        if _is_garbage_bullet(text):
+            continue
+        cleaned.append(text)
+    return _collapse_near_duplicate_bullets(cleaned)
+
+
+def _is_garbage_bullet(text: str) -> bool:
+    if _GARBAGE_BULLET_RE.search(text):
+        return True
+    if _TITLE_ONLY_BULLET_RE.match(text.strip()):
+        return True
+    # Dense code-ish tokens without normal prose spacing.
+    if text.count("(") >= 2 and text.count(")") >= 2 and len(text) > 80:
+        if re.search(r"[A-Za-z]\.[A-Za-z].*\(.*\)\.", text):
+            return True
+    return False
+
+
+def _collapse_near_duplicate_bullets(bullets: list[str]) -> list[str]:
+    kept: list[str] = []
+    for bullet in bullets:
+        dup_at = None
+        for i, existing in enumerate(kept):
+            if _bullets_near_duplicate(existing, bullet):
+                dup_at = i
+                break
+        if dup_at is None:
+            kept.append(bullet)
+            continue
+        # Keep the higher-signal / more specific wording.
+        if _bullet_score(bullet) > _bullet_score(kept[dup_at]) or (
+            len(bullet) > len(kept[dup_at]) + 20 and _bullet_score(bullet) >= _bullet_score(kept[dup_at]) - 0.5
+        ):
+            kept[dup_at] = bullet
+    return kept
+
+
+def _bullets_near_duplicate(a: str, b: str) -> bool:
+    ta = _overlap_tokens(a)
+    tb = _overlap_tokens(b)
+    if not ta or not tb:
+        return False
+    inter = len(ta & tb)
+    union = len(ta | tb) or 1
+    jaccard = inter / union
+    if jaccard >= 0.58:
+        return True
+    if inter >= 5 and jaccard >= 0.42:
+        return True
+    ha = {m.group(0).lower() for m in _HIGH_SIGNAL_RE.finditer(a)}
+    hb = {m.group(0).lower() for m in _HIGH_SIGNAL_RE.finditer(b)}
+    if ha and hb and ha == hb and jaccard >= 0.18 and len(ha) >= 2:
+        return True
+    if len(ha & hb) >= 2 and jaccard >= 0.28:
+        return True
+    if _theme_collision(ta, tb):
+        return True
+    return False
+
+
+def _theme_collision(ta: set[str], tb: set[str]) -> bool:
+    """True when two bullets restate the same accessibility/integration theme."""
+    a11y = {"wcag", "accessibility", "508", "aria", "section"}
+    stacks = {"angular", "react", "vue", "html", "html5", "typescript"}
+    if (ta & a11y) and (tb & a11y) and ((ta & stacks) & (tb & stacks)):
+        return True
+    mule = {"mulesoft", "anypoint", "raml", "dataweave", "weave"}
+    if (ta & mule) and (tb & mule):
+        # Only collapse near-identical MuleSoft rewrites, not distinct mule workstreams.
+        sub_a = _mule_subtheme(ta)
+        sub_b = _mule_subtheme(tb)
+        if sub_a and sub_a == sub_b:
+            return True
+    return False
+
+
+def _mule_subtheme(tokens: set[str]) -> str:
+    if tokens & {"munit", "testing", "validation"}:
+        return "test"
+    if tokens & {"policy", "oauth", "manager", "rate"}:
+        return "policy"
+    if tokens & {"raml", "dataweave", "weave", "anypoint", "integration"}:
+        return "integration"
+    return ""
+
+
+def _overlap_tokens(text: str) -> set[str]:
+    stop = {
+        "with", "from", "using", "that", "this", "have", "been", "were", "their",
+        "team", "project", "system", "application", "applications", "services",
+        "based", "across", "including", "through", "while", "into", "over",
+        "and", "the", "for", "supporting", "utilizing", "leveraging", "platforms",
+        "standards", "compliant", "modules", "frontend", "backend", "enterprise",
+    }
+    out: set[str] = set()
+    for raw in re.findall(r"[a-z0-9][a-z0-9+.#-]{2,}", (text or "").lower()):
+        token = raw.strip(".-+")
+        # Normalize "react.js" / "node.js" style tokens to the product stem.
+        if "." in token:
+            token = token.split(".", 1)[0]
+        if len(token) < 3 or token in stop:
+            continue
+        out.add(token)
+    return out
 
 
 def _fit_skills(grouped: dict[str, Any], max_per_category: int = 14) -> dict[str, list[str]]:
@@ -380,7 +613,8 @@ def _shorten_bullet_keep_core(text: str, max_chars: int = 280) -> str:
 def _select_bullets(bullets: list[str], quota: int) -> list[str]:
     """Pick up to quota bullets from source only — ranked by importance, never rewritten."""
     cleaned = [re.sub(r"\s+", " ", str(b).strip()) for b in bullets if str(b).strip()]
-    cleaned = [b for b in cleaned if len(b) >= 25]
+    cleaned = [b for b in cleaned if len(b) >= 25 and not _is_garbage_bullet(b)]
+    cleaned = _collapse_near_duplicate_bullets(cleaned)
     if len(cleaned) <= quota:
         return cleaned
 
@@ -400,7 +634,19 @@ def _select_bullets(bullets: list[str], quota: int) -> list[str]:
     chosen_idxs: list[int] = []
     for idx in ranked_idxs:
         if idx in must_keep and len(chosen_idxs) < quota:
+            # Skip if near-dup of something already chosen.
+            if any(_bullets_near_duplicate(cleaned[idx], cleaned[j]) for j in chosen_idxs):
+                continue
             chosen_idxs.append(idx)
+    for idx in ranked_idxs:
+        if len(chosen_idxs) >= quota:
+            break
+        if idx in chosen_idxs:
+            continue
+        if any(_bullets_near_duplicate(cleaned[idx], cleaned[j]) for j in chosen_idxs):
+            continue
+        chosen_idxs.append(idx)
+    # If still short after near-dup skips, fill remaining slots.
     for idx in ranked_idxs:
         if len(chosen_idxs) >= quota:
             break

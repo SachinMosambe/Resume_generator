@@ -1,8 +1,9 @@
 """
 Content Strategist — length-aware content plan.
 
-Short resumes pass through untouched. Long careers use light trim only
-(keep nearly all bullets). Medium oversized resumes use scored selection.
+Short resumes pass through untouched. Long careers use moderate summarize
+(dedupe near-duplicates, soft density caps, clean contact mash) — not
+aggressive compression. Medium oversized resumes use scored selection.
 Never LLM-compress length — that collapses long resumes to ~2 pages.
 """
 from __future__ import annotations
@@ -12,7 +13,7 @@ from app.services.structured_resume_store import is_large_resume
 from app.services.resume_page_fitter import (
     estimate_pages,
     fit_store_to_pages,
-    light_trim_store,
+    moderate_summarize_store,
     needs_page_fit,
     resolve_target_pages,
 )
@@ -26,8 +27,28 @@ def plan_content(kb: ResumeKB, spec: FormatSpec, budgets: Budgets) -> ContentPla
     target = resolve_target_pages(pages_before, spec.target_pages)
     _ = budgets
 
-    if is_large_resume(full_store):
-        fitted = light_trim_store(full_store)
+    if is_large_resume(full_store) or needs_page_fit(full_store, target_pages=target):
+        fitted = moderate_summarize_store(full_store)
+        if needs_page_fit(fitted, target_pages=target):
+            fitted = fit_store_to_pages(fitted, target_pages=target)
+            plan = ContentPlan(
+                render_store=fitted,
+                pages_before=pages_before,
+                pages_after=estimate_pages(fitted),
+                fitted=True,
+                llm_condensed=False,
+            )
+            plan.selected_fact_ids = _trace_selected_facts(kb, fitted)
+            logger.info(
+                "agent_plan_moderate_fitted",
+                pages_before=round(plan.pages_before, 2),
+                pages_after=round(plan.pages_after, 2),
+                target=target,
+                roles_kept=len(fitted.get("experience") or []),
+                facts_selected=len(plan.selected_fact_ids),
+            )
+            return plan
+
         plan = ContentPlan(
             render_store=fitted,
             pages_before=pages_before,
@@ -37,41 +58,20 @@ def plan_content(kb: ResumeKB, spec: FormatSpec, budgets: Budgets) -> ContentPla
         )
         plan.selected_fact_ids = list(kb.facts.keys())
         logger.info(
-            "agent_plan_keep_dense",
+            "agent_plan_moderate_summarize",
             pages_before=round(pages_before, 2),
             pages_after=round(plan.pages_after, 2),
             target=target,
         )
         return plan
 
-    if not needs_page_fit(full_store, target_pages=target):
-        plan = ContentPlan(
-            render_store=full_store,
-            pages_before=pages_before,
-            pages_after=pages_before,
-        )
-        plan.selected_fact_ids = list(kb.facts.keys())
-        logger.info("agent_plan_keep_all", pages=round(pages_before, 2), target=target)
-        return plan
-
-    fitted = fit_store_to_pages(full_store, target_pages=target)
     plan = ContentPlan(
-        render_store=fitted,
+        render_store=full_store,
         pages_before=pages_before,
-        pages_after=estimate_pages(fitted),
-        fitted=True,
-        llm_condensed=False,
+        pages_after=pages_before,
     )
-    plan.selected_fact_ids = _trace_selected_facts(kb, fitted)
-    logger.info(
-        "agent_plan_fitted",
-        pages_before=round(plan.pages_before, 2),
-        pages_after=round(plan.pages_after, 2),
-        target=target,
-        llm_condensed=False,
-        roles_kept=len(fitted.get("experience") or []),
-        facts_selected=len(plan.selected_fact_ids),
-    )
+    plan.selected_fact_ids = list(kb.facts.keys())
+    logger.info("agent_plan_keep_all", pages=round(pages_before, 2), target=target)
     return plan
 
 

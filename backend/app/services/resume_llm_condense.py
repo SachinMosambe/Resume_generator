@@ -20,8 +20,8 @@ CRITICAL RULES:
 1) Use ONLY facts present in the provided SOURCE JSON. Never invent employers, schools, skills, tools, dates, metrics, or achievements.
 2) Do not mix content across roles or sections.
 3) Keep every employer/role listed in SOURCE experience (same company + title + duration).
-4) Improve readability: clear Action + Context + Result bullets. Light summarization is OK — tighten wording and drop only redundant filler — but keep the essence of each role (tech, products, metrics, domain).
-5) Keep at least ~75% of the bullet count per role vs SOURCE. Never collapse a rich role into 2-3 vague lines.
+4) Improve readability: clear Action + Context + Result bullets. Light summarization is OK — tighten wording and drop near-duplicate/redundant bullets — but keep the essence of each role (tech, products, metrics, domain).
+5) Keep at least ~75% of unique substance per role vs SOURCE. Drop obvious near-duplicates (e.g. repeated WCAG/accessibility lines). Never collapse a rich role into 2-3 vague lines.
 6) SKILLS: copy SOURCE skills_by_category EXACTLY — same category names and exact skill spellings. Do not rename, regroup, or invent skills.
 7) Do not add technologies that are not in that role's source bullets or technologies list.
 8) Return ONLY valid JSON.
@@ -71,14 +71,16 @@ def _run_grounded_store_llm(
                 f"Target readable length: about {target_pages} pages (client-ready, not a thin stub).",
                 "Mode: READABLE ESSENCE — polish for clarity; light summarization only.",
                 "Keep ALL experience roles from SOURCE (do not drop employers).",
-                "Per role: keep the most important achievements; drop only redundant/filler bullets.",
-                "Keep at least ~75% of SOURCE bullets per role (never 2-3 lines for a rich role).",
+                "Per role: keep the most important achievements; drop near-duplicates and filler only.",
+                "Keep at least ~75% of unique SOURCE bullets per role (never 2-3 lines for a rich role).",
+                "Do not repeat the same accessibility/WCAG/MuleSoft theme in multiple near-identical bullets.",
+                "Remove code snippets, CLI commands, and contact/phone/email text from summary or bullets.",
                 "Preserve every important metric, product name, system, integration, and domain fact in the kept bullets.",
                 "CRITICAL FORMAT: each description item is ONE clear bullet (1-2 sentences).",
                 "Do NOT invent technologies. Keep technologies ONLY from SOURCE technologies lists.",
                 "Never put Environment text into title or location fields.",
                 "SKILLS: return SOURCE skills_by_category EXACTLY unchanged (exact spellings, same categories).",
-                "Summary: 4-7 professional lines capturing domain depth and differentiators (facts only).",
+                "Summary: 4-7 professional lines of substance only — no name/phone/email mash in the summary.",
                 "Education: return cleaned degree + institution + year only (no profile/Dice noise).",
             ]
         user = "\n".join(

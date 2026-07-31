@@ -334,7 +334,7 @@ Associate Staff Engineer — AI/ML | Nagarro India Jan 2024 – July 2025
     assert resolve_target_pages(3.0, 5.0) == 5.0
     assert resolve_target_pages(12.0, 5.0) == 6.0
 
-    from app.services.resume_page_fitter import light_trim_store
+    from app.services.resume_page_fitter import moderate_summarize_store
     from app.services.structured_resume_store import is_large_resume
 
     unique_bullets = [
@@ -436,15 +436,50 @@ Associate Staff Engineer — AI/ML | Nagarro India Jan 2024 – July 2025
     assert "Fast API" not in str(skill_merged["skills_by_category"])
     assert skill_merged.get("stats", {}).get("skills_locked_exact") is True
 
-    # Large resumes keep nearly all bullets via light_trim (no hard drop).
+    # Large resumes use moderate summarize: keep roles + unique substance, drop near-dups.
     assert is_large_resume(long_store)
-    dense = light_trim_store(long_store)
+    dense = moderate_summarize_store(long_store)
     dense_bullets = sum(len(r.get("description") or []) for r in dense["experience"])
     source_bullets = sum(len(r.get("description") or []) for r in long_store["experience"])
-    assert dense_bullets == source_bullets, (dense_bullets, source_bullets)
+    assert dense_bullets >= max(30, int(source_bullets * 0.55)), (dense_bullets, source_bullets)
+    assert dense_bullets <= source_bullets, (dense_bullets, source_bullets)
+    assert len(dense.get("experience") or []) == len(long_store.get("experience") or [])
     assert len(dense.get("projects") or []) == len(long_store.get("projects") or [])
-    assert float((dense.get("fit") or {}).get("pages_after") or 0) >= 3.0
-    assert (dense.get("fit") or {}).get("mode") == "light_trim"
+    pages_before = float((dense.get("fit") or {}).get("pages_before") or 0)
+    pages_after = float((dense.get("fit") or {}).get("pages_after") or 0)
+    assert pages_after >= 2.0, pages_after  # moderate, not a thin stub
+    assert pages_after >= pages_before * 0.55, (pages_before, pages_after)
+    assert (dense.get("fit") or {}).get("mode") == "moderate_summarize"
+
+    # Near-duplicate WCAG bullets collapse; unique tech bullets survive.
+    from app.services.resume_page_fitter import _clean_role_bullets, _clean_summary_text
+
+    wcag_dupes = [
+        "Engineered Angular frontend applications aligned with WCAG 2.0 and Section 508 accessibility compliance standards.",
+        "Developed Angular healthcare platforms compliant with WCAG 2.0 and Section 508 accessibility standards utilizing semantic HTML5.",
+        "Built Angular frontend ecosystems adhering to WCAG accessibility standards including semantic HTML structures.",
+        "Designed event-driven distributed systems using Kafka, Spring Integration, and Java concurrency APIs.",
+    ]
+    cleaned_wcag = _clean_role_bullets(wcag_dupes)
+    assert len(cleaned_wcag) <= 2, cleaned_wcag
+    assert any("kafka" in b.lower() for b in cleaned_wcag), cleaned_wcag
+
+    mashed_summary = (
+        "HARKARAN SIDHU | C: 222222222222222 | E: 222222222222222222 "
+        "A versatile Java Full-Stack engineer with 13+ years of experience."
+    )
+    cleaned_summary = _clean_summary_text(mashed_summary)
+    assert "222222" not in cleaned_summary, cleaned_summary
+    assert "versatile Java" in cleaned_summary, cleaned_summary
+    assert "HARKARAN" not in cleaned_summary.upper() or cleaned_summary.lower().startswith("a versatile")
+
+    garbage = _clean_role_bullets(
+        [
+            'Used Spark Session.builder().app Name("Transaction Processor").master("local[*]").get Or Create() to process datasets.',
+            "Developed Spring Boot microservices for eligibility and placement workflows.",
+        ]
+    )
+    assert len(garbage) == 1 and "Spring Boot" in garbage[0], garbage
 
     # Merge must reject over-summarized LLM roles and restore source density.
     source_role = {
