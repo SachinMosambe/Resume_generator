@@ -1,9 +1,9 @@
 """
-Grounded LLM polish for oversized resumes.
+Grounded LLM readable polish for client resumes.
 
-Lightly cleans summary/bullets for a client format using ONLY facts from the
-structured store. Preserves originality and information density — never invents
-employers, schools, skills, or metrics, and does not aggressively summarize.
+Improves clarity and lightly tightens wording while keeping the essence of every
+role. Skills are always taken verbatim from SOURCE (exact tokens — never rewritten).
+Never invents employers, schools, skills, or metrics.
 """
 from __future__ import annotations
 
@@ -15,35 +15,32 @@ from app.agents.tools.llm_client import llm_call_json_with_metrics
 from app.core.config import settings
 from app.core.logging import logger
 
-_SYSTEM = """You are a senior resume editor. You polish resumes for a client format while
-preserving the candidate's original information root.
+_SYSTEM = """You are a senior resume editor creating a client-ready professional resume.
 CRITICAL RULES:
 1) Use ONLY facts present in the provided SOURCE JSON. Never invent employers, schools, skills, tools, dates, metrics, or achievements.
 2) Do not mix content across roles or sections.
 3) Keep every employer/role listed in SOURCE experience (same company + title + duration).
-4) Prefer near-verbatim wording. Lightly polish grammar/spacing only — do NOT aggressively summarize or drop details, metrics, product names, or tech.
-5) Keep roughly the same bullet count per role as SOURCE (trim only obvious exact duplicates).
-6) Do not add new technologies that are not in that role's source bullets or technologies list.
-7) Return ONLY valid JSON.
+4) Improve readability: clear Action + Context + Result bullets. Light summarization is OK — tighten wording and drop only redundant filler — but keep the essence of each role (tech, products, metrics, domain).
+5) Keep at least ~75% of the bullet count per role vs SOURCE. Never collapse a rich role into 2-3 vague lines.
+6) SKILLS: copy SOURCE skills_by_category EXACTLY — same category names and exact skill spellings. Do not rename, regroup, or invent skills.
+7) Do not add technologies that are not in that role's source bullets or technologies list.
+8) Return ONLY valid JSON.
 """
 
 
-def condense_store_with_llm(store: dict[str, Any], *, target_pages: float = 3.0) -> dict[str, Any] | None:
-    """Polish a page-fitted store with one grounded LLM pass (preserve density)."""
-    return _run_grounded_store_llm(
-        store,
-        mode="condense",
-        target_pages=target_pages,
-    )
+def polish_store_for_readability(store: dict[str, Any], *, target_pages: float = 5.0) -> dict[str, Any] | None:
+    """LLM polish for readability with light essence-preserving summarization."""
+    return _run_grounded_store_llm(store, mode="readable", target_pages=target_pages)
+
+
+def condense_store_with_llm(store: dict[str, Any], *, target_pages: float = 5.0) -> dict[str, Any] | None:
+    """Alias — readable polish (not aggressive compression)."""
+    return polish_store_for_readability(store, target_pages=target_pages)
 
 
 def polish_store_with_llm(store: dict[str, Any]) -> dict[str, Any] | None:
-    """
-    Professional rewrite for normal-sized resumes (no aggressive compression).
-
-    Fixes spacing/wording while keeping all roles and genuine facts.
-    """
-    return _run_grounded_store_llm(store, mode="polish", target_pages=3.0)
+    """Professional rewrite for normal-sized / mashed resumes."""
+    return _run_grounded_store_llm(store, mode="polish", target_pages=5.0)
 
 
 def _run_grounded_store_llm(
@@ -52,7 +49,7 @@ def _run_grounded_store_llm(
     mode: str,
     target_pages: float,
 ) -> dict[str, Any] | None:
-    """Shared grounded LLM path for condense (large) and polish (normal)."""
+    """Shared grounded LLM path for readable polish and mashed-text polish."""
     try:
         payload = _source_payload(store)
         if mode == "polish":
@@ -65,23 +62,23 @@ def _run_grounded_store_llm(
                 "Keep ALL experience roles from SOURCE (do not drop employers).",
                 "Keep roughly the same bullet count per role (trim only obvious duplicates/noise).",
                 "Summary: keep original substance (4-8 lines ok); facts only (summary may be paragraph).",
-                "Skills: keep categories; atomic skill names from SOURCE only.",
+                "SKILLS: return SOURCE skills_by_category EXACTLY unchanged (exact spellings).",
                 "Education: cleaned degree + full institution name + year (never stub labels like Institute/College/IIT alone).",
                 "Split mashed certification/achievement lines into clean separate items when needed.",
             ]
         else:
             instructions = [
-                f"Target layout: about {target_pages} pages, but NEVER sacrifice originality for brevity.",
-                "Mode: PRESERVE-AND-POLISH (selection already happened — do not compress further).",
+                f"Target readable length: about {target_pages} pages (client-ready, not a thin stub).",
+                "Mode: READABLE ESSENCE — polish for clarity; light summarization only.",
                 "Keep ALL experience roles from SOURCE (do not drop employers).",
-                "Keep the SAME bullet count per role as SOURCE (or more if splitting mashed paragraphs).",
-                "Prefer near-verbatim SOURCE wording; only fix grammar, spacing, and clarity.",
-                "Do NOT drop metrics, product names, systems, integrations, or domain detail.",
-                "CRITICAL FORMAT: each description item is ONE bullet (not a paragraph of many achievements).",
-                "Do NOT invent technologies. Keep technologies ONLY from SOURCE technologies/Environment lists.",
+                "Per role: keep the most important achievements; drop only redundant/filler bullets.",
+                "Keep at least ~75% of SOURCE bullets per role (never 2-3 lines for a rich role).",
+                "Preserve every important metric, product name, system, integration, and domain fact in the kept bullets.",
+                "CRITICAL FORMAT: each description item is ONE clear bullet (1-2 sentences).",
+                "Do NOT invent technologies. Keep technologies ONLY from SOURCE technologies lists.",
                 "Never put Environment text into title or location fields.",
-                "Keep SOURCE skills_by_category names and trim within those categories only.",
-                "Summary: preserve original information root; light polish only (may be 4-8 lines).",
+                "SKILLS: return SOURCE skills_by_category EXACTLY unchanged (exact spellings, same categories).",
+                "Summary: 4-7 professional lines capturing domain depth and differentiators (facts only).",
                 "Education: return cleaned degree + institution + year only (no profile/Dice noise).",
             ]
         user = "\n".join(
@@ -95,7 +92,7 @@ def _run_grounded_store_llm(
                 json.dumps(
                     {
                         "summary": "string",
-                        "skills_by_category": {"Category": ["skill"]},
+                        "skills_by_category": {"Category": ["exact skill from source"]},
                         "experience": [
                             {
                                 "company": "must match source",
@@ -114,7 +111,6 @@ def _run_grounded_store_llm(
                 ),
             ]
         )
-        # Polish stays smaller/faster; condense may need more output for multi-role resumes.
         token_budget = 4096 if mode == "polish" else min(8192, max(settings.RESUME_GENERATION_MAX_TOKENS, 4096))
         result = llm_call_json_with_metrics(
             _SYSTEM,
@@ -197,7 +193,6 @@ def _merge_condensed(source: dict[str, Any], condensed: dict[str, Any]) -> dict[
     if len(llm_roles) < max(1, int(len(src_roles) * 0.75)):
         return None
 
-    # Map LLM roles back onto source roles by company/title identity.
     used: set[int] = set()
     merged_roles: list[dict[str, Any]] = []
     for src in src_roles:
@@ -219,7 +214,6 @@ def _merge_condensed(source: dict[str, Any], condensed: dict[str, Any]) -> dict[
                 match_idx = idx
                 break
         if match is None:
-            # Keep source role unchanged if LLM dropped/mismatched it.
             merged_roles.append(src)
             continue
         used.add(match_idx)
@@ -234,27 +228,18 @@ def _merge_condensed(source: dict[str, Any], condensed: dict[str, Any]) -> dict[
             if len(text) < 25:
                 continue
             raw_bullets.append(text)
-        # Ensure LLM paragraph streams become discrete bullets.
         bullets = []
         for text in expand_to_bullets(raw_bullets, max_bullets=max(16, len(src_bullets))):
             if not _bullet_grounded(text, src_blob, src.get("description") or []):
                 continue
             bullets.append(text)
-        # Reject over-summarized roles: fall back / backfill from source.
-        min_keep = max(2, int(len(src_bullets) * 0.7)) if src_bullets else 2
+        # Essence floor: keep most of the role's substance.
+        min_keep = max(3, int(len(src_bullets) * 0.75)) if src_bullets else 2
         if len(bullets) < min_keep:
             bullets = _backfill_bullets(bullets, src_bullets, max_bullets=max(min_keep, len(src_bullets)))
         if len(bullets) < 2:
             bullets = src_bullets[:16] or expand_to_bullets(list(src.get("description") or []), max_bullets=12)
-        techs = []
-        src_techs = {str(t).strip().lower() for t in (src.get("technologies") or []) if str(t).strip()}
-        for t in match.get("technologies") or []:
-            name = str(t).strip()
-            if name and name.lower() in src_techs:
-                techs.append(name)
-        if not techs:
-            techs = list(src.get("technologies") or [])[:16]
-        # Prefer source bullets when LLM shortened wording too aggressively overall.
+        techs = list(src.get("technologies") or [])[:16]
         if src_bullets and _role_lost_too_much_detail(src_bullets, bullets):
             bullets = src_bullets[:20]
         merged_roles.append(
@@ -264,11 +249,10 @@ def _merge_condensed(source: dict[str, Any], condensed: dict[str, Any]) -> dict[
                 "duration": src.get("duration") or "",
                 "location": src.get("location") or match.get("location") or "",
                 "description": bullets[:20],
-                "technologies": techs[:16],
+                "technologies": techs,
             }
         )
 
-    # Hard dedupe by company+duration (LLM rewrite sometimes repeats roles).
     deduped_roles: list[dict[str, Any]] = []
     seen_role_keys: set[str] = set()
     for role in merged_roles:
@@ -280,14 +264,11 @@ def _merge_condensed(source: dict[str, Any], condensed: dict[str, Any]) -> dict[
         deduped_roles.append(role)
     merged_roles = deduped_roles
 
-    # Summary: accept only if not tiny and not wildly unrelated.
     summary = re.sub(r"\s+", " ", str(condensed.get("summary") or "").strip())
     src_summary = str(source.get("summary") or "")
     if summary and len(summary) >= 120:
-        # Reject if LLM invented obvious employers not in source.
         if not _summary_has_unknown_employer(summary, src_roles):
-            # Keep source when LLM over-compressed the summary.
-            if src_summary and len(summary) < max(120, int(len(src_summary) * 0.55)):
+            if src_summary and len(summary) < max(120, int(len(src_summary) * 0.5)):
                 out["summary"] = src_summary
             else:
                 out["summary"] = summary
@@ -296,49 +277,20 @@ def _merge_condensed(source: dict[str, Any], condensed: dict[str, Any]) -> dict[
     else:
         out["summary"] = src_summary
 
-    # Skills: prefer source categories; only trim within them (never LLM remaps Soft Skills wrongly).
+    # Skills: ALWAYS exact source tokens — never LLM-rewritten.
     src_grouped = source.get("skills_by_category") or {}
     if isinstance(src_grouped, dict) and src_grouped:
-        llm_skills = condensed.get("skills_by_category") or {}
-        cleaned_skills: dict[str, list[str]] = {}
+        exact: dict[str, list[str]] = {}
         for cat, values in src_grouped.items():
-            src_names = [str(s).strip() for s in (values or []) if str(s).strip()]
-            src_set = {s.lower() for s in src_names}
-            kept = []
-            if isinstance(llm_skills, dict):
-                # Match LLM category loosely to source category.
-                llm_vals = []
-                for lcat, lvals in llm_skills.items():
-                    if str(lcat).strip().lower() == str(cat).strip().lower() or str(cat).lower() in str(lcat).lower():
-                        llm_vals.extend(lvals or [])
-                for skill in llm_vals:
-                    name = str(skill).strip()
-                    if name and name.lower() in src_set:
-                        kept.append(name)
-            if not kept:
-                kept = src_names[:18]
-            cleaned_skills[str(cat).strip()] = kept[:18]
-        out["skills_by_category"] = cleaned_skills
-        out["skills"] = [s for vals in cleaned_skills.values() for s in vals]
+            kept = [str(s).strip() for s in (values or []) if str(s).strip()]
+            if kept:
+                exact[str(cat).strip()] = kept
+        out["skills_by_category"] = exact
+        out["skills"] = [s for vals in exact.values() for s in vals]
     else:
-        # Fallback: only keep names that exist in source skill universe.
-        src_skills = {str(s).strip().lower() for s in (source.get("skills") or [])}
-        llm_skills = condensed.get("skills_by_category") or {}
-        cleaned_skills = {}
-        if isinstance(llm_skills, dict):
-            for cat, values in llm_skills.items():
-                kept = []
-                for skill in values or []:
-                    name = str(skill).strip()
-                    if name and name.lower() in src_skills:
-                        kept.append(name)
-                if kept:
-                    cleaned_skills[str(cat).strip()] = kept[:18]
-        if cleaned_skills:
-            out["skills_by_category"] = cleaned_skills
-            out["skills"] = [s for vals in cleaned_skills.values() for s in vals]
+        out["skills"] = list(source.get("skills") or [])
+        out["skills_by_category"] = source.get("skills_by_category") or {}
 
-    # Education: prefer cleaned LLM rows only when institution/degree match source.
     out["education"] = _merge_education(source.get("education") or [], condensed.get("education") or [])
     out["experience"] = merged_roles
     out["stats"] = {
@@ -346,6 +298,7 @@ def _merge_condensed(source: dict[str, Any], condensed: dict[str, Any]) -> dict[
         "experience_count": len(merged_roles),
         "experience_bullets": sum(len(r.get("description") or []) for r in merged_roles),
         "llm_condensed": True,
+        "skills_locked_exact": True,
     }
     return out
 
@@ -360,7 +313,6 @@ def _backfill_bullets(llm_bullets: list[str], src_bullets: list[str], *, max_bul
         s = re.sub(r"\s+", " ", str(src).strip())
         if len(s) < 25:
             continue
-        # Already represented by an LLM rewrite?
         head = s.lower()[:50]
         if head and head in covered:
             continue
@@ -390,7 +342,6 @@ def _role_lost_too_much_detail(src_bullets: list[str], llm_bullets: list[str]) -
 
 def _bullet_grounded(text: str, src_blob: str, src_bullets: list[Any]) -> bool:
     low = text.lower()
-    # Exact-ish containment of a shortened source bullet is ideal.
     for src in src_bullets:
         s = re.sub(r"\s+", " ", str(src).strip().lower())
         if len(s) >= 40 and (s[:60] in low or low[:60] in s):
@@ -404,12 +355,9 @@ def _bullet_grounded(text: str, src_blob: str, src_bullets: list[Any]) -> bool:
 
 def _summary_has_unknown_employer(summary: str, roles: list[dict[str, Any]]) -> bool:
     known = {_norm(r.get("company")) for r in roles if r.get("company")}
-    # Heuristic: quoted/Title Case company-like phrases are hard; skip aggressive check.
-    # Flag only if summary mentions a clear "at X" company not in known set.
     for match in re.finditer(r"\bat\s+([A-Z][A-Za-z0-9&.\- ]{2,40})", summary):
         name = _norm(match.group(1))
         if name and name not in known and len(name) > 4:
-            # Allow common non-employer words
             if name in {"banking", "healthcare", "telecom", "government", "financialservices"}:
                 continue
             if not any(name in k or k in name for k in known if k):
@@ -426,7 +374,6 @@ def _merge_education(source: list[Any], condensed: list[Any]) -> list[dict[str, 
     cleaned = normalize_education_entries(condensed)
     if not cleaned:
         return base
-    # Prefer cleaned entries that match source institutions/degrees.
     src_keys = {_norm(e.get("institution")) + _norm(e.get("degree")) for e in base}
     kept = []
     for row in cleaned:

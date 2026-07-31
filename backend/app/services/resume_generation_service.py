@@ -51,7 +51,7 @@ from app.services.resume_page_fitter import (
     needs_page_fit,
     resolve_target_pages,
 )
-from app.services.resume_llm_condense import polish_store_with_llm
+from app.services.resume_llm_condense import polish_store_for_readability, polish_store_with_llm
 from app.services.resume_section_quality import (
     audit_and_repair_document,
     critical_findings,
@@ -66,6 +66,19 @@ from app.services.format_validator import (
 )
 from app.core.config import settings
 from app.core.logging import logger
+
+
+def _copy_skills_exact(store: dict[str, Any]) -> dict[str, list[str]]:
+    """Return skills_by_category with exact source spellings (never rewritten)."""
+    grouped = store.get("skills_by_category") or {}
+    if not isinstance(grouped, dict):
+        return {}
+    out: dict[str, list[str]] = {}
+    for cat, values in grouped.items():
+        kept = [str(s).strip() for s in (values or []) if str(s).strip()]
+        if kept:
+            out[str(cat).strip()] = kept
+    return out
 
 
 class ResumeGenerationError(RuntimeError):
@@ -768,39 +781,45 @@ class ResumeGenerationService:
         # 1) Full section store — source of truth, no mixing across sections.
         full_store = build_structured_resume(candidate_data)
         pages_full = estimate_pages(full_store)
-        configured_pages = float(getattr(settings, "RESUME_TARGET_PAGES", 5.5) or 5.5)
+        configured_pages = float(getattr(settings, "RESUME_TARGET_PAGES", 5.0) or 5.0)
         target_pages = resolve_target_pages(pages_full, configured_pages)
         large = is_large_resume(full_store)
 
-        # 2) Long careers: keep nearly ALL content (light trim only).
-        #    Medium: importance-based fit. Never LLM-compress length.
-        #    LLM polish only for small mashed resumes.
-        if large:
-            render_store = light_trim_store(full_store)
-            mode = "store_keep_dense"
-        elif needs_page_fit(full_store, target_pages=target_pages):
+        # 2) Soft importance fit toward readable client length, then LLM readable polish.
+        #    Skills stay exact (locked in merge). Never full-document rewrite for long careers.
+        if needs_page_fit(full_store, target_pages=target_pages):
             render_store = fit_store_to_pages(full_store, target_pages=target_pages)
             mode = "store_page_fit"
+        elif large:
+            render_store = light_trim_store(full_store)
+            mode = "store_keep_dense"
         else:
             render_store = full_store
             mode = "store_keep_all"
 
-        needs_polish = store_needs_llm_polish(render_store)
-        if (
-            bool(getattr(settings, "RESUME_LLM_CONDENSE", True))
-            and needs_polish
-            and not large
-        ):
-            polished = polish_store_with_llm(render_store)
+        if bool(getattr(settings, "RESUME_LLM_CONDENSE", True)):
+            # Always prefer readable-essence polish (works for long + short).
+            # Falls back to mashed-text polish path only if readable returns None.
+            polished = polish_store_for_readability(render_store, target_pages=target_pages)
+            if not polished and store_needs_llm_polish(render_store) and not large:
+                polished = polish_store_with_llm(render_store)
             if polished:
+                # Hard-lock skills to pre-LLM exact tokens (extra safety).
+                polished["skills_by_category"] = _copy_skills_exact(render_store)
+                polished["skills"] = [
+                    s
+                    for vals in (polished.get("skills_by_category") or {}).values()
+                    for s in (vals or [])
+                ]
                 render_store = polished
-                mode = f"{mode}_polish"
-        elif needs_polish and large:
-            logger.info(
-                "resume_llm_polish_skipped",
-                reason="large_resume_preserve_density",
-                pages=round(pages_full, 2),
-            )
+                mode = f"{mode}_llm_readable"
+            else:
+                logger.info(
+                    "resume_llm_readable_skipped",
+                    reason="llm_unavailable_or_rejected",
+                    large=large,
+                    pages=round(pages_full, 2),
+                )
 
         candidate_data = apply_store_to_candidate_data(candidate_data, render_store)
         if isinstance(candidate_data.get("extracted_data"), dict):

@@ -330,9 +330,9 @@ Associate Staff Engineer — AI/ML | Nagarro India Jan 2024 – July 2025
     )
     from app.services.resume_llm_condense import _backfill_bullets, _merge_condensed, _role_lost_too_much_detail
 
-    assert resolve_target_pages(9.0, 5.5) == 6.3, resolve_target_pages(9.0, 5.5)
-    assert resolve_target_pages(3.0, 5.5) == 5.5
-    assert resolve_target_pages(12.0, 5.5) == 8.0
+    assert resolve_target_pages(9.0, 5.0) == 5.22, resolve_target_pages(9.0, 5.0)
+    assert resolve_target_pages(3.0, 5.0) == 5.0
+    assert resolve_target_pages(12.0, 5.0) == 6.0
 
     from app.services.resume_page_fitter import light_trim_store
     from app.services.structured_resume_store import is_large_resume
@@ -382,10 +382,10 @@ Associate Staff Engineer — AI/ML | Nagarro India Jan 2024 – July 2025
         "certifications": [],
         "achievements": [],
     }
-    fitted = fit_store_to_pages(long_store, target_pages=5.5)
+    fitted = fit_store_to_pages(long_store, target_pages=5.0)
     assert len(fitted.get("experience") or []) == 5
     kept_bullets = sum(len(r.get("description") or []) for r in fitted["experience"])
-    assert kept_bullets >= 40, kept_bullets
+    assert kept_bullets >= 35, kept_bullets
     assert len(fitted.get("projects") or []) >= 4, fitted.get("projects")
     assert (fitted.get("fit") or {}).get("target_pages", 0) >= 5.0
     pages_after = float((fitted.get("fit") or {}).get("pages_after") or 0)
@@ -398,6 +398,43 @@ Associate Staff Engineer — AI/ML | Nagarro India Jan 2024 – July 2025
         " ".join(p.get("description") or []) for p in (fitted.get("projects") or [])
     ).lower()
     assert "graphql" in project_blob or "mulesoft" in project_blob, project_blob
+
+    # Skills exact lock: merge must keep source skill spellings.
+    from app.services.resume_llm_condense import _merge_condensed
+
+    skill_src = {
+        "experience": [
+            {
+                "company": "Acme",
+                "title": "Engineer",
+                "duration": "2020-2024",
+                "description": unique_bullets[:5],
+                "technologies": ["MuleSoft"],
+            }
+        ],
+        "summary": "x" * 200,
+        "skills_by_category": {"Backend & Frameworks": ["Spring Boot", "FastAPI"], "Cloud": ["AWS EKS"]},
+        "skills": ["Spring Boot", "FastAPI", "AWS EKS"],
+    }
+    skill_llm = {
+        "summary": "Engineer with Spring and cloud platform experience across delivery.",
+        "experience": [
+            {
+                "company": "Acme",
+                "title": "Engineer",
+                "duration": "2020-2024",
+                "description": unique_bullets[:4],
+                "technologies": ["MuleSoft"],
+            }
+        ],
+        "skills_by_category": {"Backend": ["SpringBoot", "Fast API"]},  # intentional wrong spellings
+        "education": [],
+    }
+    skill_merged = _merge_condensed(skill_src, skill_llm)
+    assert skill_merged is not None
+    assert skill_merged["skills_by_category"]["Backend & Frameworks"] == ["Spring Boot", "FastAPI"]
+    assert "Fast API" not in str(skill_merged["skills_by_category"])
+    assert skill_merged.get("stats", {}).get("skills_locked_exact") is True
 
     # Large resumes keep nearly all bullets via light_trim (no hard drop).
     assert is_large_resume(long_store)

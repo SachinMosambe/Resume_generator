@@ -15,12 +15,14 @@ class Settings(BaseSettings):
     LLM_MAX_TOKENS: int = 2048
     # Full multi-role resumes need large JSON output; 4096/8192 truncates mid-word.
     RESUME_GENERATION_MAX_TOKENS: int = 16384
-    # Target client resume length (pages). Long careers use light-trim keep-dense
-    # (not hard fit). resolve_target_pages scales medium resumes up to ~8 pages.
-    RESUME_TARGET_PAGES: float = 5.5
-    # When true, allow LLM polish for mashed text on small resumes only.
-    # Long resumes never go through LLM rewrite (that collapsed 9 pages → 2).
+    # Target readable client resume length (pages). Soft fit + LLM readable polish.
+    # Long careers scale toward ~5 pages with essence kept (not 2-page stubs).
+    RESUME_TARGET_PAGES: float = 5.0
+    # When true (default), run grounded LLM readable polish after soft fit.
+    # Skills always stay exact source tokens. Full rewrite is still blocked for long resumes.
     RESUME_LLM_CONDENSE: bool = True
+    # Optional deploy stamp so /api/health can prove which build is live.
+    APP_BUILD_ID: str = "dev"
     # When false (default), skip slow full-document LLM polish loops.
     RESUME_LLM_POLISH: bool = False
 

@@ -40,20 +40,20 @@ _GENERIC_VERB_RE = re.compile(
 )
 
 
-def resolve_target_pages(pages_full: float, configured: float = 5.5) -> float:
+def resolve_target_pages(pages_full: float, configured: float = 5.0) -> float:
     """
-    Scale the fit target with source length.
+    Scale the fit target with source length for a readable client resume.
 
-    A ~9 page career resume should land around 5–7 pages (important facts kept),
+    A ~9 page career resume should land around ~5 pages with essence kept —
     never collapse to ~2 pages.
     """
-    configured = max(4.0, float(configured or 5.5))
+    configured = max(4.0, float(configured or 5.0))
     pages_full = max(0.5, float(pages_full or 0.5))
     if pages_full <= configured + 0.2:
         return configured
-    # Keep ~70% of source length for very long resumes, capped for client formats.
-    scaled = pages_full * 0.7
-    return round(min(8.0, max(configured, scaled)), 2)
+    # Keep ~55-60% of source length, capped for readable client formats.
+    scaled = pages_full * 0.58
+    return round(min(6.0, max(configured, scaled)), 2)
 
 
 def light_trim_store(store: dict[str, Any]) -> dict[str, Any]:
@@ -174,10 +174,10 @@ def fit_store_to_pages(
         fitted.get("experience") or [],
         target_pages=effective_target,
     )
-    # Retention floor: keep the vast majority of a long career's substance.
+    # Retention floor: keep essence of a long career (~75%+ of bullets).
     source_bullets = sum(len(r.get("description") or []) for r in (original.get("experience") or []) if isinstance(r, dict))
     kept_bullets = sum(len(r.get("description") or []) for r in (fitted.get("experience") or []) if isinstance(r, dict))
-    min_keep = max(source_bullets * 85 // 100, len(original.get("experience") or []) * 6)
+    min_keep = max(source_bullets * 75 // 100, len(original.get("experience") or []) * 5)
     if source_bullets and kept_bullets < min_keep:
         fitted["experience"] = _fit_experience(
             original.get("experience") or [],

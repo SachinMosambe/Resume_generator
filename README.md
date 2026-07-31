@@ -54,6 +54,11 @@ Open http://localhost:3000 — upload a resume, choose Aptino default or a clien
 
 ## Deploy (EC2 backend + Vercel frontend)
 
+**Important:** pushing to GitHub does **not** update the live site by itself.
+The Vercel UI only changes when Vercel redeploys; the API changes only after you
+pull + restart on **EC2** (see below). Until EC2 is updated, uploads keep using
+the old summarization behavior.
+
 ### 1. Push to GitHub
 
 Repo: `https://github.com/SachinMosambe/Resume_generator`
@@ -71,7 +76,16 @@ nano .env   # set AWS_BEARER_TOKEN_BEDROCK + CORS_ORIGINS=https://your-app.verce
 sudo systemctl restart resume-api
 ```
 
-4. Test: `http://YOUR_EC2_IP:8000/api/health`
+4. Test: `http://YOUR_EC2_IP:8000/api/health`  
+   Healthy response includes `build_id`, `policy: readable_essence_skills_exact`.
+
+5. **After every code push**, update EC2:
+
+```bash
+cd ~/Resume_generator
+bash backend/deploy/update-ec2.sh
+curl -s http://127.0.0.1:8000/api/health
+```
 
 ### 3. Frontend on Vercel
 

@@ -19,9 +19,11 @@ services:
       - key: RESUME_GENERATION_MAX_TOKENS
         value: "16384"
       - key: RESUME_TARGET_PAGES
-        value: "5.5"
+        value: "5.0"
       - key: RESUME_LLM_CONDENSE
         value: "true"
+      - key: APP_BUILD_ID
+        value: "render"
       - key: RESUME_LLM_POLISH
         value: "false"
       - key: RESUME_AGENT_PIPELINE

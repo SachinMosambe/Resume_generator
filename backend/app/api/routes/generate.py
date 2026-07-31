@@ -6,6 +6,7 @@ import re
 import tempfile
 import uuid
 from pathlib import Path
+from typing import Any
 
 from fastapi import APIRouter, File, Form, HTTPException, UploadFile, status
 from fastapi.responses import Response
@@ -59,8 +60,15 @@ def _guess_name_from_text(text: str) -> str | None:
 
 
 @router.get("/health")
-async def health() -> dict[str, str]:
-    return {"status": "ok"}
+async def health() -> dict[str, Any]:
+    """Liveness + build stamp so deploys can be verified from the live site."""
+    return {
+        "status": "ok",
+        "build_id": settings.APP_BUILD_ID,
+        "resume_target_pages": settings.RESUME_TARGET_PAGES,
+        "llm_readable_polish": settings.RESUME_LLM_CONDENSE,
+        "policy": "readable_essence_skills_exact",
+    }
 
 
 @router.post("/generate")
