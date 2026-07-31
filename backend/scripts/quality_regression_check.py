@@ -258,8 +258,16 @@ Associate Staff Engineer — AI/ML | Nagarro India Jan 2024 – July 2025
     assert {"summary", "skills", "experience", "education"} <= required
 
     # --- Content preservation: page-fit must keep unique tech/info root ---
-    from app.services.resume_page_fitter import _select_bullets, fit_store_to_pages
+    from app.services.resume_page_fitter import (
+        _select_bullets,
+        fit_store_to_pages,
+        resolve_target_pages,
+    )
     from app.services.resume_llm_condense import _backfill_bullets, _merge_condensed, _role_lost_too_much_detail
+
+    assert resolve_target_pages(9.0, 4.0) == 4.5, resolve_target_pages(9.0, 4.0)
+    assert resolve_target_pages(3.0, 4.0) == 4.0
+    assert resolve_target_pages(12.0, 4.0) == 5.0
 
     unique_bullets = [
         "Implemented GraphQL federation across order and inventory services.",
@@ -291,18 +299,37 @@ Associate Staff Engineer — AI/ML | Nagarro India Jan 2024 – July 2025
             for i in range(5)
         ],
         "education": [{"degree": "BS CS", "institution": "State University", "year": "2015"}],
-        "projects": [],
+        "projects": [
+            {
+                "name": f"Project {i}",
+                "description": [
+                    f"Built GraphQL gateway {i} with measurable 30% latency reduction.",
+                    f"Integrated MuleSoft connectors for partner onboarding workflow {i}.",
+                    "Wrote documentation for operators.",
+                ],
+                "technologies": ["GraphQL", "MuleSoft"],
+            }
+            for i in range(6)
+        ],
         "certifications": [],
         "achievements": [],
     }
-    fitted = fit_store_to_pages(long_store, target_pages=3.5)
+    fitted = fit_store_to_pages(long_store, target_pages=4.0)
     assert len(fitted.get("experience") or []) == 5
     kept_bullets = sum(len(r.get("description") or []) for r in fitted["experience"])
-    assert kept_bullets >= 25, kept_bullets
+    assert kept_bullets >= 30, kept_bullets
+    assert len(fitted.get("projects") or []) >= 4, fitted.get("projects")
+    assert (fitted.get("fit") or {}).get("target_pages", 0) >= 4.0
+    pages_after = float((fitted.get("fit") or {}).get("pages_after") or 0)
+    assert pages_after >= 3.0, pages_after  # must not collapse to ~2 pages
     fitted_blob = " ".join(
         " ".join(r.get("description") or []) for r in fitted["experience"]
     ).lower()
     assert "mulesoft" in fitted_blob, fitted_blob[:500]
+    project_blob = " ".join(
+        " ".join(p.get("description") or []) for p in (fitted.get("projects") or [])
+    ).lower()
+    assert "graphql" in project_blob or "mulesoft" in project_blob, project_blob
 
     # Merge must reject over-summarized LLM roles and restore source density.
     source_role = {

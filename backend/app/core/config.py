@@ -15,11 +15,10 @@ class Settings(BaseSettings):
     LLM_MAX_TOKENS: int = 2048
     # Full multi-role resumes need large JSON output; 4096/8192 truncates mid-word.
     RESUME_GENERATION_MAX_TOKENS: int = 16384
-    # Target client resume length (pages). Oversized stores are fitted genuinely.
-    # 3.5 keeps long careers informative without over-compressing originality.
-    RESUME_TARGET_PAGES: float = 3.5
-    # When true (default), large resumes get one grounded LLM polish pass after page-fit
-    # (preserve-and-polish — not aggressive summarization).
+    # Target client resume length (pages). Very long sources scale up to ~5 via
+    # resolve_target_pages so a 9-page resume becomes ~4–5 pages, not ~2.
+    RESUME_TARGET_PAGES: float = 4.0
+    # When true, allow LLM polish for mashed text only — never used to compress length.
     RESUME_LLM_CONDENSE: bool = True
     # When false (default), skip slow full-document LLM polish loops.
     RESUME_LLM_POLISH: bool = False

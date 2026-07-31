@@ -155,7 +155,7 @@ class FormatSpec:
             metadata=metadata,
             section_order=[str(s).lower() for s in order],
             labels={str(k).lower(): str(v) for k, v in dict(labels).items()},
-            target_pages=float(getattr(settings, "RESUME_TARGET_PAGES", 3.5) or 3.5),
+            target_pages=float(getattr(settings, "RESUME_TARGET_PAGES", 4.0) or 4.0),
         )
 
 

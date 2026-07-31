@@ -40,8 +40,13 @@ from app.services.structured_resume_store import (
     is_large_resume,
     store_needs_llm_polish,
 )
-from app.services.resume_page_fitter import estimate_pages, fit_store_to_pages, needs_page_fit
-from app.services.resume_llm_condense import condense_store_with_llm, polish_store_with_llm
+from app.services.resume_page_fitter import (
+    estimate_pages,
+    fit_store_to_pages,
+    needs_page_fit,
+    resolve_target_pages,
+)
+from app.services.resume_llm_condense import polish_store_with_llm
 from app.services.resume_section_quality import (
     audit_and_repair_document,
     critical_findings,
@@ -758,18 +763,31 @@ class ResumeGenerationService:
         # 1) Full section store — source of truth, no mixing across sections.
         full_store = build_structured_resume(candidate_data)
         pages_full = estimate_pages(full_store)
-        target_pages = float(getattr(settings, "RESUME_TARGET_PAGES", 3.5) or 3.5)
+        configured_pages = float(getattr(settings, "RESUME_TARGET_PAGES", 4.0) or 4.0)
+        target_pages = resolve_target_pages(pages_full, configured_pages)
 
-        # 2) Fast path: deterministic bullets/format first.
-        #    LLM only when oversized (condense) OR small resume still has mashed/broken text.
+        # 2) Fast path: deterministic importance-based selection for length.
+        #    Do NOT LLM-compress after fit (that was collapsing 9 pages → ~2).
+        #    LLM polish only when text is mashed/broken.
         if needs_page_fit(full_store, target_pages=target_pages):
             render_store = fit_store_to_pages(full_store, target_pages=target_pages)
             mode = "store_page_fit"
-            if bool(getattr(settings, "RESUME_LLM_CONDENSE", True)):
-                condensed = condense_store_with_llm(render_store, target_pages=target_pages)
-                if condensed:
-                    render_store = condensed
-                    mode = "store_page_fit_llm"
+            if (
+                bool(getattr(settings, "RESUME_LLM_CONDENSE", True))
+                and store_needs_llm_polish(render_store)
+                and not is_large_resume(full_store)
+            ):
+                polished = polish_store_with_llm(render_store)
+                if polished:
+                    render_store = polished
+                    mode = "store_page_fit_polish"
+            elif store_needs_llm_polish(render_store):
+                logger.info(
+                    "resume_llm_polish_skipped",
+                    reason="oversized_use_importance_selection",
+                    pages_full=round(pages_full, 2),
+                    target_pages=target_pages,
+                )
         else:
             render_store = full_store
             mode = "store_keep_all"
