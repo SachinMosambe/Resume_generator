@@ -414,10 +414,13 @@ def strip_personal_contact_from_document(document: dict[str, Any] | None) -> dic
 
 def _section_payload(store: dict[str, Any], canonical: str, title: str) -> dict[str, Any] | None:
     if canonical == "summary":
-        summary = str(store.get("summary") or "").strip()
-        if not summary:
+        from app.services.docx_layout import summary_to_bullets
+
+        bullets = summary_to_bullets(store.get("summary"))
+        if not bullets:
             return None
-        return {"type": "text", "title": title, "content": summary}
+        # Client formats (Aptino / Suresh) render summary as bullet lines, not a paragraph.
+        return {"type": "bullets", "title": title, "content": bullets}
     if canonical == "skills":
         grouped = store.get("skills_by_category") or {}
         if isinstance(grouped, dict) and grouped:

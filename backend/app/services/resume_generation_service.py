@@ -1221,9 +1221,25 @@ class ResumeGenerationService:
                 continue
 
             if forced_type == "text":
-                text_value = self._normalize_summary_text(content)
-                if text_value:
-                    cleaned_sections.append({"type": forced_type, "title": styled_title, "content": text_value})
+                from app.services.docx_layout import summary_to_bullets
+
+                bullets = summary_to_bullets(content)
+                if bullets:
+                    cleaned_sections.append({"type": "bullets", "title": styled_title, "content": bullets})
+                    seen_sections.add(canonical)
+                continue
+
+            if canonical == "summary":
+                from app.services.docx_layout import summary_to_bullets
+
+                bullets = summary_to_bullets(content)
+                bullets = [
+                    b
+                    for b in bullets
+                    if b and not self._is_resume_noise_line(b, header_contact)
+                ]
+                if bullets:
+                    cleaned_sections.append({"type": "bullets", "title": styled_title, "content": bullets})
                     seen_sections.add(canonical)
                 continue
 
@@ -1291,7 +1307,7 @@ class ResumeGenerationService:
 
     def _canonical_section_type(self, canonical: str) -> str:
         if canonical == "summary":
-            return "text"
+            return "bullets"
         if canonical == "skills":
             return "skills"
         if canonical in {"experience", "education", "projects"}:
@@ -1315,9 +1331,11 @@ class ResumeGenerationService:
 
         title = titles.get(canonical) or to_heading_title_case(canonical.replace("_", " "), keep_colon=False)
         if canonical == "summary":
-            summary = self._normalize_summary_text(candidate_data.get("summary"))
-            if summary:
-                return {"type": "text", "title": title, "content": summary}
+            from app.services.docx_layout import summary_to_bullets
+
+            bullets = summary_to_bullets(candidate_data.get("summary"))
+            if bullets:
+                return {"type": "bullets", "title": title, "content": bullets}
             return None
         if canonical == "skills":
             grouped = candidate_data.get("skills_by_category")
@@ -1994,8 +2012,15 @@ class ResumeGenerationService:
         # Detect jammed/mashed text (missing spaces between words).
         mashed_samples: list[str] = []
         summary_sec = _find_section("summary")
-        if isinstance(summary_sec, dict) and self._text_looks_mashed(str(summary_sec.get("content") or "")):
-            mashed_samples.append("summary")
+        if isinstance(summary_sec, dict):
+            summary_content = summary_sec.get("content")
+            summary_blob = (
+                " ".join(str(x) for x in summary_content)
+                if isinstance(summary_content, list)
+                else str(summary_content or "")
+            )
+            if self._text_looks_mashed(summary_blob):
+                mashed_samples.append("summary")
         if isinstance(exp_sec, dict):
             for item in self._as_list(exp_sec.get("content")):
                 if not isinstance(item, dict):
@@ -3695,12 +3720,51 @@ class ResumeGenerationService:
             return
 
         if section_type == "text":
-            p = doc.add_paragraph()
-            run = p.add_run(str(content))
-            run.font.name = font_family
-            run.font.size = Pt(body_size)
-            run.font.color.rgb = self._theme_text()
-            p.paragraph_format.space_after = Pt(self._theme_space_after())
+            from app.services.docx_layout import summary_to_bullets, split_left_right_meta, add_left_right_line
+
+            # Prefer bullets for summary-like text (matches client formats).
+            bullets = summary_to_bullets(content)
+            if len(bullets) > 1 or (
+                bullets
+                and any(
+                    k in str(title or "").lower()
+                    for k in ("summary", "objective", "profile")
+                )
+            ):
+                from app.services.docx_layout import add_bullet_paragraph
+
+                for text in bullets:
+                    add_bullet_paragraph(
+                        doc,
+                        text,
+                        font_family=font_family,
+                        body_size=body_size,
+                        color=self._theme_text(),
+                        space_after=2,
+                    )
+            else:
+                left, right = split_left_right_meta(str(content))
+                if right:
+                    add_left_right_line(
+                        doc,
+                        left,
+                        right,
+                        font_family=font_family,
+                        body_size=body_size,
+                        color_text=self._theme_text(),
+                        color_muted=self._theme_muted(),
+                        usable_width=usable_width,
+                        bold_left=False,
+                        space_before=0,
+                        space_after=self._theme_space_after(),
+                    )
+                else:
+                    p = doc.add_paragraph()
+                    run = p.add_run(str(content))
+                    run.font.name = font_family
+                    run.font.size = Pt(body_size)
+                    run.font.color.rgb = self._theme_text()
+                    p.paragraph_format.space_after = Pt(self._theme_space_after())
 
         elif section_type == "skills":
             if isinstance(content, dict):
@@ -3736,16 +3800,39 @@ class ResumeGenerationService:
                     self._add_docx_record(doc, item, body_size, font_family, usable_width)
 
         else:
+            from app.services.docx_layout import split_left_right_meta, add_left_right_line, add_bullet_paragraph
+
             for item in self._as_list(content):
+                if isinstance(item, dict):
+                    self._add_docx_record(doc, item, body_size, font_family, usable_width)
+                    continue
                 clean_item = self._clean_inline_text(item)
                 if not clean_item:
                     continue
-                p = doc.add_paragraph(style="List Bullet")
-                p.paragraph_format.space_after = Pt(2)
-                run = p.add_run(clean_item)
-                run.font.name = font_family
-                run.font.size = Pt(body_size)
-                run.font.color.rgb = self._theme_text()
+                left, right = split_left_right_meta(clean_item)
+                if right and len(left.split()) <= 14:
+                    add_left_right_line(
+                        doc,
+                        left,
+                        right,
+                        font_family=font_family,
+                        body_size=body_size,
+                        color_text=self._theme_text(),
+                        color_muted=self._theme_muted(),
+                        usable_width=usable_width,
+                        bold_left=False,
+                        space_before=1,
+                        space_after=2,
+                    )
+                    continue
+                add_bullet_paragraph(
+                    doc,
+                    clean_item,
+                    font_family=font_family,
+                    body_size=body_size,
+                    color=self._theme_text(),
+                    space_after=2,
+                )
 
     def _add_docx_education(
         self,
@@ -3756,16 +3843,30 @@ class ResumeGenerationService:
         usable_width: Any = None,
     ) -> None:
         """Render education clearly: Degree (bold), Institution, Year right-aligned."""
-        from docx.shared import Pt, RGBColor, Inches
-        from docx.enum.text import WD_TAB_ALIGNMENT
+        from docx.shared import Pt
+        from app.services.docx_layout import add_left_right_line, split_left_right_meta
 
         if not isinstance(item, dict):
             text = self._clean_inline_text(item)
             if text:
-                p = doc.add_paragraph()
-                run = p.add_run(text)
-                run.font.name = font_family
-                run.font.size = Pt(body_size)
+                left, right = split_left_right_meta(text)
+                if right:
+                    add_left_right_line(
+                        doc,
+                        left,
+                        right,
+                        font_family=font_family,
+                        body_size=body_size,
+                        color_text=self._theme_text(),
+                        color_muted=self._theme_muted(),
+                        usable_width=usable_width,
+                        bold_left=True,
+                    )
+                else:
+                    p = doc.add_paragraph()
+                    run = p.add_run(text)
+                    run.font.name = font_family
+                    run.font.size = Pt(body_size)
             return
 
         degree = self._clean_inline_text(item.get("degree") or item.get("qualification") or "")
@@ -3779,33 +3880,34 @@ class ResumeGenerationService:
         if not degree and not institution:
             return
 
+        # Peel trailing dates stuck onto degree/institution text.
+        if degree and not year:
+            degree, year = split_left_right_meta(degree)
+        if institution and not year:
+            institution, year = split_left_right_meta(institution)
+
         # Line 1: Degree ........................ Year
-        line = doc.add_paragraph()
-        line.paragraph_format.space_before = Pt(6)
-        line.paragraph_format.space_after = Pt(0)
-        tab_pos = usable_width if usable_width is not None else Inches(6.5)
-        try:
-            line.paragraph_format.tab_stops.add_tab_stop(tab_pos, WD_TAB_ALIGNMENT.RIGHT)
-        except Exception:
-            pass
         primary = degree or institution
-        run = line.add_run(primary)
-        run.bold = True
-        run.font.name = font_family
-        run.font.size = Pt(body_size)
-        run.font.color.rgb = self._theme_text()
-        if year:
-            line.add_run("\t")
-            date_run = line.add_run(year)
-            date_run.font.name = font_family
-            date_run.font.size = Pt(body_size)
-            date_run.font.color.rgb = self._theme_muted()
+        add_left_right_line(
+            doc,
+            primary,
+            year,
+            font_family=font_family,
+            body_size=body_size,
+            color_text=self._theme_text(),
+            color_muted=self._theme_muted(),
+            usable_width=usable_width,
+            bold_left=True,
+            space_before=6,
+            space_after=0,
+        )
 
         # Line 2: Institution, Location
         secondary_parts = [p for p in (institution if degree else "", location) if p]
-        # If degree was missing and institution was primary, don't repeat institution.
         if degree and institution:
-            secondary_parts = [institution] + ([location] if location and location.lower() not in institution.lower() else [])
+            secondary_parts = [institution] + (
+                [location] if location and location.lower() not in institution.lower() else []
+            )
         elif not degree and location:
             secondary_parts = [location]
         else:
@@ -3838,17 +3940,31 @@ class ResumeGenerationService:
         usable_width: Any = None,
     ) -> None:
         """Add an experience/education/project record with right-aligned dates."""
-        from docx.shared import Pt, RGBColor, Inches, Twips
-        from docx.enum.text import WD_TAB_ALIGNMENT, WD_ALIGN_PARAGRAPH
+        from docx.shared import Pt, Inches
+        from app.services.docx_layout import add_left_right_line, split_left_right_meta
 
         if not isinstance(item, dict):
             clean_item = self._clean_inline_text(item)
             if not clean_item:
                 return
-            p = doc.add_paragraph()
-            run = p.add_run(clean_item)
-            run.font.name = font_family
-            run.font.size = Pt(body_size)
+            left, right = split_left_right_meta(clean_item)
+            if right:
+                add_left_right_line(
+                    doc,
+                    left,
+                    right,
+                    font_family=font_family,
+                    body_size=body_size,
+                    color_text=self._theme_text(),
+                    color_muted=self._theme_muted(),
+                    usable_width=usable_width,
+                    bold_left=True,
+                )
+            else:
+                p = doc.add_paragraph()
+                run = p.add_run(clean_item)
+                run.font.name = font_family
+                run.font.size = Pt(body_size)
             return
 
         title = self._clean_inline_text(
@@ -3873,6 +3989,8 @@ class ResumeGenerationService:
             or item.get("dates")
             or item.get("year")
             or item.get("graduation_date")
+            or item.get("link")
+            or item.get("url")
             or ""
         )
         location = self._clean_inline_text(item.get("location") or "")
@@ -3881,32 +3999,31 @@ class ResumeGenerationService:
         # Company (bold) + right-aligned dates on same line.
         primary = company or title
         secondary = title if company else ""
-        if primary or duration:
-            line = doc.add_paragraph()
-            line.paragraph_format.space_before = Pt(8)
-            line.paragraph_format.space_after = Pt(0)
-            tab_pos = usable_width if usable_width is not None else Inches(6.5)
-            try:
-                line.paragraph_format.tab_stops.add_tab_stop(tab_pos, WD_TAB_ALIGNMENT.RIGHT)
-            except Exception:
-                pass
-            if primary:
-                run = line.add_run(primary)
-                run.bold = True
-                run.italic = False
-                run.underline = False
-                run.font.name = font_family
-                run.font.size = Pt(body_size)
-                run.font.color.rgb = self._theme_text()
-            if duration:
-                line.add_run("\t")
-                date_run = line.add_run(duration)
-                date_run.bold = False
-                date_run.italic = False
-                date_run.underline = False
-                date_run.font.name = font_family
-                date_run.font.size = Pt(body_size)
-                date_run.font.color.rgb = self._theme_muted()
+        if primary and not duration:
+            primary, duration = split_left_right_meta(primary)
+            if company:
+                company = primary
+            else:
+                title = primary
+                secondary = ""
+        left_label = primary
+        if company and location and location.lower() not in company.lower():
+            left_label = f"{company}, {location}"
+
+        if left_label or duration:
+            add_left_right_line(
+                doc,
+                left_label or title,
+                duration,
+                font_family=font_family,
+                body_size=body_size,
+                color_text=self._theme_text(),
+                color_muted=self._theme_muted(),
+                usable_width=usable_width,
+                bold_left=True,
+                space_before=8,
+                space_after=0,
+            )
 
         if secondary:
             role_line = doc.add_paragraph()
@@ -3921,27 +4038,33 @@ class ResumeGenerationService:
             role_run.font.color.rgb = self._theme_text()
 
         if project_name:
-            proj_line = doc.add_paragraph()
-            proj_line.paragraph_format.space_before = Pt(0)
-            proj_line.paragraph_format.space_after = Pt(1)
-            proj_run = proj_line.add_run(project_name)
-            proj_run.bold = True
-            proj_run.italic = False
-            proj_run.underline = False
-            proj_run.font.name = font_family
-            proj_run.font.size = Pt(body_size)
+            proj_left, proj_right = split_left_right_meta(project_name)
+            if proj_right:
+                add_left_right_line(
+                    doc,
+                    proj_left,
+                    proj_right,
+                    font_family=font_family,
+                    body_size=body_size,
+                    color_text=self._theme_text(),
+                    color_muted=self._theme_muted(),
+                    usable_width=usable_width,
+                    bold_left=True,
+                    space_before=0,
+                    space_after=1,
+                )
+            else:
+                proj_line = doc.add_paragraph()
+                proj_line.paragraph_format.space_before = Pt(0)
+                proj_line.paragraph_format.space_after = Pt(1)
+                proj_run = proj_line.add_run(project_name)
+                proj_run.bold = True
+                proj_run.italic = False
+                proj_run.underline = False
+                proj_run.font.name = font_family
+                proj_run.font.size = Pt(body_size)
 
-        if location:
-            loc_p = doc.add_paragraph()
-            loc_p.paragraph_format.space_before = Pt(0)
-            loc_p.paragraph_format.space_after = Pt(2)
-            loc_run = loc_p.add_run(location)
-            loc_run.bold = False
-            loc_run.italic = False
-            loc_run.underline = False
-            loc_run.font.name = font_family
-            loc_run.font.size = Pt(body_size)
-            loc_run.font.color.rgb = self._theme_muted()
+        # Location already folded into company line when present.
 
         desc = (
             item.get("description")
@@ -3953,12 +4076,9 @@ class ResumeGenerationService:
         details = self._as_list(desc)
         if item.get("cgpa"):
             details.insert(0, f"CGPA: {item['cgpa']}")
-        # Do not re-append Environment: tech dumps into bullets — they look dated and
-        # duplicate the skills section. Technologies stay on the role object only.
         for bullet in details:
             if not bullet or not str(bullet).strip():
                 continue
-            # Safety: never render a paragraph stream as a single bullet.
             from app.services.structured_resume_store import expand_to_bullets
 
             for piece in expand_to_bullets([bullet], max_bullets=8):
@@ -3967,14 +4087,39 @@ class ResumeGenerationService:
                     continue
                 if re.match(r"(?i)^environment\s*:", clean_bullet):
                     continue
-                bullet_p = doc.add_paragraph(style="List Bullet")
-                bullet_p.paragraph_format.left_indent = Inches(0.2)
-                bullet_p.paragraph_format.first_line_indent = Inches(-0.15)
-                bullet_p.paragraph_format.space_after = Pt(2)
-                bullet_run = bullet_p.add_run(clean_bullet)
-                bullet_run.font.name = font_family
-                bullet_run.font.size = Pt(body_size)
-                bullet_run.font.color.rgb = self._theme_text()
+                left, right = split_left_right_meta(clean_bullet)
+                if right and len(left.split()) <= 12:
+                    add_left_right_line(
+                        doc,
+                        left,
+                        right,
+                        font_family=font_family,
+                        body_size=body_size,
+                        color_text=self._theme_text(),
+                        color_muted=self._theme_muted(),
+                        usable_width=usable_width,
+                        bold_left=False,
+                        space_before=1,
+                        space_after=2,
+                    )
+                    continue
+                bullet_p = None
+                from app.services.docx_layout import add_bullet_paragraph as _add_bp
+
+                bullet_p = _add_bp(
+                    doc,
+                    clean_bullet,
+                    font_family=font_family,
+                    body_size=body_size,
+                    color=self._theme_text(),
+                    space_after=2,
+                )
+                if bullet_p is not None:
+                    try:
+                        bullet_p.paragraph_format.left_indent = Inches(0.2)
+                        bullet_p.paragraph_format.first_line_indent = Inches(-0.15)
+                    except Exception:
+                        pass
 
     def _append_section(
         self,

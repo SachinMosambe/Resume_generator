@@ -9,6 +9,13 @@ from typing import Any
 from app.core.logging import logger
 from app.models.format_schema import normalize_format_metadata, to_heading_title_case
 from app.services.doc_converter import DocConversionError, convert_doc_to_docx
+from app.services.docx_layout import (
+    add_bullet_paragraph,
+    add_left_right_line,
+    split_left_right_meta,
+    summary_to_bullets,
+    usable_content_width,
+)
 
 
 def render_from_docx_skeleton(
@@ -25,7 +32,7 @@ def render_from_docx_skeleton(
     """
     try:
         from docx import Document
-        from docx.shared import Pt, RGBColor
+        from docx.shared import Pt
         from docx.oxml.ns import qn
         from io import BytesIO
     except ImportError:
@@ -76,6 +83,8 @@ def render_from_docx_skeleton(
     except Exception:
         pass
 
+    usable_width = usable_content_width(doc)
+
     header = document.get("header") or {}
     name = str(header.get("name") or "Candidate").strip() or "Candidate"
     name_para = doc.add_paragraph()
@@ -106,39 +115,70 @@ def render_from_docx_skeleton(
             title_run.font.color.rgb = color_text
             title_para.paragraph_format.space_before = Pt(12)
             title_para.paragraph_format.space_after = Pt(space_after)
-            # No section underline / divider lines.
 
         content = section.get("content")
         stype = str(section.get("type") or "").lower()
         if not content:
             continue
         if stype == "text":
-            p = doc.add_paragraph()
-            run = p.add_run(str(content))
-            run.font.name = font_family
-            run.font.size = Pt(body_size)
-            run.font.color.rgb = color_text
-            run.italic = False
-            run.underline = False
-            p.paragraph_format.space_after = Pt(space_after)
+            # Format templates use bullet summary — never dump as one paragraph.
+            bullets = summary_to_bullets(content)
+            if bullets:
+                for text in bullets:
+                    _add_bullet(doc, text, font_family, body_size, color_text)
+            else:
+                _add_plain_or_split_line(
+                    doc, str(content), font_family, body_size, color_text, color_muted, usable_width
+                )
         elif stype == "skills":
             _add_skills(doc, content, font_family, body_size, color_text)
         elif stype in {"experience", "projects", "education"}:
             for item in content if isinstance(content, list) else [content]:
-                _add_record(doc, item, font_family, body_size, color_text, color_muted, space_after)
+                _add_record(
+                    doc,
+                    item,
+                    font_family,
+                    body_size,
+                    color_text,
+                    color_muted,
+                    space_after,
+                    usable_width,
+                )
         else:
             items = content if isinstance(content, list) else [content]
             for item in items:
+                if isinstance(item, dict):
+                    _add_record(
+                        doc,
+                        item,
+                        font_family,
+                        body_size,
+                        color_text,
+                        color_muted,
+                        space_after,
+                        usable_width,
+                    )
+                    continue
                 text = str(item or "").strip()
                 if not text:
                     continue
-                p = doc.add_paragraph(style="List Bullet")
-                run = p.add_run(text)
-                run.font.name = font_family
-                run.font.size = Pt(body_size)
-                run.font.color.rgb = color_text
-                run.italic = False
-                run.underline = False
+                left, right = split_left_right_meta(text)
+                if right:
+                    add_left_right_line(
+                        doc,
+                        left,
+                        right,
+                        font_family=font_family,
+                        body_size=body_size,
+                        color_text=color_text,
+                        color_muted=color_muted,
+                        usable_width=usable_width,
+                        bold_left=False,
+                        space_before=2,
+                        space_after=2,
+                    )
+                else:
+                    _add_bullet(doc, text, font_family, body_size, color_text)
 
     buffer = BytesIO()
     doc.save(buffer)
@@ -147,7 +187,6 @@ def render_from_docx_skeleton(
 
     if tmp_converted and tmp_converted.exists() and tmp_converted != path:
         try:
-            # Only delete temp conversions created in a temp dir pattern.
             if "tmp" in str(tmp_converted).lower() or tempfile.gettempdir() in str(tmp_converted):
                 tmp_converted.unlink(missing_ok=True)
         except Exception:
@@ -170,11 +209,57 @@ def _clear_body(doc: Any) -> None:
     from docx.oxml.ns import qn
 
     body = doc.element.body
-    # Remove paragraphs and tables; keep sectPr at the end.
     for child in list(body):
         if child.tag == qn("w:sectPr"):
             continue
         body.remove(child)
+
+
+def _add_bullet(doc: Any, text: str, font_family: str, body_size: float, color: Any) -> None:
+    add_bullet_paragraph(
+        doc,
+        text,
+        font_family=font_family,
+        body_size=body_size,
+        color=color,
+        space_after=2,
+    )
+
+
+def _add_plain_or_split_line(
+    doc: Any,
+    text: str,
+    font_family: str,
+    body_size: float,
+    color_text: Any,
+    color_muted: Any,
+    usable_width: Any,
+) -> None:
+    from docx.shared import Pt
+
+    left, right = split_left_right_meta(text)
+    if right:
+        add_left_right_line(
+            doc,
+            left,
+            right,
+            font_family=font_family,
+            body_size=body_size,
+            color_text=color_text,
+            color_muted=color_muted,
+            usable_width=usable_width,
+            bold_left=False,
+            space_before=0,
+            space_after=4,
+        )
+        return
+    p = doc.add_paragraph()
+    run = p.add_run(text)
+    run.font.name = font_family
+    run.font.size = Pt(body_size)
+    run.font.color.rgb = color_text
+    run.italic = False
+    run.underline = False
 
 
 def _add_skills(doc: Any, content: Any, font_family: str, body_size: float, color: Any) -> None:
@@ -219,19 +304,34 @@ def _add_record(
     color_text: Any,
     color_muted: Any,
     space_after: float,
+    usable_width: Any,
 ) -> None:
     from docx.shared import Pt
 
     if not isinstance(item, dict):
         text = str(item or "").strip()
         if text:
-            p = doc.add_paragraph()
-            run = p.add_run(text)
-            run.font.name = font_family
-            run.font.size = Pt(body_size)
-            run.font.color.rgb = color_text
-            run.italic = False
-            run.underline = False
+            left, right = split_left_right_meta(text)
+            if right:
+                add_left_right_line(
+                    doc,
+                    left,
+                    right,
+                    font_family=font_family,
+                    body_size=body_size,
+                    color_text=color_text,
+                    color_muted=color_muted,
+                    usable_width=usable_width,
+                    bold_left=True,
+                )
+            else:
+                p = doc.add_paragraph()
+                run = p.add_run(text)
+                run.font.name = font_family
+                run.font.size = Pt(body_size)
+                run.font.color.rgb = color_text
+                run.italic = False
+                run.underline = False
         return
 
     title = str(
@@ -247,30 +347,41 @@ def _add_record(
         or item.get("organization")
         or ""
     ).strip()
-    dates = str(item.get("duration") or item.get("dates") or item.get("year") or "").strip()
+    location = str(item.get("location") or "").strip()
+    dates = str(
+        item.get("duration") or item.get("dates") or item.get("year") or item.get("link") or item.get("url") or ""
+    ).strip()
     project_name = str(item.get("project") or item.get("project_name") or "").strip()
     bullets = item.get("description") or item.get("bullets") or item.get("achievements") or []
 
-    if company or title:
-        line = doc.add_paragraph()
-        line.paragraph_format.space_before = Pt(6)
-        line.paragraph_format.space_after = Pt(0)
-        primary = company or title
-        run = line.add_run(primary)
-        run.bold = True
-        run.italic = False
-        run.underline = False
-        run.font.name = font_family
-        run.font.size = Pt(body_size)
-        run.font.color.rgb = color_text
-        if dates:
-            date_run = line.add_run(f"  {dates}")
-            date_run.bold = False
-            date_run.italic = False
-            date_run.underline = False
-            date_run.font.name = font_family
-            date_run.font.size = Pt(body_size)
-            date_run.font.color.rgb = color_muted
+    # Prefer explicit date/url fields; else peel from company/title strings.
+    primary = company or title
+    if primary and not dates:
+        primary, dates = split_left_right_meta(primary)
+        if company:
+            company = primary
+        else:
+            title = primary
+
+    left_label = primary
+    if company and location and location.lower() not in company.lower():
+        left_label = f"{company}, {location}" if company else primary
+
+    if left_label or dates:
+        add_left_right_line(
+            doc,
+            left_label or title,
+            dates,
+            font_family=font_family,
+            body_size=body_size,
+            color_text=color_text,
+            color_muted=color_muted,
+            usable_width=usable_width,
+            bold_left=True,
+            space_before=6,
+            space_after=0,
+        )
+
     if company and title and company != title:
         role = doc.add_paragraph()
         role.paragraph_format.space_after = Pt(2)
@@ -283,15 +394,31 @@ def _add_record(
         role_run.font.color.rgb = color_text
 
     if project_name:
-        proj = doc.add_paragraph()
-        proj.paragraph_format.space_after = Pt(2)
-        proj_run = proj.add_run(project_name)
-        proj_run.bold = True
-        proj_run.italic = False
-        proj_run.underline = False
-        proj_run.font.name = font_family
-        proj_run.font.size = Pt(body_size)
-        proj_run.font.color.rgb = color_text
+        proj_left, proj_right = split_left_right_meta(project_name)
+        if proj_right:
+            add_left_right_line(
+                doc,
+                proj_left,
+                proj_right,
+                font_family=font_family,
+                body_size=body_size,
+                color_text=color_text,
+                color_muted=color_muted,
+                usable_width=usable_width,
+                bold_left=True,
+                space_before=0,
+                space_after=2,
+            )
+        else:
+            proj = doc.add_paragraph()
+            proj.paragraph_format.space_after = Pt(2)
+            proj_run = proj.add_run(project_name)
+            proj_run.bold = True
+            proj_run.italic = False
+            proj_run.underline = False
+            proj_run.font.name = font_family
+            proj_run.font.size = Pt(body_size)
+            proj_run.font.color.rgb = color_text
 
     if isinstance(bullets, str):
         bullets = [bullets]
@@ -299,11 +426,21 @@ def _add_record(
         text = str(bullet or "").strip()
         if not text:
             continue
-        p = doc.add_paragraph(style="List Bullet")
-        p.paragraph_format.space_after = Pt(2)
-        run = p.add_run(text)
-        run.font.name = font_family
-        run.font.size = Pt(body_size)
-        run.font.color.rgb = color_text
-        run.italic = False
-        run.underline = False
+        left, right = split_left_right_meta(text)
+        if right and len(left.split()) <= 12:
+            # Short label + date/link → right-align meta (rare in bullets).
+            add_left_right_line(
+                doc,
+                left,
+                right,
+                font_family=font_family,
+                body_size=body_size,
+                color_text=color_text,
+                color_muted=color_muted,
+                usable_width=usable_width,
+                bold_left=False,
+                space_before=1,
+                space_after=2,
+            )
+        else:
+            _add_bullet(doc, text, font_family, body_size, color_text)

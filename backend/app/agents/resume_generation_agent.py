@@ -1,4 +1,5 @@
 from typing import Any
+import re
 
 
 SECTION_LABELS = {
@@ -80,7 +81,18 @@ def normalize_resume_document(document: dict[str, Any], candidate_data: dict[str
             if not content:
                 continue
         elif section_type in {"experience", "education", "projects", "bullets"}:
-            content = [item for item in _list(content) if str(item).strip()]
+            # Preserve list items as-is. Never comma-split bullet/summary prose.
+            if isinstance(content, list):
+                content = [item for item in content if str(item or "").strip()]
+            elif isinstance(content, str):
+                from app.services.docx_layout import summary_to_bullets
+
+                if _canonical_section(title) == "summary" or section_type == "bullets":
+                    content = summary_to_bullets(content)
+                else:
+                    content = [line.strip() for line in content.splitlines() if line.strip()] or [content.strip()]
+            else:
+                content = [item for item in _list(content) if str(item).strip()]
             if not content:
                 continue
         else:
@@ -181,10 +193,12 @@ def _build_section(
     title = to_heading_title_case(label or SECTION_LABELS.get(canonical) or _titleize(section_name), keep_colon=False)
 
     if canonical == "summary":
-        content = _summary(candidate_data)
+        from app.services.docx_layout import summary_to_bullets
+
+        content = summary_to_bullets(_summary(candidate_data))
         if not content:
             return None
-        return {"type": "text", "title": title, "content": content}
+        return {"type": "bullets", "title": title, "content": content}
     
     if canonical == "experience":
         experience = candidate_data.get("experience", [])
@@ -407,7 +421,13 @@ def _list(value: Any) -> list[Any]:
                 return nested
         return [f"{key}: {item}" for key, item in value.items() if item]
     if isinstance(value, str):
-        return [item.strip() for item in value.split(",") if item.strip()]
+        # Prefer line breaks; only fall back to comma split for short skill-like strings.
+        lines = [item.strip() for item in value.splitlines() if item.strip()]
+        if len(lines) > 1:
+            return lines
+        if "," in value and len(value) < 120 and not re.search(r"[.!?]", value):
+            return [item.strip() for item in value.split(",") if item.strip()]
+        return [value.strip()] if value.strip() else []
     return [value]
 
 
