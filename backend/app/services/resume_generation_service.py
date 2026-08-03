@@ -902,7 +902,7 @@ class ResumeGenerationService:
                     "- Education: Degree + full Institution + Year (no Institute/College stubs).",
                     "- Certifications must be separate items; never mix Leadership/Achievements into Certifications.",
                     "- Projects must be separate entries with their own bullets.",
-                    "- Section titles must be canonical (PROFESSIONAL SUMMARY, TECHNICAL SKILLS, etc).",
+                    "- Section titles must be Title Case (Professional Summary, Technical Skills, etc) — never ALL CAPS.",
                     "- Header must include full candidate name only (no email, phone, or address).",
                     "- Do NOT aggressively summarize. Keep nearly all source bullets and roles.",
                     *findings_as_feedback(critical_findings(section_findings) or section_findings)[:10],
@@ -1114,23 +1114,24 @@ class ResumeGenerationService:
         }
 
         section_titles = {
-            "summary": "PROFESSIONAL SUMMARY:",
-            "skills": "TECHNICAL SKILLS:",
-            "experience": "PROFESSIONAL EXPERIENCE:",
-            "projects": "PROJECTS:",
-            "education": "EDUCATION:",
-            "certifications": "CERTIFICATIONS:",
-            "achievements": "ACHIEVEMENTS:",
-            "languages": "LANGUAGES:",
+            "summary": "Professional Summary",
+            "skills": "Technical Skills",
+            "experience": "Professional Experience",
+            "projects": "Projects",
+            "education": "Education",
+            "certifications": "Certifications",
+            "achievements": "Achievements",
+            "languages": "Languages",
         }
         # Aptino / template labels always win when present.
+        from app.models.format_schema import to_heading_title_case
+
         if is_aptino_template(metadata):
             aptino_labels = (get_aptino_default_metadata().get("section_labels") or {})
             for key, label in aptino_labels.items():
                 canonical_key = self._canonical_resume_section(key)
                 if canonical_key in section_titles and label:
-                    titled = str(label).strip().upper()
-                    section_titles[canonical_key] = titled if titled.endswith(":") else f"{titled}:"
+                    section_titles[canonical_key] = to_heading_title_case(label, keep_colon=False)
         else:
             section_labels = (metadata or {}).get("section_labels") or {}
             field_mapping = (metadata or {}).get("field_mapping") or {}
@@ -1153,8 +1154,7 @@ class ResumeGenerationService:
                     continue
                 if not self._looks_like_section_heading(clean):
                     continue
-                titled = clean.upper()
-                section_titles[canonical_key] = titled if titled.endswith(":") else f"{titled}:"
+                section_titles[canonical_key] = to_heading_title_case(clean, keep_colon=False)
 
         cleaned_sections: list[dict[str, Any]] = []
         seen_sections: set[str] = set()
@@ -1171,10 +1171,11 @@ class ResumeGenerationService:
             if canonical in seen_sections and canonical in {"summary", "skills", "experience", "education"}:
                 continue
 
-            # Always use validated canonical titles — never company/role names as headings.
-            styled_title = section_titles.get(canonical) or f"{canonical.replace('_', ' ').upper()}:"
-            if styled_title and not styled_title.endswith(":"):
-                styled_title += ":"
+            # Always use validated company-format titles — never company/role names as headings.
+            styled_title = section_titles.get(canonical) or to_heading_title_case(
+                canonical.replace("_", " "), keep_colon=False
+            )
+            styled_title = to_heading_title_case(styled_title, keep_colon=False)
             forced_type = self._canonical_section_type(canonical)
 
             if forced_type in {"experience", "education", "projects"}:
@@ -1301,16 +1302,18 @@ class ResumeGenerationService:
         self, canonical: str, candidate_data: dict[str, Any]
     ) -> dict[str, Any] | None:
         titles = {
-            "summary": "PROFESSIONAL SUMMARY:",
-            "skills": "TECHNICAL SKILLS:",
-            "experience": "PROFESSIONAL EXPERIENCE:",
-            "projects": "PROJECTS:",
-            "education": "EDUCATION:",
-            "certifications": "CERTIFICATIONS:",
-            "achievements": "ACHIEVEMENTS:",
-            "languages": "LANGUAGES:",
+            "summary": "Professional Summary",
+            "skills": "Technical Skills",
+            "experience": "Professional Experience",
+            "projects": "Projects",
+            "education": "Education",
+            "certifications": "Certifications",
+            "achievements": "Achievements",
+            "languages": "Languages",
         }
-        title = titles.get(canonical, canonical.upper() + ":")
+        from app.models.format_schema import to_heading_title_case
+
+        title = titles.get(canonical) or to_heading_title_case(canonical.replace("_", " "), keep_colon=False)
         if canonical == "summary":
             summary = self._normalize_summary_text(candidate_data.get("summary"))
             if summary:
@@ -1843,7 +1846,7 @@ class ResumeGenerationService:
         if candidate_data.get("education") and not edu_sec:
             issues.append("Education is present in candidate data but missing in the resume.")
 
-        # Format consistency: client style expects uppercase section titles with colon.
+        # Format consistency: Title Case section titles (never ALL CAPS).
         invalid_titles = 0
         bad_heading_titles: list[str] = []
         for section in sections:
@@ -1853,7 +1856,8 @@ class ResumeGenerationService:
             if not title:
                 continue
             normalized = title[:-1] if title.endswith(":") else title
-            if normalized and normalized != normalized.upper():
+            letters = re.sub(r"[^A-Za-z]", "", normalized)
+            if letters and letters.isupper() and len(letters) >= 4:
                 invalid_titles += 1
             sec_type = str(section.get("type") or "").strip()
             canonical = self._resolve_section_canonical(title, sec_type)
@@ -1865,11 +1869,11 @@ class ResumeGenerationService:
                 ):
                     bad_heading_titles.append(title)
         if invalid_titles >= 2:
-            issues.append("Section titles are not consistently formatted in client style (UPPERCASE with colon).")
+            issues.append("Section titles must be Title Case (e.g. Professional Summary), never ALL CAPS.")
         if bad_heading_titles:
             issues.append(
                 "Invalid section title(s) look like company/role names instead of section headings "
-                f"({', '.join(bad_heading_titles[:3])}); use PROFESSIONAL EXPERIENCE / EDUCATION / etc."
+                f"({', '.join(bad_heading_titles[:3])}); use Professional Experience / Education / etc."
             )
 
         # Hallucination / grounding checks for experience employers.
@@ -2304,26 +2308,28 @@ class ResumeGenerationService:
         }
         labels = cleaned.get("section_labels")
         if isinstance(labels, dict):
+            from app.models.format_schema import to_heading_title_case
+
             defaults = {
-                "summary": "PROFESSIONAL SUMMARY",
-                "skills": "TECHNICAL SKILLS",
-                "experience": "PROFESSIONAL EXPERIENCE",
-                "projects": "PROJECTS",
-                "education": "EDUCATION",
-                "certifications": "CERTIFICATIONS",
-                "achievements": "ACHIEVEMENTS",
-                "languages": "LANGUAGES",
+                "summary": "Professional Summary",
+                "skills": "Technical Skills",
+                "experience": "Professional Experience",
+                "projects": "Projects",
+                "education": "Education",
+                "certifications": "Certifications",
+                "achievements": "Achievements",
+                "languages": "Languages",
             }
             if is_aptino_template(cleaned) or is_aptino_template(metadata):
                 defaults = {
-                    "summary": "PROFESSIONAL SUMMARY",
-                    "skills": "SKILL SET OVERVIEW",
-                    "experience": "WORK EXPERIENCE",
-                    "projects": "PROJECTS",
-                    "education": "EDUCATIONAL DETAILS",
-                    "certifications": "CERTIFICATIONS",
-                    "achievements": "ACHIEVEMENTS",
-                    "languages": "LANGUAGES",
+                    "summary": "Professional Summary",
+                    "skills": "Skill Set Overview",
+                    "experience": "Work Experience",
+                    "projects": "Projects",
+                    "education": "Educational Details",
+                    "certifications": "Certifications",
+                    "achievements": "Achievements",
+                    "languages": "Languages",
                 }
             safe: dict[str, str] = {}
             for key, value in labels.items():
@@ -2336,9 +2342,10 @@ class ResumeGenerationService:
                     continue
                 if not self._looks_like_section_heading(clean):
                     continue
-                safe[canonical] = clean.upper()
-            # Always keep Aptino/template defaults for any missing keys.
+                safe[canonical] = to_heading_title_case(clean, keep_colon=False)
+            # Company-format labels win; fill gaps from template defaults.
             cleaned["section_labels"] = {**defaults, **safe}
+            cleaned["field_mapping"] = dict(cleaned["section_labels"])
         # Keep logos for Aptino/header rendering (previously stripped).
         if isinstance(metadata.get("logos"), list) and metadata.get("logos"):
             cleaned["logos"] = metadata["logos"]
@@ -3033,8 +3040,8 @@ class ResumeGenerationService:
             raise ResumeGenerationError("reportlab is required to generate client resumes") from exc
 
         styling = (metadata or {}).get("styling") or {}
-        body_size = int(styling.get("font_size_body") or 11)
-        header_size = int(styling.get("font_size_header") or 16)
+        body_size = int(styling.get("font_size_body") or 10)
+        header_size = int(styling.get("font_size_header") or 10)
         
         # Get client info for footer
         client_name = document.get("client_name") or ""
@@ -3310,10 +3317,10 @@ class ResumeGenerationService:
         self._docx_theme = self._docx_theme_from_metadata(metadata)
         doc = Document()
         styling = (metadata or {}).get("styling") or {}
-        body_size = float(styling.get("font_size_body") or 11)
-        header_size = float(styling.get("font_size_header") or 12)
-        name_size = float(styling.get("font_size_name") or 20)
-        font_family = styling.get("font_family") or "Calibri"
+        body_size = float(styling.get("font_size_body") or 10)
+        header_size = float(styling.get("font_size_header") or body_size or 10)
+        name_size = float(styling.get("font_size_name") or body_size or 10)
+        font_family = styling.get("font_family") or "Arial"
         margin_inches = float(styling.get("margin_inches") or 0.65)
         space_after = self._theme_space_after()
         line_spacing = float(styling.get("line_spacing") or 1.0)
@@ -3386,12 +3393,13 @@ class ResumeGenerationService:
         name_para.paragraph_format.space_after = Pt(2)
         name_run = name_para.add_run(display_name)
         name_run.font.name = font_family
-        name_run.font.size = Pt(max(name_size, body_size + 2))
+        name_run.font.size = Pt(name_size)
         name_run.font.bold = True
+        name_run.italic = False
+        name_run.underline = False
         name_run.font.color.rgb = self._theme_text()
         # Intentionally omit email/phone/address/links from client resumes.
-
-        self._add_horizontal_line(doc)
+        # No horizontal divider under the name.
 
         for section_data in document.get("sections") or []:
             self._add_docx_section(doc, section_data, header_size, body_size, font_family, usable_width)
@@ -3624,7 +3632,7 @@ class ResumeGenerationService:
         header: dict,
         header_size: int,
         body_size: int,
-        font_family: str = "Calibri",
+        font_family: str = "Arial",
     ) -> None:
         """Add simple header without logo."""
         from docx.shared import Pt, RGBColor
@@ -3633,6 +3641,8 @@ class ResumeGenerationService:
         name_para.paragraph_format.space_after = Pt(2)
         name_run = name_para.add_run(str(header.get("name") or "Candidate"))
         name_run.bold = True
+        name_run.italic = False
+        name_run.underline = False
         name_run.font.name = font_family
         name_run.font.size = Pt(header_size)
         name_run.font.color.rgb = self._theme_text()
@@ -3642,8 +3652,11 @@ class ResumeGenerationService:
             role_para.paragraph_format.space_before = Pt(0)
             role_para.paragraph_format.space_after = Pt(0)
             role_run = role_para.add_run(str(header["role"]))
+            role_run.bold = True
+            role_run.italic = False
+            role_run.underline = False
             role_run.font.name = font_family
-            role_run.font.size = Pt(body_size + 0.5)
+            role_run.font.size = Pt(body_size)
             role_run.font.color.rgb = self._theme_muted()
 
     def _add_docx_section(
@@ -3652,7 +3665,7 @@ class ResumeGenerationService:
         section: dict[str, Any],
         header_size: float,
         body_size: float,
-        font_family: str = "Calibri",
+        font_family: str = "Arial",
         usable_width: Any = None,
     ) -> None:
         """Add a section to the DOCX document."""
@@ -3663,17 +3676,20 @@ class ResumeGenerationService:
         content = section.get("content")
 
         if title:
+            from app.models.format_schema import to_heading_title_case
+
             title_para = doc.add_paragraph()
-            formatted_title = title.upper() if not title.isupper() else title
-            display_title = formatted_title.rstrip(":")
+            display_title = to_heading_title_case(title, keep_colon=False)
             title_run = title_para.add_run(display_title)
             title_run.bold = True
+            title_run.italic = False
+            title_run.underline = False
             title_run.font.name = font_family
             title_run.font.size = Pt(header_size)
             title_run.font.color.rgb = self._theme_text()
             title_para.paragraph_format.space_before = Pt(14)
             title_para.paragraph_format.space_after = Pt(self._theme_space_after())
-            self._apply_bottom_border(title_para)
+            # No section underline / divider lines.
 
         if not content:
             return
@@ -3736,7 +3752,7 @@ class ResumeGenerationService:
         doc: Any,
         item: Any,
         body_size: float,
-        font_family: str = "Calibri",
+        font_family: str = "Arial",
         usable_width: Any = None,
     ) -> None:
         """Render education clearly: Degree (bold), Institution, Year right-aligned."""
@@ -3799,7 +3815,9 @@ class ResumeGenerationService:
             inst_line.paragraph_format.space_before = Pt(0)
             inst_line.paragraph_format.space_after = Pt(2)
             inst_run = inst_line.add_run(", ".join(secondary_parts))
-            inst_run.italic = True
+            inst_run.bold = False
+            inst_run.italic = False
+            inst_run.underline = False
             inst_run.font.name = font_family
             inst_run.font.size = Pt(body_size)
             inst_run.font.color.rgb = self._theme_text()
@@ -3816,7 +3834,7 @@ class ResumeGenerationService:
         doc: Any,
         item: Any,
         body_size: float,
-        font_family: str = "Calibri",
+        font_family: str = "Arial",
         usable_width: Any = None,
     ) -> None:
         """Add an experience/education/project record with right-aligned dates."""
@@ -3875,12 +3893,17 @@ class ResumeGenerationService:
             if primary:
                 run = line.add_run(primary)
                 run.bold = True
+                run.italic = False
+                run.underline = False
                 run.font.name = font_family
                 run.font.size = Pt(body_size)
                 run.font.color.rgb = self._theme_text()
             if duration:
                 line.add_run("\t")
                 date_run = line.add_run(duration)
+                date_run.bold = False
+                date_run.italic = False
+                date_run.underline = False
                 date_run.font.name = font_family
                 date_run.font.size = Pt(body_size)
                 date_run.font.color.rgb = self._theme_muted()
@@ -3890,7 +3913,9 @@ class ResumeGenerationService:
             role_line.paragraph_format.space_before = Pt(0)
             role_line.paragraph_format.space_after = Pt(1)
             role_run = role_line.add_run(secondary)
-            role_run.italic = True
+            role_run.bold = True
+            role_run.italic = False
+            role_run.underline = False
             role_run.font.name = font_family
             role_run.font.size = Pt(body_size)
             role_run.font.color.rgb = self._theme_text()
@@ -3900,7 +3925,9 @@ class ResumeGenerationService:
             proj_line.paragraph_format.space_before = Pt(0)
             proj_line.paragraph_format.space_after = Pt(1)
             proj_run = proj_line.add_run(project_name)
-            proj_run.italic = True
+            proj_run.bold = True
+            proj_run.italic = False
+            proj_run.underline = False
             proj_run.font.name = font_family
             proj_run.font.size = Pt(body_size)
 
@@ -3909,8 +3936,11 @@ class ResumeGenerationService:
             loc_p.paragraph_format.space_before = Pt(0)
             loc_p.paragraph_format.space_after = Pt(2)
             loc_run = loc_p.add_run(location)
+            loc_run.bold = False
+            loc_run.italic = False
+            loc_run.underline = False
             loc_run.font.name = font_family
-            loc_run.font.size = Pt(max(9.5, body_size - 0.5))
+            loc_run.font.size = Pt(body_size)
             loc_run.font.color.rgb = self._theme_muted()
 
         desc = (

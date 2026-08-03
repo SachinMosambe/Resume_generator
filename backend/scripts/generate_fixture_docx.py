@@ -61,6 +61,7 @@ def main() -> None:
                     client_id="TestClient",
                     format_template_path=f"upload://{sanitize_filename(fmt_path.name)}",
                     format_metadata=meta,
+                    template_bytes_path=str(fmt_path),
                 )
             docx = svc.generate(candidate, client_format)
             out_path = out / f"{resume.stem}__{fmt_name}.docx"

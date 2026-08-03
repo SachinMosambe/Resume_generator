@@ -2,15 +2,15 @@ from typing import Any
 
 
 SECTION_LABELS = {
-    "header": "PROFILE",
-    "summary": "PROFESSIONAL SUMMARY",
-    "experience": "PROFESSIONAL EXPERIENCE",
-    "education": "EDUCATION",
-    "skills": "TECHNICAL SKILLS",
-    "projects": "PROJECTS",
-    "certifications": "CERTIFICATIONS",
-    "achievements": "ACHIEVEMENTS",
-    "languages": "LANGUAGES",
+    "header": "Profile",
+    "summary": "Professional Summary",
+    "experience": "Professional Experience",
+    "education": "Education",
+    "skills": "Technical Skills",
+    "projects": "Projects",
+    "certifications": "Certifications",
+    "achievements": "Achievements",
+    "languages": "Languages",
 }
 
 DEFAULT_SECTION_ORDER = [
@@ -33,13 +33,16 @@ def build_resume_document(candidate_data: dict[str, Any], format_metadata: dict[
         _ordered_sections(sections, metadata.get("section_order")),
         candidate_data,
     )
+    labels = metadata.get("section_labels") if isinstance(metadata.get("section_labels"), dict) else {}
+    if not labels and isinstance(metadata.get("field_mapping"), dict):
+        labels = metadata.get("field_mapping") or {}
 
     return {
         "header": _build_header(candidate_data),
         "sections": [
             section
             for section in (
-                _build_section(section_name, candidate_data)
+                _build_section(section_name, candidate_data, labels)
                 for section_name in ordered_sections
                 if _canonical_section(section_name) != "header"
             )
@@ -68,6 +71,9 @@ def normalize_resume_document(document: dict[str, Any], candidate_data: dict[str
         if section_type not in {"text", "skills", "experience", "education", "projects", "bullets"}:
             section_type = "text"
         title = str(section.get("title") or "Section").strip()
+        from app.models.format_schema import to_heading_title_case
+
+        title = to_heading_title_case(title, keep_colon=False) or title
         content = section.get("content")
         if section_type == "skills":
             content = _clean_skills_content(content)
@@ -160,10 +166,19 @@ def _build_header(candidate_data: dict[str, Any]) -> dict[str, Any]:
     }
 
 
-def _build_section(section_name: str, candidate_data: dict[str, Any]) -> dict[str, Any] | None:
+def _build_section(
+    section_name: str,
+    candidate_data: dict[str, Any],
+    labels: dict[str, Any] | None = None,
+) -> dict[str, Any] | None:
     """Build a resume section with detailed content."""
+    from app.models.format_schema import to_heading_title_case
+
     canonical = _canonical_section(section_name)
-    title = SECTION_LABELS.get(canonical, _titleize(section_name))
+    label = None
+    if isinstance(labels, dict):
+        label = labels.get(canonical) or labels.get(section_name)
+    title = to_heading_title_case(label or SECTION_LABELS.get(canonical) or _titleize(section_name), keep_colon=False)
 
     if canonical == "summary":
         content = _summary(candidate_data)

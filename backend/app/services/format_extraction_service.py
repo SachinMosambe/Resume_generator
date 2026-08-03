@@ -21,12 +21,37 @@ class FormatExtractionError(ValueError):
 
 SECTION_ALIASES: dict[str, list[str]] = {
     "header": ["header", "contact", "profile"],
-    "summary": ["summary", "professional summary", "profile summary", "objective"],
-    "experience": ["experience", "work experience", "professional experience", "employment"],
-    "education": ["education", "academic", "academics", "qualifications"],
-    "skills": ["skills", "technical skills", "core skills", "competencies"],
-    "projects": ["projects", "selected projects", "project experience"],
-    "certifications": ["certifications", "certificates", "licenses"],
+    "summary": ["summary", "professional summary", "profile summary", "objective", "about me"],
+    "experience": [
+        "experience",
+        "work experience",
+        "professional experience",
+        "employment",
+        "employment history",
+        "work history",
+    ],
+    "education": [
+        "education",
+        "educational details",
+        "educational qualifications",
+        "academic",
+        "academics",
+        "academic details",
+        "qualifications",
+    ],
+    "skills": [
+        "skills",
+        "skill set",
+        "skill set overview",
+        "technical skills",
+        "core skills",
+        "competencies",
+        "technologies",
+        "technical skill set",
+    ],
+    "projects": ["projects", "selected projects", "project experience", "key projects"],
+    "certifications": ["certifications", "certificates", "licenses", "certification"],
+    "achievements": ["achievements", "achievement", "awards", "accomplishments"],
 }
 
 DEFAULT_SECTIONS = [
@@ -233,14 +258,16 @@ class FormatExtractionService:
         # Try multiple methods to extract logo (+ optional footer stamp)
         logos = self._extract_logo_from_pdf(path)
 
-        body_size = round(sum(font_sizes) / len(font_sizes), 1) if font_sizes else 11
-        font_family = self._clean_font_name(font_names[0]) if font_names else "Helvetica"
+        body_size = round(sum(font_sizes) / len(font_sizes), 1) if font_sizes else 10
+        font_family = self._clean_font_name(font_names[0]) if font_names else "Arial"
         color_text = max(color_counts, key=color_counts.get) if color_counts else "#000000"
+        # Prefer body size for headlines too (client policy: Arial 10 throughout).
+        resolved_body = int(body_size) or 10
         styling = {
-            "font_family": font_family,
-            "font_size_header": max(12, int(body_size + 3)),
-            "font_size_body": int(body_size) or 11,
-            "font_size_name": max(18, int(body_size + 8)),
+            "font_family": font_family or "Arial",
+            "font_size_header": resolved_body,
+            "font_size_body": resolved_body,
+            "font_size_name": resolved_body,
             "color_text": color_text,
             "color_muted": "#333333",
             "margin_inches": 0.65,
@@ -550,24 +577,30 @@ class FormatExtractionService:
             pass
 
         body_size = round(sum(body_sizes) / len(body_sizes), 1) if body_sizes else float(fallback_body)
+        # Client policy: headlines and body share the same size (typically Arial 10).
         header_size = (
             round(sum(header_sizes) / len(header_sizes), 1)
             if header_sizes
-            else max(12.0, body_size + 1)
+            else body_size
         )
         name_size = (
             round(sum(name_sizes) / len(name_sizes), 1)
             if name_sizes
-            else max(18.0, body_size + 8)
+            else body_size
         )
+        # Prefer the most common body size when header/name samples are close (±2pt).
+        if abs(header_size - body_size) <= 2:
+            header_size = body_size
+        if abs(name_size - body_size) <= 4:
+            name_size = body_size
         font_family = font_names[0] if font_names else fallback_family
         color_text = max(color_counts, key=color_counts.get) if color_counts else "#000000"
 
         return {
-            "font_family": font_family or "Calibri",
-            "font_size_header": header_size,
-            "font_size_body": body_size,
-            "font_size_name": name_size,
+            "font_family": font_family or "Arial",
+            "font_size_header": header_size or 10,
+            "font_size_body": body_size or 10,
+            "font_size_name": name_size or 10,
             "color_text": color_text,
             "color_muted": "#333333",
             "margin_inches": margin_inches,
@@ -968,7 +1001,9 @@ class FormatExtractionService:
                     seen.add(canonical)
                     clean_label = re.sub(r"[:：]+$", "", line).strip()
                     if clean_label:
-                        labels[canonical] = clean_label.upper()
+                        from app.models.format_schema import to_heading_title_case
+
+                        labels[canonical] = to_heading_title_case(clean_label, keep_colon=False)
 
         if "header" not in seen:
             found.insert(0, "header")
@@ -991,6 +1026,10 @@ class FormatExtractionService:
         if line.startswith(f"{alias_norm} "):
             rest = line[len(alias_norm) :].strip()
             return len(rest.split()) <= 3 and len(rest) <= 36
+        # Allow short Title-Case headings that contain the alias as a whole phrase
+        # e.g. "skill set overview" matches alias "skill set".
+        if f" {alias_norm} " in f" {line} " and len(line.split()) <= 5:
+            return True
         return False
 
     def _build_field_mapping(
@@ -1000,14 +1039,14 @@ class FormatExtractionService:
     ) -> dict[str, str]:
         """Map canonical sections to human-readable titles for the generated DOCX."""
         defaults = {
-            "summary": "PROFESSIONAL SUMMARY",
-            "experience": "PROFESSIONAL EXPERIENCE",
-            "education": "EDUCATION",
-            "skills": "TECHNICAL SKILLS",
-            "projects": "PROJECTS",
-            "certifications": "CERTIFICATIONS",
-            "achievements": "ACHIEVEMENTS",
-            "languages": "LANGUAGES",
+            "summary": "Professional Summary",
+            "experience": "Professional Experience",
+            "education": "Education",
+            "skills": "Technical Skills",
+            "projects": "Projects",
+            "certifications": "Certifications",
+            "achievements": "Achievements",
+            "languages": "Languages",
         }
         mapping = {
             "name": "Name",
@@ -1016,13 +1055,15 @@ class FormatExtractionService:
             "location": "Location",
         }
         labels = section_labels or {}
+        from app.models.format_schema import to_heading_title_case
+
         for section in sections:
             if section == "header":
                 continue
             label = labels.get(section) or defaults.get(section) or section.replace("_", " ").title()
             if "." in str(label):
                 label = defaults.get(section) or section.replace("_", " ").title()
-            mapping[section] = label
+            mapping[section] = to_heading_title_case(label, keep_colon=False)
         return mapping
 
     def _company_sign_from_text(self, text: str | None) -> dict[str, Any] | None:
@@ -1327,8 +1368,10 @@ class FormatExtractionService:
         for section in sections:
             if section == "header":
                 continue
-            label = labels.get(section) or section.replace("_", " ").upper()
-            heading_bits.append(str(label).upper())
+            label = labels.get(section) or section.replace("_", " ")
+            from app.models.format_schema import to_heading_title_case
+
+            heading_bits.append(to_heading_title_case(label, keep_colon=False))
         layout_hint = "Section order: " + " → ".join(heading_bits[:10]) if heading_bits else ""
 
         heading_lines: list[str] = []
@@ -1340,8 +1383,13 @@ class FormatExtractionService:
             if len(letters) < 4:
                 continue
             upper_ratio = sum(1 for ch in letters if ch.isupper()) / max(len(letters), 1)
-            if upper_ratio >= 0.7 or clean.isupper():
-                heading_lines.append(clean.upper())
+            # Capture ALL-CAPS or Title-Case short headings from the template.
+            words = clean.split()
+            title_like = len(words) <= 5 and sum(1 for w in words if w[:1].isupper()) >= max(1, len(words) // 2)
+            if upper_ratio >= 0.7 or clean.isupper() or title_like:
+                from app.models.format_schema import to_heading_title_case
+
+                heading_lines.append(to_heading_title_case(clean, keep_colon=False))
             if len(heading_lines) >= 10:
                 break
         parts = []
@@ -1356,14 +1404,14 @@ class FormatExtractionService:
 
     def _clean_font_name(self, font_name: str) -> str:
         cleaned = font_name.split("+")[-1].replace("-", " ").strip()
-        return cleaned or "Helvetica"
+        return cleaned or "Arial"
 
     def _default_styling(self) -> dict[str, Any]:
         return {
-            "font_family": "Calibri",
-            "font_size_header": 12,
-            "font_size_body": 11,
-            "font_size_name": 20,
+            "font_family": "Arial",
+            "font_size_header": 10,
+            "font_size_body": 10,
+            "font_size_name": 10,
             "color_text": "#000000",
             "color_muted": "#333333",
             "margin_inches": 0.7,

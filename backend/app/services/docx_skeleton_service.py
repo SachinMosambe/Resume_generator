@@ -7,7 +7,7 @@ from pathlib import Path
 from typing import Any
 
 from app.core.logging import logger
-from app.models.format_schema import normalize_format_metadata
+from app.models.format_schema import normalize_format_metadata, to_heading_title_case
 from app.services.doc_converter import DocConversionError, convert_doc_to_docx
 
 
@@ -50,10 +50,11 @@ def render_from_docx_skeleton(
 
     metadata = normalize_format_metadata(metadata)
     styling = metadata.get("styling") or {}
-    font_family = str(styling.get("font_family") or "Calibri")
-    body_size = float(styling.get("font_size_body") or 11)
-    header_size = float(styling.get("font_size_header") or 12)
-    name_size = float(styling.get("font_size_name") or 20)
+    # Client policy: Arial 10 for name, headlines, and body.
+    font_family = str(styling.get("font_family") or "Arial")
+    body_size = float(styling.get("font_size_body") or 10)
+    header_size = float(styling.get("font_size_header") or body_size or 10)
+    name_size = float(styling.get("font_size_name") or body_size or 10)
     color_text = _rgb(styling.get("color_text"), (0, 0, 0))
     color_muted = _rgb(styling.get("color_muted"), (0x33, 0x33, 0x33))
     space_after = float(styling.get("space_after_para") or 6)
@@ -84,6 +85,8 @@ def render_from_docx_skeleton(
     name_run.font.name = font_family
     name_run.font.size = Pt(name_size)
     name_run.font.color.rgb = color_text
+    name_run.italic = False
+    name_run.underline = False
 
     # Client policy: name only — never email/phone/address on generated resumes.
 
@@ -93,14 +96,17 @@ def render_from_docx_skeleton(
         title = str(section.get("title") or "").strip()
         if title:
             title_para = doc.add_paragraph()
-            title_run = title_para.add_run(title.upper().rstrip(":"))
+            display_title = to_heading_title_case(title, keep_colon=False)
+            title_run = title_para.add_run(display_title)
             title_run.bold = True
+            title_run.italic = False
+            title_run.underline = False
             title_run.font.name = font_family
             title_run.font.size = Pt(header_size)
             title_run.font.color.rgb = color_text
             title_para.paragraph_format.space_before = Pt(12)
             title_para.paragraph_format.space_after = Pt(space_after)
-            _apply_bottom_border(title_para)
+            # No section underline / divider lines.
 
         content = section.get("content")
         stype = str(section.get("type") or "").lower()
@@ -112,6 +118,8 @@ def render_from_docx_skeleton(
             run.font.name = font_family
             run.font.size = Pt(body_size)
             run.font.color.rgb = color_text
+            run.italic = False
+            run.underline = False
             p.paragraph_format.space_after = Pt(space_after)
         elif stype == "skills":
             _add_skills(doc, content, font_family, body_size, color_text)
@@ -129,6 +137,8 @@ def render_from_docx_skeleton(
                 run.font.name = font_family
                 run.font.size = Pt(body_size)
                 run.font.color.rgb = color_text
+                run.italic = False
+                run.underline = False
 
     buffer = BytesIO()
     doc.save(buffer)
@@ -167,25 +177,6 @@ def _clear_body(doc: Any) -> None:
         body.remove(child)
 
 
-def _apply_bottom_border(paragraph: Any) -> None:
-    from docx.oxml.ns import qn
-    from docx.oxml import OxmlElement
-
-    p = paragraph._p
-    p_pr = p.get_or_add_pPr()
-    existing = p_pr.find(qn("w:pBdr"))
-    if existing is not None:
-        p_pr.remove(existing)
-    p_bdr = OxmlElement("w:pBdr")
-    bottom = OxmlElement("w:bottom")
-    bottom.set(qn("w:val"), "single")
-    bottom.set(qn("w:sz"), "6")
-    bottom.set(qn("w:space"), "1")
-    bottom.set(qn("w:color"), "000000")
-    p_bdr.append(bottom)
-    p_pr.append(p_bdr)
-
-
 def _add_skills(doc: Any, content: Any, font_family: str, body_size: float, color: Any) -> None:
     from docx.shared import Pt
 
@@ -197,6 +188,8 @@ def _add_skills(doc: Any, content: Any, font_family: str, body_size: float, colo
             p = doc.add_paragraph()
             cat = p.add_run(f"{category}: ")
             cat.bold = True
+            cat.italic = False
+            cat.underline = False
             cat.font.name = font_family
             cat.font.size = Pt(body_size)
             cat.font.color.rgb = color
@@ -204,6 +197,8 @@ def _add_skills(doc: Any, content: Any, font_family: str, body_size: float, colo
             rest.font.name = font_family
             rest.font.size = Pt(body_size)
             rest.font.color.rgb = color
+            rest.italic = False
+            rest.underline = False
         return
     skills = [str(s).strip() for s in (content if isinstance(content, list) else [content]) if str(s).strip()]
     if skills:
@@ -212,6 +207,8 @@ def _add_skills(doc: Any, content: Any, font_family: str, body_size: float, colo
         run.font.name = font_family
         run.font.size = Pt(body_size)
         run.font.color.rgb = color
+        run.italic = False
+        run.underline = False
 
 
 def _add_record(
@@ -233,6 +230,8 @@ def _add_record(
             run.font.name = font_family
             run.font.size = Pt(body_size)
             run.font.color.rgb = color_text
+            run.italic = False
+            run.underline = False
         return
 
     title = str(
@@ -249,6 +248,7 @@ def _add_record(
         or ""
     ).strip()
     dates = str(item.get("duration") or item.get("dates") or item.get("year") or "").strip()
+    project_name = str(item.get("project") or item.get("project_name") or "").strip()
     bullets = item.get("description") or item.get("bullets") or item.get("achievements") or []
 
     if company or title:
@@ -258,11 +258,16 @@ def _add_record(
         primary = company or title
         run = line.add_run(primary)
         run.bold = True
+        run.italic = False
+        run.underline = False
         run.font.name = font_family
         run.font.size = Pt(body_size)
         run.font.color.rgb = color_text
         if dates:
             date_run = line.add_run(f"  {dates}")
+            date_run.bold = False
+            date_run.italic = False
+            date_run.underline = False
             date_run.font.name = font_family
             date_run.font.size = Pt(body_size)
             date_run.font.color.rgb = color_muted
@@ -270,10 +275,23 @@ def _add_record(
         role = doc.add_paragraph()
         role.paragraph_format.space_after = Pt(2)
         role_run = role.add_run(title)
-        role_run.italic = True
+        role_run.bold = True
+        role_run.italic = False
+        role_run.underline = False
         role_run.font.name = font_family
         role_run.font.size = Pt(body_size)
         role_run.font.color.rgb = color_text
+
+    if project_name:
+        proj = doc.add_paragraph()
+        proj.paragraph_format.space_after = Pt(2)
+        proj_run = proj.add_run(project_name)
+        proj_run.bold = True
+        proj_run.italic = False
+        proj_run.underline = False
+        proj_run.font.name = font_family
+        proj_run.font.size = Pt(body_size)
+        proj_run.font.color.rgb = color_text
 
     if isinstance(bullets, str):
         bullets = [bullets]
@@ -287,3 +305,5 @@ def _add_record(
         run.font.name = font_family
         run.font.size = Pt(body_size)
         run.font.color.rgb = color_text
+        run.italic = False
+        run.underline = False

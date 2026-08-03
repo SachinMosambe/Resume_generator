@@ -121,8 +121,8 @@ def validate_format_document(
     styling = metadata.get("styling") or {}
     for key, lo, hi in (
         ("font_size_body", 8, 16),
-        ("font_size_header", 9, 24),
-        ("font_size_name", 12, 36),
+        ("font_size_header", 8, 24),
+        ("font_size_name", 8, 36),
     ):
         try:
             size = float(styling.get(key) or 0)

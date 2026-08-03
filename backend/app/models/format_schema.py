@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import re
 from dataclasses import asdict, dataclass, field
 from typing import Any
 
@@ -19,13 +20,81 @@ CANONICAL_BODY_SECTIONS = [
 
 DEFAULT_REQUIRED_SECTIONS = ["summary", "skills", "experience", "education"]
 
+# Client style policy: Title Case headings, never ALL CAPS.
+DEFAULT_SECTION_LABELS = {
+    "summary": "Professional Summary",
+    "skills": "Technical Skills",
+    "experience": "Professional Experience",
+    "projects": "Projects",
+    "education": "Education",
+    "certifications": "Certifications",
+    "achievements": "Achievements",
+    "languages": "Languages",
+}
+
+# Words kept lowercase inside multi-word headings (except when first).
+_HEADING_SMALL_WORDS = frozenset({"a", "an", "and", "as", "at", "but", "by", "for", "in", "of", "on", "or", "the", "to", "via", "with"})
+
+
+def to_heading_title_case(text: Any, *, keep_colon: bool = False) -> str:
+    """Normalize a section heading to Title Case (e.g. 'Professional Summary').
+
+    Never returns ALL CAPS. Preserves short acronyms like AI, AWS, IT, CI/CD.
+    """
+    raw = str(text or "").strip()
+    clean = re.sub(r"[:：]+$", "", raw).strip()
+    clean = re.sub(r"\s+", " ", clean.replace("_", " ")).strip()
+    if not clean:
+        return ""
+
+    parts: list[str] = []
+    for idx, token in enumerate(clean.split(" ")):
+        if not token:
+            continue
+        # Keep slash/hyphen compounds readable: CI/CD, Full-Stack
+        sub_parts = re.split(r"([/-])", token)
+        rebuilt: list[str] = []
+        for sub in sub_parts:
+            if sub in {"/", "-"} or not sub:
+                rebuilt.append(sub)
+                continue
+            letters = re.sub(r"[^A-Za-z]", "", sub)
+            if letters and letters.isupper() and 2 <= len(letters) <= 4:
+                rebuilt.append(sub.upper() if sub.isalpha() else sub)
+            elif idx > 0 and sub.lower() in _HEADING_SMALL_WORDS and sub.isalpha():
+                rebuilt.append(sub.lower())
+            elif sub.isalpha():
+                rebuilt.append(sub[:1].upper() + sub[1:].lower())
+            else:
+                # Mixed tokens like "3.x" or "C++"
+                rebuilt.append(sub[:1].upper() + sub[1:] if sub[:1].isalpha() else sub)
+        parts.append("".join(rebuilt))
+
+    titled = " ".join(parts)
+    if keep_colon:
+        return f"{titled}:"
+    return titled
+
+
+def normalize_section_label_map(labels: dict[str, Any] | None) -> dict[str, str]:
+    """Title-case every section label value; keys stay lowercase canonical ids."""
+    out: dict[str, str] = {}
+    for key, value in (labels or {}).items():
+        canon = str(key or "").strip().lower()
+        if not canon:
+            continue
+        titled = to_heading_title_case(value, keep_colon=False)
+        if titled:
+            out[canon] = titled
+    return out
+
 
 @dataclass
 class FormatStyling:
-    font_family: str = "Calibri"
-    font_size_body: float = 11.0
-    font_size_header: float = 12.0
-    font_size_name: float = 20.0
+    font_family: str = "Arial"
+    font_size_body: float = 10.0
+    font_size_header: float = 10.0
+    font_size_name: float = 10.0
     color_text: str = "#000000"
     color_muted: str = "#333333"
     margin_inches: float = 0.65
@@ -163,11 +232,12 @@ def normalize_format_metadata(metadata: dict[str, Any] | None) -> dict[str, Any]
         sections = [s for s in order if s != "header"] or list(CANONICAL_BODY_SECTIONS)
 
     styling_raw = dict(raw.get("styling") or {})
+    # Client policy: Arial 10 for name, headlines, and body unless template explicitly differs.
     styling = FormatStyling(
-        font_family=str(styling_raw.get("font_family") or "Calibri"),
-        font_size_body=_as_float(styling_raw.get("font_size_body"), 11.0),
-        font_size_header=_as_float(styling_raw.get("font_size_header"), 12.0),
-        font_size_name=_as_float(styling_raw.get("font_size_name"), 20.0),
+        font_family=str(styling_raw.get("font_family") or "Arial"),
+        font_size_body=_as_float(styling_raw.get("font_size_body"), 10.0),
+        font_size_header=_as_float(styling_raw.get("font_size_header"), 10.0),
+        font_size_name=_as_float(styling_raw.get("font_size_name"), 10.0),
         color_text=_normalize_hex_color(styling_raw.get("color_text"), "#000000"),
         color_muted=_normalize_hex_color(styling_raw.get("color_muted"), "#333333"),
         margin_inches=_as_float(styling_raw.get("margin_inches"), 0.65),
@@ -178,8 +248,18 @@ def normalize_format_metadata(metadata: dict[str, Any] | None) -> dict[str, Any]
 
     labels = raw.get("section_labels") if isinstance(raw.get("section_labels"), dict) else {}
     mapping = raw.get("field_mapping") if isinstance(raw.get("field_mapping"), dict) else {}
-    labels = {str(k).lower(): str(v) for k, v in labels.items() if str(k).strip()}
-    mapping = {str(k).lower(): str(v) for k, v in mapping.items() if str(k).strip()}
+    labels = normalize_section_label_map(labels)
+    mapping = normalize_section_label_map(mapping)
+    # Prefer explicit labels; keep mapping in sync for consumers that still read field_mapping.
+    if labels and not mapping:
+        mapping = dict(labels)
+    elif mapping and not labels:
+        labels = dict(mapping)
+    elif labels and mapping:
+        merged = dict(mapping)
+        merged.update(labels)
+        labels = merged
+        mapping = dict(merged)
 
     contract = _normalize_section_list(raw.get("completeness_contract"))
     if not contract:

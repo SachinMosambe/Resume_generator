@@ -79,11 +79,11 @@ def get_aptino_default_metadata() -> dict[str, Any]:
     }
 
     field_mapping = {
-        "summary": "PROFESSIONAL SUMMARY",
-        "skills": "SKILL SET OVERVIEW",
-        "education": "EDUCATIONAL DETAILS",
-        "certifications": "CERTIFICATIONS",
-        "experience": "WORK EXPERIENCE",
+        "summary": "Professional Summary",
+        "skills": "Skill Set Overview",
+        "education": "Educational Details",
+        "certifications": "Certifications",
+        "experience": "Work Experience",
     }
 
     return normalize_format_metadata(
@@ -100,7 +100,7 @@ def get_aptino_default_metadata() -> dict[str, Any]:
                 "font_family": "Arial",
                 "font_size_body": 10,
                 "font_size_header": 10,
-                "font_size_name": 14,
+                "font_size_name": 10,
                 "color_text": "#000000",
                 "color_muted": "#333333",
                 "margin_inches": 0.7,
@@ -114,7 +114,7 @@ def get_aptino_default_metadata() -> dict[str, Any]:
                 "logo_position": "top_right",
                 "company_footer": "center",
                 "dates": "right_aligned",
-                "section_dividers": True,
+                "section_dividers": False,
             },
             "company_footer": company_sign,
             "company_header": company_sign,
@@ -124,10 +124,10 @@ def get_aptino_default_metadata() -> dict[str, Any]:
             "logo_count": len(logos),
             "logos": logos,
             "preview_text": (
-                "Section order: PROFESSIONAL SUMMARY → SKILL SET OVERVIEW → EDUCATIONAL DETAILS → "
-                "CERTIFICATIONS → WORK EXPERIENCE || "
-                "Template headings: PROFESSIONAL SUMMARY | SKILL SET OVERVIEW | EDUCATIONAL DETAILS | "
-                "CERTIFICATIONS | WORK EXPERIENCE || Font: Arial 10"
+                "Section order: Professional Summary → Skill Set Overview → Educational Details → "
+                "Certifications → Work Experience || "
+                "Template headings: Professional Summary | Skill Set Overview | Educational Details | "
+                "Certifications | Work Experience || Font: Arial 10 | Headings: Title Case bold, no ALL CAPS"
             ),
         }
     )

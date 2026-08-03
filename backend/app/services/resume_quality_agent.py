@@ -289,9 +289,9 @@ def _repair_section(
     try:
         schema_hint = {
             "header": {"name": "string", "role": "string", "contact": []},
-            "summary": {"title": "PROFESSIONAL SUMMARY:", "content": "string"},
+            "summary": {"title": "Professional Summary", "content": "string"},
             "experience": {
-                "title": "PROFESSIONAL EXPERIENCE:",
+                "title": "Professional Experience",
                 "content": [
                     {
                         "company": "",
@@ -303,16 +303,16 @@ def _repair_section(
                     }
                 ],
             },
-            "skills": {"title": "TECHNICAL SKILLS:", "content": {"Category": ["skill"]}},
+            "skills": {"title": "Technical Skills", "content": {"Category": ["skill"]}},
             "education": {
-                "title": "EDUCATION:",
+                "title": "Education",
                 "content": [{"degree": "", "institution": "", "year": ""}],
             },
             "projects": {
                 "title": "PROJECTS:",
                 "content": [{"name": "", "description": ["bullet"], "technologies": []}],
             },
-            "certifications": {"title": "CERTIFICATIONS:", "content": ["cert name"]},
+            "certifications": {"title": "Certifications", "content": ["cert name"]},
         }.get(section, {"content": payload})
 
         user = "\n".join(

@@ -338,14 +338,14 @@ def document_from_store(
         labels = metadata.get("field_mapping") or {}
 
     default_titles = {
-        "summary": "PROFESSIONAL SUMMARY:",
-        "skills": "TECHNICAL SKILLS:",
-        "experience": "PROFESSIONAL EXPERIENCE:",
-        "projects": "PROJECTS:",
-        "education": "EDUCATION:",
-        "certifications": "CERTIFICATIONS:",
-        "achievements": "ACHIEVEMENTS:",
-        "languages": "LANGUAGES:",
+        "summary": "Professional Summary",
+        "skills": "Technical Skills",
+        "experience": "Professional Experience",
+        "projects": "Projects",
+        "education": "Education",
+        "certifications": "Certifications",
+        "achievements": "Achievements",
+        "languages": "Languages",
     }
     try:
         from app.services.aptino_template import is_aptino_template
@@ -353,9 +353,9 @@ def document_from_store(
         if is_aptino_template(metadata):
             default_titles.update(
                 {
-                    "skills": "SKILL SET OVERVIEW:",
-                    "education": "EDUCATIONAL DETAILS:",
-                    "experience": "WORK EXPERIENCE:",
+                    "skills": "Skill Set Overview",
+                    "education": "Educational Details",
+                    "experience": "Work Experience",
                 }
             )
     except Exception:
@@ -372,7 +372,7 @@ def document_from_store(
         if not canonical or canonical in seen:
             continue
         seen.add(canonical)
-        title = _safe_section_title(labels.get(canonical), default_titles.get(canonical) or f"{canonical.upper()}:")
+        title = _safe_section_title(labels.get(canonical), default_titles.get(canonical) or canonical.replace("_", " ").title())
 
         section = _section_payload(store, canonical, title)
         if section:
@@ -381,7 +381,9 @@ def document_from_store(
     for canonical in ("summary", "skills", "experience", "education", "projects", "certifications"):
         if canonical in seen:
             continue
-        section = _section_payload(store, canonical, default_titles[canonical])
+        # Prefer company-format labels over generic defaults when appending missing sections.
+        title = _safe_section_title(labels.get(canonical), default_titles[canonical])
+        section = _section_payload(store, canonical, title)
         if section:
             sections.append(section)
 
@@ -438,9 +440,11 @@ def _section_payload(store: dict[str, Any], canonical: str, title: str) -> dict[
 
 
 def _safe_section_title(label: Any, default: str) -> str:
-    """Use template labels only when they look like short canonical headings."""
+    """Use template labels only when they look like short canonical headings (Title Case)."""
+    from app.models.format_schema import to_heading_title_case
+
     title = str(label or "").strip()
-    fallback = default if default.endswith(":") else f"{default}:"
+    fallback = to_heading_title_case(default, keep_colon=False) or "Section"
     if not title:
         return fallback
     clean = title[:-1].strip() if title.endswith(":") else title
@@ -456,8 +460,7 @@ def _safe_section_title(label: Any, default: str) -> str:
     )
     if not any(k in low for k in keywords):
         return fallback
-    titled = clean.upper()
-    return titled if titled.endswith(":") else f"{titled}:"
+    return to_heading_title_case(clean, keep_colon=False)
 
 
 def _canonical(name: Any) -> str:
