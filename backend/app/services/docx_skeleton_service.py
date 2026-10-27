@@ -12,6 +12,7 @@ from app.services.doc_converter import DocConversionError, convert_doc_to_docx
 from app.services.docx_layout import (
     add_bullet_paragraph,
     add_left_right_line,
+    clean_education_title_dates,
     split_left_right_meta,
     summary_to_bullets,
     usable_content_width,
@@ -115,6 +116,7 @@ def render_from_docx_skeleton(
             title_run.font.color.rgb = color_text
             title_para.paragraph_format.space_before = Pt(12)
             title_para.paragraph_format.space_after = Pt(space_after)
+            title_para.paragraph_format.keep_with_next = True
 
         content = section.get("content")
         stype = str(section.get("type") or "").lower()
@@ -134,6 +136,29 @@ def render_from_docx_skeleton(
             _add_skills(doc, content, font_family, body_size, color_text)
         elif stype in {"experience", "projects", "education"}:
             for item in content if isinstance(content, list) else [content]:
+                if not isinstance(item, dict):
+                    _add_record(
+                        doc,
+                        item,
+                        font_family,
+                        body_size,
+                        color_text,
+                        color_muted,
+                        space_after,
+                        usable_width,
+                    )
+                    continue
+                if stype == "experience":
+                    bullets = item.get("description") or item.get("bullets") or item.get("achievements") or []
+                    if isinstance(bullets, str):
+                        bullets = [bullets] if bullets.strip() else []
+                    bullets = [str(b).strip() for b in bullets if str(b or "").strip()]
+                    title = str(item.get("title") or item.get("role") or "").strip().lower()
+                    has_identity = bool(str(item.get("company") or "").strip()) or title not in {
+                        "", "role", "n/a", "na", "none",
+                    }
+                    if not bullets and not has_identity:
+                        continue
                 _add_record(
                     doc,
                     item,
@@ -180,6 +205,7 @@ def render_from_docx_skeleton(
                 else:
                     _add_bullet(doc, text, font_family, body_size, color_text)
 
+    _drop_trailing_empty_paragraphs(doc)
     buffer = BytesIO()
     doc.save(buffer)
     buffer.seek(0)
@@ -206,12 +232,41 @@ def _rgb(value: Any, default: tuple[int, int, int]) -> Any:
 
 
 def _clear_body(doc: Any) -> None:
+    """Remove template sample content; keep section props and logo-only blocks above it.
+
+    Body-anchored logos would otherwise be lost (headers/footers are untouched). Only
+    image blocks before the first text are kept, so they stay above the candidate name.
+    """
     from docx.oxml.ns import qn
 
     body = doc.element.body
+    leading = True
     for child in list(body):
         if child.tag == qn("w:sectPr"):
             continue
+        has_text = any((t.text or "").strip() for t in child.iter(qn("w:t")))
+        has_image = any(True for _ in child.iter(qn("w:drawing"))) or any(
+            el.tag.endswith("}imagedata") for el in child.iter()
+        )
+        if leading and has_image and not has_text:
+            continue
+        if has_text:
+            leading = False
+        body.remove(child)
+
+
+def _drop_trailing_empty_paragraphs(doc: Any) -> None:
+    from docx.oxml.ns import qn
+
+    body = doc.element.body
+    for child in reversed(list(body)):
+        if child.tag == qn("w:sectPr"):
+            continue
+        is_blank_para = child.tag == qn("w:p") and not any(
+            (t.text or "").strip() for t in child.iter(qn("w:t"))
+        ) and not any(True for _ in child.iter(qn("w:drawing")))
+        if not is_blank_para:
+            break
         body.remove(child)
 
 
@@ -354,6 +409,9 @@ def _add_record(
     project_name = str(item.get("project") or item.get("project_name") or "").strip()
     bullets = item.get("description") or item.get("bullets") or item.get("achievements") or []
 
+    if item.get("degree") and not item.get("company"):
+        title, dates = clean_education_title_dates(title, dates)
+
     # Prefer explicit date/url fields; else peel from company/title strings.
     primary = company or title
     if primary and not dates:
@@ -367,8 +425,12 @@ def _add_record(
     if company and location and location.lower() not in company.lower():
         left_label = f"{company}, {location}" if company else primary
 
+    has_role_line = bool(company and title and company != title)
+    has_body = has_role_line or bool(project_name) or any(
+        str(b or "").strip() for b in ([bullets] if isinstance(bullets, str) else bullets or [])
+    )
     if left_label or dates:
-        add_left_right_line(
+        header_line = add_left_right_line(
             doc,
             left_label or title,
             dates,
@@ -381,10 +443,16 @@ def _add_record(
             space_before=6,
             space_after=0,
         )
+        if header_line is not None and has_body:
+            header_line.paragraph_format.keep_with_next = True
+            header_line.paragraph_format.keep_together = True
 
-    if company and title and company != title:
+    if has_role_line:
         role = doc.add_paragraph()
         role.paragraph_format.space_after = Pt(2)
+        role.paragraph_format.keep_with_next = bool(project_name) or any(
+            str(b or "").strip() for b in ([bullets] if isinstance(bullets, str) else bullets or [])
+        )
         role_run = role.add_run(title)
         role_run.bold = True
         role_run.italic = False

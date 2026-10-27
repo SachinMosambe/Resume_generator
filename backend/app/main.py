@@ -16,6 +16,14 @@ app.add_middleware(
     allow_credentials=True,
     allow_methods=['*'],
     allow_headers=['*'],
+    # Browsers hide non-safelisted response headers from fetch() unless exposed.
+    expose_headers=[
+        'Content-Disposition',
+        'X-Saved-Format-Id',
+        'X-Saved-Format-Name',
+        'X-Review-Status',
+        'X-Review-Warnings',
+    ],
 )
 
 app.include_router(generate_router, prefix='/api')

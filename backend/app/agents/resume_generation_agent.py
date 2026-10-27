@@ -99,12 +99,18 @@ def normalize_resume_document(document: dict[str, Any], candidate_data: dict[str
             content = str(content or "").strip()
             if not content:
                 continue
-        sections.append({"type": section_type, "title": title, "content": content})
+        normalized_section = {"type": section_type, "title": title, "content": content}
+        if section.get("source"):
+            normalized_section["source"] = section["source"]
+        sections.append(normalized_section)
 
     sections = _ensure_candidate_sections(sections, candidate_data)
     if not sections:
         return build_resume_document(candidate_data, None)
-    return {"header": header, "sections": sections}
+    result = {"header": header, "sections": sections}
+    if document.get("suppressed_sections"):
+        result["suppressed_sections"] = list(document["suppressed_sections"])
+    return result
 
 
 def _ordered_sections(sections: list[Any], section_order: list[Any] | None) -> list[str]:

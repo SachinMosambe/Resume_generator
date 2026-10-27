@@ -36,6 +36,7 @@ from app.services.aptino_template import (
 )
 from app.services.s3_service import download_to_local_path, sanitize_filename, upload_bytes_to_key
 from app.services.detailed_resume_parser import parse_resume_detailed
+from app.services.output_integrity import IntegrityReport, check_output_integrity
 from app.services.pdf_parser import extract_text_from_document
 from app.services.structured_resume_store import (
     apply_store_to_candidate_data,
@@ -87,11 +88,51 @@ class ResumeGenerationError(RuntimeError):
 
 class ResumeGenerationService:
     @traceable(run_type="chain", tags=["resume", "generation", "client-format"])
+    def _integrity_report(
+        self,
+        store: dict[str, Any],
+        docx_bytes: bytes,
+        document: dict[str, Any],
+        format_metadata: dict[str, Any],
+        client_format: ClientFormat,
+        candidate: Candidate,
+    ) -> IntegrityReport | None:
+        """Source-vs-output check; never blocks delivery of the document."""
+        try:
+            template_text = ""
+            template_path = str(getattr(client_format, "template_bytes_path", "") or "")
+            if template_path and Path(template_path).is_file():
+                template_text = extract_text_from_document(template_path) or ""
+            raw = (candidate.extracted_data or {}).get("raw_text") or ""
+            branding = []
+            for key in ("company_footer", "company_header"):
+                block = format_metadata.get(key)
+                if isinstance(block, dict):
+                    branding.extend(str(x) for x in block.get("lines") or [])
+            branding.extend(str(s.get("title") or "") for s in document.get("sections") or [])
+            report = check_output_integrity(
+                store,
+                docx_bytes,
+                template_sample_text=template_text,
+                allowed_text="\n".join([raw, *branding, *(document.get("company_footer_lines") or [])]),
+                suppressed_sections=list(document.get("suppressed_sections") or []),
+                extraction_meta=(candidate.extracted_data or {}).get("extraction_meta"),
+            )
+        except Exception as exc:
+            logger.warning("integrity_check_failed", error_type=type(exc).__name__)
+            return None
+        logger.info(
+            "integrity_report",
+            status=report.status,
+            checks={k: f"{v['found']}/{v['expected']}" for k, v in report.checks.items()},
+        )
+        return report
+
     def generate(self, candidate: Candidate, client_format: ClientFormat) -> bytes:
+        self.last_report = None
         logger.info(
             "starting_resume_generation",
             candidate_id=str(candidate.id),
-            candidate_name=candidate.name,
             client_format_id=str(client_format.id),
             client_id=client_format.client_id,
         )
@@ -221,6 +262,8 @@ class ResumeGenerationService:
             )
             raise ResumeGenerationError(f"Failed to render DOCX: {e}") from e
 
+        self.last_report = self._integrity_report(store, docx_bytes, document, format_metadata, client_format, candidate)
+
         safe_client = sanitize_filename(getattr(client_format, "client_id", None) or "client")
         object_key = f"resumes/{candidate.recruiter_id}/generated/{candidate.id}_{safe_client}.docx"
 
@@ -318,6 +361,10 @@ class ResumeGenerationService:
             pipeline.get("work_history"),
             self._employment_history_from_candidate(candidate),
         )
+        if experience:
+            experience = self._dedupe_experience_items(
+                [item for item in experience if isinstance(item, dict)]
+            )
         if not experience:
             fallback_experience = self._fallback_experience_from_candidate_fields(candidate)
             if fallback_experience:
@@ -447,6 +494,7 @@ class ResumeGenerationService:
             "languages": languages,
             "publications": merge_field("publications", ["publications", "papers", "research"]),
             "interests": merge_field("interests", ["interests", "hobbies"]),
+            "additional_sections": detailed_data.get("additional_sections") or [],
             # Canonical section-wise JSON passed to LLM for consistent mapping.
             "structured_resume_json": {
                 "summary": (
@@ -785,9 +833,14 @@ class ResumeGenerationService:
         target_pages = resolve_target_pages(pages_full, configured_pages)
         large = is_large_resume(full_store)
 
-        # 2) Moderate summarize long careers (dedupe + soft caps), then page-fit if still long.
-        #    Skills stay exact (locked in merge). Never full-document rewrite for long careers.
-        if needs_page_fit(full_store, target_pages=target_pages) or large:
+        faithful = settings.faithful_mode
+        llm_enabled = not faithful and bool(getattr(settings, "RESUME_LLM_CONDENSE", False))
+
+        # 2) Faithful (default): render the full store. Condensed: moderate summarize, then page-fit.
+        if faithful:
+            render_store = full_store
+            mode = "faithful"
+        elif needs_page_fit(full_store, target_pages=target_pages) or large:
             render_store = moderate_summarize_store(full_store)
             if needs_page_fit(render_store, target_pages=target_pages):
                 render_store = fit_store_to_pages(render_store, target_pages=target_pages)
@@ -798,7 +851,7 @@ class ResumeGenerationService:
             render_store = full_store
             mode = "store_keep_all"
 
-        if bool(getattr(settings, "RESUME_LLM_CONDENSE", True)):
+        if llm_enabled:
             # Always prefer readable-essence polish (works for long + short).
             # Falls back to mashed-text polish path only if readable returns None.
             polished = polish_store_for_readability(render_store, target_pages=target_pages)
@@ -823,6 +876,19 @@ class ResumeGenerationService:
                 )
 
         candidate_data = apply_store_to_candidate_data(candidate_data, render_store)
+        # Collapse placeholder Role stubs and zero-bullet duplicates before compose.
+        # Page-fit can still leave many near-duplicate roles on messy resumes.
+        if isinstance(render_store.get("experience"), list):
+            render_store["experience"] = self._dedupe_experience_items(
+                [e for e in render_store["experience"] if isinstance(e, dict)]
+            )
+            stats = dict(render_store.get("stats") or {})
+            stats["experience_count"] = len(render_store["experience"])
+            stats["experience_bullets"] = sum(
+                len(self._experience_bullet_list(e)) for e in render_store["experience"]
+            )
+            render_store["stats"] = stats
+            candidate_data["experience"] = list(render_store["experience"])
         if isinstance(candidate_data.get("extracted_data"), dict):
             candidate_data["extracted_data"] = {
                 **candidate_data["extracted_data"],
@@ -840,7 +906,7 @@ class ResumeGenerationService:
         draft_document = self._enforce_document_reliability(draft_document, candidate_data, metadata)
         agent_metrics: dict[str, Any] = {"llm_calls": 0, "sections_repaired": [], "rounds": 0}
         # Large/long resumes: deterministic repair only. LLM section agents over-summarize.
-        if critical_findings(section_findings) and bool(getattr(settings, "RESUME_LLM_CONDENSE", True)) and not large:
+        if critical_findings(section_findings) and llm_enabled and not large:
             draft_document, section_findings, agent_metrics = run_section_quality_agents(
                 draft_document,
                 candidate_data,
@@ -883,7 +949,7 @@ class ResumeGenerationService:
         needs_quality_repair = bool(critical_findings(section_findings)) and not agent_metrics.get(
             "sections_repaired"
         )
-        if needs_quality_repair and bool(getattr(settings, "RESUME_LLM_CONDENSE", True)) and not large:
+        if needs_quality_repair and llm_enabled and not large:
             logger.info(
                 "resume_section_quality_repair_started",
                 critical=len(critical_findings(section_findings)),
@@ -1165,6 +1231,15 @@ class ResumeGenerationService:
             sec_type = str(section.get("type") or "").strip().lower()
             title = str(section.get("title") or "").strip()
             content = section.get("content")
+            if section.get("source") == "additional":
+                lines = [self._clean_inline_text(v) for v in self._as_list(content)]
+                lines = [b for b in self._dedupe_text(lines) if b]
+                if lines and title:
+                    cleaned_sections.append(
+                        {"type": "bullets", "title": to_heading_title_case(title, keep_colon=False),
+                         "content": lines, "source": "additional"}
+                    )
+                continue
             canonical = self._resolve_section_canonical(title, sec_type)
             if not self._is_known_resume_section(canonical):
                 continue
@@ -1538,13 +1613,71 @@ class ResumeGenerationService:
         # Collapse near-duplicates created when company was temporarily blanked.
         return self._dedupe_experience_items(restored)
 
+    def _experience_bullet_list(self, item: dict[str, Any]) -> list[str]:
+        raw = item.get("description") or item.get("bullets") or item.get("details") or []
+        if isinstance(raw, str):
+            raw = [raw] if raw.strip() else []
+        return [str(b).strip() for b in (raw or []) if str(b or "").strip()]
+
+    def _is_stub_experience(self, item: dict[str, Any]) -> bool:
+        """True for placeholder roles with no real achievement bullets.
+
+        A role with a real title and dates is never a stub, even without bullets
+        (e.g. an intermediate promotion listed only as a title line).
+        """
+        title = str(item.get("title") or item.get("role") or item.get("position") or "").strip()
+        bullets = self._experience_bullet_list(item)
+        has_real_title = title.lower() not in {"", "role", "n/a", "na", "none"}
+        has_dates = bool(str(item.get("duration") or item.get("dates") or "").strip())
+        if len(bullets) == 0:
+            return not (has_real_title and has_dates)
+        if title.lower() in {"", "role", "n/a", "na", "none"} and len(bullets) < 2:
+            return True
+        return False
+
+    def _company_dedupe_key(self, item: dict[str, Any]) -> str:
+        company = str(item.get("company") or item.get("organization") or "").strip().lower()
+        # Normalize parentheticals so a rich row and a stub of the same employer collapse.
+        company = re.sub(r"\([^)]*\)", " ", company)
+        company = re.sub(r"[^a-z0-9]+", "", company)
+        return company
+
     def _dedupe_experience_items(self, items: list[dict[str, Any]]) -> list[dict[str, Any]]:
-        """Keep one row per company+duration, preferring richer title/bullets."""
+        """Keep one row per company+period, preferring richer title/bullets.
+
+        Drops placeholder Role stubs and same-period duplicates that differ only by
+        location crumbs. Roles at one employer with different dates (promotions,
+        re-hires) are kept, including titled roles that have no bullets.
+        """
         out: list[dict[str, Any]] = []
         index: dict[str, int] = {}
+        company_index: dict[str, int] = {}
+
+        def _bullet_count(entry: dict[str, Any]) -> int:
+            return len(self._experience_bullet_list(entry))
+
+        def _title_score(entry: dict[str, Any]) -> int:
+            title = str(entry.get("title") or "").strip()
+            if not title or title.lower() in {"role", "n/a", "na", "none"}:
+                return 0
+            return len(title)
+
+        def _period(entry: dict[str, Any]) -> str:
+            return re.sub(r"[^a-z0-9]+", "", str(entry.get("duration") or entry.get("dates") or "").lower())
+
         for item in items:
             if not isinstance(item, dict):
                 continue
+            cleaned_bullets = [
+                b
+                for b in self._experience_bullet_list(item)
+                if not self._is_resume_noise_line(b)
+                and "previous location" not in b.lower()
+                and not re.search(r"(?i)\b(bachelor|master)\b.*\b(university|college|institute)\b", b)
+            ]
+            if cleaned_bullets != self._experience_bullet_list(item):
+                item = {**item, "description": cleaned_bullets}
+
             company = str(item.get("company") or item.get("organization") or "").strip()
             duration = str(item.get("duration") or item.get("dates") or "").strip()
             key = re.sub(
@@ -1553,37 +1686,99 @@ class ResumeGenerationService:
                 f"{company}|{duration}".lower(),
             )
             if not key:
-                # Fall back to full identity when company is empty.
                 key = self._experience_identity(item)
+            company_key = self._company_dedupe_key(item)
+
+            # Collapse only stub duplicates of a rich role for the same period.
+            # Different dates at one employer are separate roles (promotions, re-hires).
+            if company_key and company_key in company_index:
+                prev = out[company_index[company_key]]
+                same_period = not _period(item) or not _period(prev) or _period(item) == _period(prev)
+                item_stub = self._is_stub_experience(item)
+                prev_stub = self._is_stub_experience(prev)
+                if not same_period:
+                    item_stub = prev_stub = False
+                if item_stub and not prev_stub:
+                    if _title_score(item) > _title_score(prev) and _title_score(prev) == 0:
+                        prev["title"] = item.get("title")
+                    continue
+                if prev_stub and not item_stub:
+                    if not item.get("title") and prev.get("title") and _title_score(prev) > 0:
+                        item = {**item, "title": prev.get("title")}
+                    out[company_index[company_key]] = item
+                    index[key] = company_index[company_key]
+                    continue
+
             if not key or key == "||":
+                if self._is_stub_experience(item):
+                    continue
                 out.append(item)
+                if company_key:
+                    company_index[company_key] = len(out) - 1
                 continue
+
             if key in index:
                 prev = out[index[key]]
-                prev_bullets = prev.get("description") if isinstance(prev.get("description"), list) else []
-                new_bullets = item.get("description") if isinstance(item.get("description"), list) else []
+                prev_bullets = _bullet_count(prev)
+                new_bullets = _bullet_count(item)
+                distinct_titles = (
+                    _title_score(item) > 0
+                    and _title_score(prev) > 0
+                    and str(item.get("title")).strip().lower() != str(prev.get("title")).strip().lower()
+                )
+                if distinct_titles and new_bullets and prev_bullets:
+                    out.append(item)
+                    continue
                 prev_company = str(prev.get("company") or "").strip()
                 new_company = str(item.get("company") or "").strip()
                 richer = False
-                if len(new_bullets) > len(prev_bullets):
+                if new_bullets > prev_bullets:
                     richer = True
                 if new_company and not prev_company:
                     richer = True
+                if _title_score(item) > _title_score(prev) and new_bullets >= prev_bullets:
+                    richer = True
                 if richer:
-                    # Preserve a good title if the richer row lacks one.
-                    if not item.get("title") and prev.get("title"):
+                    if (not item.get("title") or self._is_stub_experience(item)) and prev.get("title"):
                         item = {**item, "title": prev.get("title")}
                     if not new_company and prev_company:
                         item = {**item, "company": prev_company}
                     out[index[key]] = item
-                elif item.get("title") and not prev.get("title"):
+                elif item.get("title") and (not prev.get("title") or self._is_stub_experience(prev)):
                     prev["title"] = item.get("title")
                 elif new_company and not prev_company:
                     prev["company"] = new_company
                 continue
+
+            if self._is_stub_experience(item) and company_key in company_index:
+                continue
+            if self._is_stub_experience(item) and _bullet_count(item) == 0:
+                title = str(item.get("title") or "").strip().lower()
+                if title in {"role", "n/a", "na", "none", ""}:
+                    continue
+
             index[key] = len(out)
+            if company_key:
+                company_index[company_key] = len(out)
             out.append(item)
-        return out
+
+        rich_periods = {
+            (self._company_dedupe_key(item), _period(item))
+            for item in out
+            if self._company_dedupe_key(item) and _bullet_count(item) > 0
+        }
+        rich_companies = {company for company, _ in rich_periods}
+        cleaned_out: list[dict[str, Any]] = []
+        for item in out:
+            if _bullet_count(item) == 0:
+                ck = self._company_dedupe_key(item)
+                if self._is_stub_experience(item):
+                    if not ck or ck in rich_companies:
+                        continue
+                elif (ck, _period(item)) in rich_periods:
+                    continue
+            cleaned_out.append(item)
+        return cleaned_out
 
     def _filter_grounded_education(
         self,
@@ -2356,6 +2551,28 @@ class ResumeGenerationService:
                     "achievements": "Achievements",
                     "languages": "Languages",
                 }
+            else:
+                # Uploaded Aptino-branded formats often carry these labels without
+                # the aptino template flag — prefer them as defaults too.
+                blob = " ".join(
+                    [
+                        str(cleaned.get("source_filename") or ""),
+                        str(metadata.get("source_filename") or ""),
+                        str(cleaned.get("template_name") or ""),
+                        " ".join(str(v) for v in ((cleaned.get("section_labels") or {}).values())),
+                    ]
+                ).lower()
+                if "skill set overview" in blob or "educational details" in blob or "aptino" in blob:
+                    defaults = {
+                        "summary": "Professional Summary",
+                        "skills": "Skill Set Overview",
+                        "experience": "Work Experience",
+                        "projects": "Projects",
+                        "education": "Educational Details",
+                        "certifications": "Certifications",
+                        "achievements": "Achievements",
+                        "languages": "Languages",
+                    }
             safe: dict[str, str] = {}
             for key, value in labels.items():
                 canonical = self._canonical_resume_section(key)
@@ -3714,6 +3931,7 @@ class ResumeGenerationService:
             title_run.font.color.rgb = self._theme_text()
             title_para.paragraph_format.space_before = Pt(14)
             title_para.paragraph_format.space_after = Pt(self._theme_space_after())
+            title_para.paragraph_format.keep_with_next = True
             # No section underline / divider lines.
 
         if not content:
@@ -3844,7 +4062,11 @@ class ResumeGenerationService:
     ) -> None:
         """Render education clearly: Degree (bold), Institution, Year right-aligned."""
         from docx.shared import Pt
-        from app.services.docx_layout import add_left_right_line, split_left_right_meta
+        from app.services.docx_layout import (
+            add_left_right_line,
+            clean_education_title_dates,
+            split_left_right_meta,
+        )
 
         if not isinstance(item, dict):
             text = self._clean_inline_text(item)
@@ -3876,6 +4098,7 @@ class ResumeGenerationService:
         year = self._clean_inline_text(
             item.get("year") or item.get("duration") or item.get("dates") or item.get("graduation_date") or ""
         )
+        degree, year = clean_education_title_dates(degree, year)
         location = self._clean_inline_text(item.get("location") or "")
         if not degree and not institution:
             return
@@ -4010,8 +4233,15 @@ class ResumeGenerationService:
         if company and location and location.lower() not in company.lower():
             left_label = f"{company}, {location}"
 
+        has_details = any(
+            str(d or "").strip()
+            for d in self._as_list(
+                item.get("description") or item.get("responsibilities") or item.get("achievements")
+                or item.get("details") or []
+            )
+        ) or bool(item.get("cgpa"))
         if left_label or duration:
-            add_left_right_line(
+            header_line = add_left_right_line(
                 doc,
                 left_label or title,
                 duration,
@@ -4024,11 +4254,15 @@ class ResumeGenerationService:
                 space_before=8,
                 space_after=0,
             )
+            if header_line is not None and (secondary or project_name or has_details):
+                header_line.paragraph_format.keep_with_next = True
+                header_line.paragraph_format.keep_together = True
 
         if secondary:
             role_line = doc.add_paragraph()
             role_line.paragraph_format.space_before = Pt(0)
             role_line.paragraph_format.space_after = Pt(1)
+            role_line.paragraph_format.keep_with_next = bool(project_name or has_details)
             role_run = role_line.add_run(secondary)
             role_run.bold = True
             role_run.italic = False
@@ -4081,7 +4315,7 @@ class ResumeGenerationService:
                 continue
             from app.services.structured_resume_store import expand_to_bullets
 
-            for piece in expand_to_bullets([bullet], max_bullets=8):
+            for piece in expand_to_bullets([bullet]):
                 clean_bullet = self._clean_inline_text(piece)
                 if not clean_bullet:
                     continue

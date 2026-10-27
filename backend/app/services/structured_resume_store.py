@@ -25,7 +25,6 @@ def build_structured_resume(candidate_data: dict[str, Any]) -> dict[str, Any]:
     for role in experience:
         role["description"] = expand_to_bullets(
             [repair_collapsed_spaces(str(b)) for b in (role.get("description") or []) if str(b).strip()],
-            max_bullets=20,
         )
 
     education = normalize_education_entries(
@@ -37,7 +36,6 @@ def build_structured_resume(candidate_data: dict[str, Any]) -> dict[str, Any]:
     for project in projects:
         project["description"] = expand_to_bullets(
             [repair_collapsed_spaces(str(b)) for b in (project.get("description") or []) if str(b).strip()],
-            max_bullets=16,
         )
 
     store = {
@@ -73,6 +71,7 @@ def build_structured_resume(candidate_data: dict[str, Any]) -> dict[str, Any]:
             repair_collapsed_spaces(a) for a in _as_str_list(candidate_data.get("achievements"))
         ],
         "languages": _as_str_list(candidate_data.get("languages")),
+        "additional_sections": _additional_sections(candidate_data.get("additional_sections")),
         "raw_resume_text": repair_collapsed_spaces(str(candidate_data.get("raw_resume_text") or "")),
         "stats": {
             "experience_count": len(experience),
@@ -113,6 +112,7 @@ def apply_store_to_candidate_data(candidate_data: dict[str, Any], store: dict[st
     merged["certifications"] = store.get("certifications") or []
     merged["achievements"] = store.get("achievements") or []
     merged["languages"] = store.get("languages") or []
+    merged["additional_sections"] = store.get("additional_sections") or []
     merged["structured_resume"] = store
     merged["structured_resume_json"] = store
     return merged
@@ -216,7 +216,7 @@ def normalize_education_entries(entries: Any) -> list[dict[str, Any]]:
                 "location": location,
                 "year": year,
                 "cgpa": str(item.get("cgpa") or "").strip(),
-                "details": details[:2],
+                "details": details,
             }
         )
 
@@ -378,7 +378,7 @@ def document_from_store(
         if section:
             sections.append(section)
 
-    for canonical in ("summary", "skills", "experience", "education", "projects", "certifications"):
+    for canonical in default_titles:
         if canonical in seen:
             continue
         # Prefer company-format labels over generic defaults when appending missing sections.
@@ -387,7 +387,20 @@ def document_from_store(
         if section:
             sections.append(section)
 
-    return {
+    from app.models.format_schema import to_heading_title_case
+
+    suppressed: list[str] = []
+    for extra in store.get("additional_sections") or []:
+        title = to_heading_title_case(str(extra.get("title") or "").strip()) or "Additional Information"
+        lines = _as_str_list(extra.get("lines"))
+        if not lines:
+            continue
+        if _canonical_extra(title) == "references" and not metadata.get("include_references"):
+            suppressed.append(title)
+            continue
+        sections.append({"type": "bullets", "title": title, "content": lines, "source": "additional"})
+
+    document = {
         "header": {
             "name": header.get("name") or "",
             "role": header.get("role") or "",
@@ -395,6 +408,28 @@ def document_from_store(
         },
         "sections": sections,
     }
+    if suppressed:
+        document["suppressed_sections"] = suppressed
+    return document
+
+
+def _canonical_extra(title: str) -> str:
+    low = re.sub(r"[^a-z ]+", "", str(title or "").lower()).strip()
+    return "references" if low in {"references", "referees"} else low
+
+
+def _additional_sections(value: Any) -> list[dict[str, Any]]:
+    from app.services.pdf_parser import repair_collapsed_spaces
+
+    out: list[dict[str, Any]] = []
+    for item in _as_list(value):
+        if not isinstance(item, dict):
+            continue
+        title = str(item.get("title") or "").strip()
+        lines = [repair_collapsed_spaces(s) for s in _as_str_list(item.get("lines"))]
+        if title and lines:
+            out.append({"title": title, "lines": lines})
+    return out
 
 
 def strip_personal_contact_from_document(document: dict[str, Any] | None) -> dict[str, Any]:
@@ -531,7 +566,7 @@ def _normalize_experience(item: Any) -> dict[str, Any]:
         "location": location,
         "duration": str(item.get("duration") or item.get("dates") or item.get("period") or "").strip(),
         "description": expand_to_bullets(_as_list(desc)),
-        "technologies": clean_techs[:12],
+        "technologies": clean_techs,
     }
 
 
@@ -548,12 +583,13 @@ _ACTION_VERB_START = re.compile(
 )
 
 
-def expand_to_bullets(values: list[Any], *, max_bullets: int = 20) -> list[str]:
+def expand_to_bullets(values: list[Any], *, max_bullets: int | None = None) -> list[str]:
     """
     Turn paragraph streams into discrete professional bullets.
 
     Splits on bullet glyphs and on sentence boundaries that start with action verbs.
-    Page-fit (not this helper) is the length gate for oversized resumes.
+    Only exact duplicates are removed. ``max_bullets=None`` keeps everything; condensed
+    mode passes explicit caps.
     """
     out: list[str] = []
     for raw in values or []:
@@ -598,11 +634,11 @@ def expand_to_bullets(values: list[Any], *, max_bullets: int = 20) -> list[str]:
     unique: list[str] = []
     for item in out:
         key = re.sub(r"[^a-z0-9]+", "", item.lower())
-        if len(key) < 12 or key in seen:
+        if len(key) < 3 or key in seen:
             continue
         seen.add(key)
         unique.append(item)
-        if len(unique) >= max_bullets:
+        if max_bullets is not None and len(unique) >= max_bullets:
             break
     return unique
 

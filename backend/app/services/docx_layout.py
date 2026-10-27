@@ -229,7 +229,7 @@ def summary_to_bullets(value: Any) -> list[str]:
     bullets: list[str] = []
     seen: set[str] = set()
     for part in raw_parts:
-        clean = re.sub(r"\s+", " ", str(part or "").strip(" \t•\-–—[]'\""))
+        clean = re.sub(r"\s+", " ", str(part or "").strip(" \t•-–—[]'\""))
         if len(clean) < 12:
             continue
         # Skip list-repr debris.
@@ -250,3 +250,33 @@ def summary_to_bullets(value: Any) -> list[str]:
             if len(s.strip()) >= 12
         ] or ([rejoined] if rejoined else [])
     return bullets
+
+
+_MONTH_NAME = (
+    r"(?:Jan(?:uary)?|Feb(?:ruary)?|Mar(?:ch)?|Apr(?:il)?|May|Jun(?:e)?|"
+    r"Jul(?:y)?|Aug(?:ust)?|Sep(?:t(?:ember)?)?|Oct(?:ober)?|Nov(?:ember)?|Dec(?:ember)?)"
+)
+
+
+def clean_education_title_dates(title: str, dates: str) -> tuple[str, str]:
+    """Strip heading crumbs and trailing month fragments from education lines."""
+    cleaned_title = re.sub(
+        r"(?i)^\s*(?:education(?:al)?\s*(?:details)?|degree|qualification)\s*[:\-–—]\s*",
+        "",
+        title or "",
+    ).strip()
+    cleaned_title = re.sub(
+        r"(?i)\s+\b(?:Jan(?:uary)?|Feb(?:ruary)?|Mar(?:ch)?|Apr(?:il)?|May|Jun(?:e)?|"
+        r"Jul(?:y)?|Aug(?:ust)?|Sep(?:t(?:ember)?)?|Oct(?:ober)?|Nov(?:ember)?|Dec(?:ember)?)\s*$",
+        "",
+        cleaned_title,
+    ).strip(" ,:-")
+    cleaned_dates = (dates or "").strip()
+    year_only = re.search(r"\b((?:19|20)\d{2})\b", cleaned_dates)
+    is_range = len(re.findall(r"\b(?:19|20)\d{2}\b", cleaned_dates)) >= 2 or re.search(
+        r"(?i)\b(?:to|present|current|ongoing)\b", cleaned_dates
+    )
+    month_year = re.fullmatch(rf"(?i){_MONTH_NAME}\.?,?\s+(?:19|20)\d{{2}}", cleaned_dates)
+    if year_only and not is_range and not month_year:
+        cleaned_dates = year_only.group(1)
+    return cleaned_title, cleaned_dates

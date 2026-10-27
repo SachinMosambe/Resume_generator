@@ -236,10 +236,9 @@ def _repair_and_check_experience(
                     repair_collapsed_spaces(str(x))
                     for x in (bullets_raw if isinstance(bullets_raw, list) else [bullets_raw])
                 ],
-                max_bullets=20,
             ):
                 text = re.sub(r"\s+", " ", str(b).strip())
-                if not text or len(text) < 12:
+                if not text or len(text) < 3:
                     continue
                 if re.match(r"(?i)^environment\s*:", text):
                     _merge_env_techs(role, text.split(":", 1)[1].strip() if ":" in text else "")
@@ -269,7 +268,7 @@ def _repair_and_check_experience(
             role["location"] = location
             role["duration"] = duration
             role["description"] = _dedupe_bullets(bullets)
-            role["technologies"] = techs[:10]
+            role["technologies"] = techs
 
             if not (company or role_title):
                 continue
@@ -359,7 +358,17 @@ def _repair_and_check_experience(
                     "issue": "Some roles still use paragraph streams instead of discrete bullets.",
                 }
             )
-        if thin_roles >= max(2, int(len(cleaned) * 0.4)):
+        src_thin = 0
+        for src in src_roles:
+            raw = src.get("description") or src.get("details") or src.get("bullets") or []
+            if isinstance(raw, str):
+                raw = [raw]
+            src_count = sum(1 for item in raw if str(item).strip())
+            if src_count < 2:
+                src_thin += 1
+        # A source resume can genuinely have one-bullet early roles. Flag only
+        # when formatting dropped achievements that were present on the source.
+        if thin_roles > src_thin and thin_roles >= max(2, int(len(cleaned) * 0.4)):
             findings.append(
                 {
                     "section": "experience",
@@ -452,7 +461,7 @@ def _dedupe_bullets(bullets: list[str]) -> list[str]:
     out: list[str] = []
     for b in bullets:
         key = re.sub(r"[^a-z0-9]+", "", b.lower())
-        if len(key) < 12 or key in seen:
+        if len(key) < 3 or key in seen:
             continue
         seen.add(key)
         out.append(b)
@@ -526,7 +535,7 @@ def _repair_and_check_skills(
                     bad_jam = True
             if bad_soft or bad_jam or not isinstance(content, dict) or len(content) < 2:
                 section["content"] = {
-                    str(k): [normalize_skill_token(str(v)) for v in (vals or []) if str(v).strip()][:16]
+                    str(k): [normalize_skill_token(str(v)) for v in (vals or []) if str(v).strip()]
                     for k, vals in src_grouped.items()
                     if str(k).strip() and vals
                 }
@@ -564,7 +573,7 @@ def _repair_and_check_skills(
                         name = name.rstrip(",; ") + ")"
                     skills.append(name)
                 if skills:
-                    cleaned[cat_name] = skills[:16]
+                    cleaned[cat_name] = skills
             section["content"] = cleaned
             section["type"] = "skills"
             if sum(len(v) for v in cleaned.values()) < 8:
@@ -645,6 +654,7 @@ def _repair_and_check_education(
                     "year": year,
                     "location": str(item.get("location") or "").strip(),
                     "cgpa": str(item.get("cgpa") or "").strip(),
+                    "details": [str(d).strip() for d in (item.get("details") or []) if str(d).strip()],
                 }
             )
 
@@ -665,6 +675,7 @@ def _repair_and_check_education(
                             "year": str(src.get("year") or "").strip(),
                             "location": str(src.get("location") or "").strip(),
                             "cgpa": str(src.get("cgpa") or "").strip(),
+                            "details": [str(d).strip() for d in (src.get("details") or []) if str(d).strip()],
                         }
                     )
             if cleaned:
@@ -731,7 +742,6 @@ def _repair_and_check_projects(
                 restore_tech_names(b)
                 for b in expand_to_bullets(
                     [repair_collapsed_spaces(str(b)) for b in (item.get("description") or [])],
-                    max_bullets=6,
                 )
             ]
             # Split bullets that contain another project title.
@@ -771,9 +781,9 @@ def _repair_and_check_projects(
                             "name": restore_tech_names(str(src.get("name"))),
                             "description": [
                                 restore_tech_names(str(b))
-                                for b in expand_to_bullets(src.get("description") or [], max_bullets=5)
+                                for b in expand_to_bullets(src.get("description") or [])
                             ],
-                            "technologies": list(src.get("technologies") or [])[:10],
+                            "technologies": list(src.get("technologies") or []),
                             "link": str(src.get("link") or ""),
                             "duration": str(src.get("duration") or ""),
                         }

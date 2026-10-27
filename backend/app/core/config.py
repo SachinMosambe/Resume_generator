@@ -15,12 +15,18 @@ class Settings(BaseSettings):
     LLM_MAX_TOKENS: int = 2048
     # Full multi-role resumes need large JSON output; 4096/8192 truncates mid-word.
     RESUME_GENERATION_MAX_TOKENS: int = 16384
-    # Target readable client resume length (pages). Soft fit + LLM readable polish.
-    # Long careers scale toward ~5 pages with essence kept (not 2-page stubs).
+    # faithful (default): every source fact is kept; page count grows as needed; no LLM calls.
+    # condensed: legacy page-fit + optional LLM polish (RESUME_LLM_CONDENSE). Never edits the source store.
+    RESUME_OUTPUT_MODE: str = "faithful"
+    # Page target used only in condensed mode.
     RESUME_TARGET_PAGES: float = 5.0
-    # When true (default), run grounded LLM readable polish after soft fit.
-    # Skills always stay exact source tokens. Full rewrite is still blocked for long resumes.
-    RESUME_LLM_CONDENSE: bool = True
+    # Condensed mode only: grounded LLM readable polish after soft fit. Requires Bedrock.
+    RESUME_LLM_CONDENSE: bool = False
+    # OCR for image-only PDF pages (needs the tesseract-ocr system package).
+    RESUME_OCR_ENABLED: bool = True
+    RESUME_OCR_MAX_PAGES: int = 10
+    RESUME_OCR_DPI: int = 200
+    RESUME_OCR_LANG: str = "eng"
     # Optional deploy stamp so /api/health can prove which build is live.
     APP_BUILD_ID: str = "dev"
     # When false (default), skip slow full-document LLM polish loops.
@@ -47,6 +53,10 @@ class Settings(BaseSettings):
     @property
     def max_file_bytes(self) -> int:
         return self.MAX_FILE_SIZE_MB * 1024 * 1024
+
+    @property
+    def faithful_mode(self) -> bool:
+        return str(self.RESUME_OUTPUT_MODE or "faithful").strip().lower() != "condensed"
 
     @property
     def interview_fallback_model_list(self) -> list[str]:

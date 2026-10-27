@@ -13,6 +13,61 @@ import {
 
 type TemplateMode = "aptino_default" | "client_format" | "saved_format";
 
+type ReviewStatus = "passed" | "needs_review" | "failed";
+
+type Review = {
+  status: ReviewStatus;
+  warnings: string[];
+};
+
+const REVIEW_STYLES: Record<ReviewStatus, { box: string; title: string; body: string }> = {
+  passed: {
+    box: "border-emerald-200 bg-emerald-50",
+    title: "Automated check passed",
+    body: "Every employer, title, date, bullet, and section found in the source also appears in the document. This is a text-presence check, not a full proofread — skim before sending.",
+  },
+  needs_review: {
+    box: "border-amber-200 bg-amber-50",
+    title: "Review before sending",
+    body: "The automated check found items that need a recruiter's eye:",
+  },
+  failed: {
+    box: "border-red-200 bg-red-50",
+    title: "Large parts of the source are missing",
+    body: "Do not send this document as-is. Compare it with the original resume:",
+  },
+};
+
+function parseReview(response: Response): Review | null {
+  const status = response.headers.get("X-Review-Status") as ReviewStatus | null;
+  if (!status || !(status in REVIEW_STYLES)) return null;
+  let warnings: string[] = [];
+  try {
+    const parsed = JSON.parse(decodeURIComponent(response.headers.get("X-Review-Warnings") || "[]"));
+    if (Array.isArray(parsed)) warnings = parsed.map(String);
+  } catch {
+    /* ignore malformed header */
+  }
+  return { status, warnings };
+}
+
+function ReviewPanel({ review }: { review: Review }) {
+  const style = REVIEW_STYLES[review.status];
+  return (
+    <section role="status" className={`mt-6 rounded-2xl border p-5 ${style.box}`}>
+      <p className="text-sm font-semibold text-gray-900">{style.title}</p>
+      <p className="mt-1 text-sm text-gray-700">{style.body}</p>
+      {review.warnings.length > 0 && (
+        <ul className="mt-3 list-disc space-y-1 pl-5 text-sm text-gray-700">
+          {review.warnings.map((w) => (
+            <li key={w}>{w}</li>
+          ))}
+        </ul>
+      )}
+    </section>
+  );
+}
+
 type SavedFormat = {
   id: string;
   name: string;
@@ -104,6 +159,7 @@ export default function HomePage() {
   const [saveFormatAs, setSaveFormatAs] = useState(false);
   const [formatName, setFormatName] = useState("");
   const [isLoadingFormats, setIsLoadingFormats] = useState(false);
+  const [review, setReview] = useState<Review | null>(null);
 
   const loadFormats = useCallback(async () => {
     setIsLoadingFormats(true);
@@ -158,6 +214,7 @@ export default function HomePage() {
     }
 
     setIsGenerating(true);
+    setReview(null);
     const toastId = toast.loading("Generating resume… this can take a minute");
 
     try {
@@ -207,13 +264,16 @@ export default function HomePage() {
       link.remove();
       URL.revokeObjectURL(url);
 
+      const result = parseReview(response);
+      setReview(result);
+      const suffix = result && result.status !== "passed" ? " · review needed" : "";
       const savedId = response.headers.get("X-Saved-Format-Id");
       if (savedId) {
-        toast.success("Resume downloaded · format saved", { id: toastId });
+        toast.success(`Resume downloaded · format saved${suffix}`, { id: toastId });
         await loadFormats();
         setSaveFormatAs(false);
       } else {
-        toast.success("Resume downloaded", { id: toastId });
+        toast.success(`Resume downloaded${suffix}`, { id: toastId });
       }
     } catch (error) {
       const message = error instanceof Error ? error.message : "Failed to generate resume";
@@ -441,6 +501,7 @@ export default function HomePage() {
             )}
           </button>
         </form>
+        {review && <ReviewPanel review={review} />}
       </div>
     </main>
   );

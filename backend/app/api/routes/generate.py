@@ -2,11 +2,13 @@
 
 from __future__ import annotations
 
+import json
 import re
 import tempfile
 import uuid
 from pathlib import Path
 from typing import Any
+from urllib.parse import quote
 
 from fastapi import APIRouter, File, Form, HTTPException, UploadFile, status
 from fastapi.responses import Response
@@ -18,7 +20,9 @@ from app.models.client_format import ClientFormat
 from app.services.aptino_template import build_aptino_client_format
 from app.services.format_extraction_service import FormatExtractionError, FormatExtractionService
 from app.services.format_profile_store import FormatProfileError, load_client_format, save_format_profile
-from app.services.pdf_parser import extract_text_from_document
+from app.services.docx_reader import DocxLimitError
+from app.services.pdf_ocr import OcrUnavailableError
+from app.services.pdf_parser import extract_document
 from app.services.resume_generation_service import ResumeGenerationError, ResumeGenerationService
 from app.services.s3_service import sanitize_filename
 
@@ -65,9 +69,9 @@ async def health() -> dict[str, Any]:
     return {
         "status": "ok",
         "build_id": settings.APP_BUILD_ID,
-        "resume_target_pages": settings.RESUME_TARGET_PAGES,
-        "llm_readable_polish": settings.RESUME_LLM_CONDENSE,
-        "policy": "readable_essence_skills_exact",
+        "output_mode": "faithful" if settings.faithful_mode else "condensed",
+        "resume_target_pages": None if settings.faithful_mode else settings.RESUME_TARGET_PAGES,
+        "llm_readable_polish": (not settings.faithful_mode) and settings.RESUME_LLM_CONDENSE,
     }
 
 
@@ -100,10 +104,35 @@ async def generate_resume(
     template_tmp_path: Path | None = None
 
     try:
-        resume_text = extract_text_from_document(str(resume_path)) or ""
+        resume_text, extraction_meta = extract_document(str(resume_path))
+        resume_text = resume_text or ""
     except Exception as exc:
-        logger.warning("resume_text_extract_failed", error=str(exc))
-        resume_text = ""
+        logger.warning("resume_text_extract_failed", error_type=type(exc).__name__)
+        resume_path.unlink(missing_ok=True)
+        try:
+            tmp_dir.rmdir()
+        except OSError:
+            pass
+        if isinstance(exc, OcrUnavailableError):
+            detail = (
+                "This PDF is scanned (image only) and OCR is not installed on this server. "
+                "Upload the original DOCX or a text-based PDF, or enable OCR (see README)."
+            )
+        elif isinstance(exc, DocxLimitError):
+            detail = "This DOCX is too large or complex to process safely. Save a simpler copy and retry."
+        else:
+            detail = "Could not read this resume. Upload a text-based PDF, DOC, or DOCX."
+        raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail=detail) from exc
+    if not resume_text.strip():
+        resume_path.unlink(missing_ok=True)
+        try:
+            tmp_dir.rmdir()
+        except OSError:
+            pass
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail="No readable text was found in this resume. Upload a text-based PDF, DOC, or DOCX.",
+        )
 
     client_id = (client_name or "").strip() or "Client"
     role = (job_role or "").strip() or None
@@ -116,7 +145,11 @@ async def generate_resume(
         job_title=role,
         client_name=client_id,
         resume_path=str(resume_path),
-        extracted_data={"raw_text": resume_text, "resume_text": resume_text},
+        extracted_data={
+            "raw_text": resume_text,
+            "resume_text": resume_text,
+            "extraction_meta": extraction_meta,
+        },
         recruiter_id=uuid.uuid4(),
     )
 
@@ -211,6 +244,10 @@ async def generate_resume(
     if saved_format_info and saved_format_info.get("id"):
         headers["X-Saved-Format-Id"] = str(saved_format_info["id"])
         headers["X-Saved-Format-Name"] = sanitize_filename(str(saved_format_info.get("name") or ""))
+    report = getattr(service, "last_report", None)
+    if report is not None:
+        headers["X-Review-Status"] = report.status
+        headers["X-Review-Warnings"] = quote(json.dumps(report.warnings[:10]))
     return Response(
         content=docx_bytes,
         media_type="application/vnd.openxmlformats-officedocument.wordprocessingml.document",

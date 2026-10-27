@@ -8,7 +8,7 @@ SERVICE_FILE="/etc/systemd/system/${SERVICE_NAME}.service"
 
 echo "==> Installing system packages"
 sudo apt-get update -y
-sudo apt-get install -y python3-pip python3-venv git libreoffice-writer-nogui libreoffice-java-common fonts-dejavu
+sudo apt-get install -y python3-pip python3-venv git libreoffice-writer-nogui libreoffice-java-common fonts-dejavu tesseract-ocr tesseract-ocr-eng
 
 echo "==> Creating venv and installing Python deps"
 cd "$APP_DIR"

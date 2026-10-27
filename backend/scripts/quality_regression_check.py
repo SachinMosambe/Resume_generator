@@ -289,9 +289,9 @@ Associate Staff Engineer — AI/ML | Nagarro India Jan 2024 – July 2025
     assert aptino_doc["header"].get("contact") in ([], None)
     titles = [str(s.get("title") or "") for s in (aptino_doc.get("sections") or [])]
     types = [str(s.get("type") or "") for s in (aptino_doc.get("sections") or [])]
-    assert any("SKILL SET OVERVIEW" in t for t in titles), titles
-    assert any("EDUCATIONAL DETAILS" in t for t in titles), titles
-    assert any("WORK EXPERIENCE" in t for t in titles), titles
+    assert any("SKILL SET OVERVIEW" in t.upper() for t in titles), titles
+    assert any("EDUCATIONAL DETAILS" in t.upper() for t in titles), titles
+    assert any("WORK EXPERIENCE" in t.upper() for t in titles), titles
     # Order: summary, skills, education, then experience
     assert types.index("skills") < types.index("experience"), types
     assert types.index("education") < types.index("experience"), types
@@ -310,8 +310,8 @@ Associate Staff Engineer — AI/ML | Nagarro India Jan 2024 – July 2025
     )
     etitles = [str(s.get("title") or "") for s in (enforced.get("sections") or [])]
     etypes = [str(s.get("type") or "") for s in (enforced.get("sections") or [])]
-    assert any("SKILL SET OVERVIEW" in t for t in etitles), etitles
-    assert any("EDUCATIONAL DETAILS" in t for t in etitles), etitles
+    assert any("SKILL SET OVERVIEW" in t.upper() for t in etitles), etitles
+    assert any("EDUCATIONAL DETAILS" in t.upper() for t in etitles), etitles
     assert etypes.index("skills") < etypes.index("experience"), etypes
     assert etypes.index("education") < etypes.index("experience"), etypes
     assert enforced["header"].get("contact") == []
