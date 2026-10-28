@@ -110,15 +110,18 @@ def convert_doc_to_docx(source: Path, output_dir: Path | None = None) -> Path:
     if source.suffix.lower() != ".doc":
         raise DocConversionError(f"Expected a .doc file, got: {source.suffix}")
 
-    soffice = find_libreoffice()
-    if not soffice:
-        raise DocConversionError(
-            "Legacy .doc support requires LibreOffice on the server. "
-            "Install with: sudo apt-get install -y libreoffice-writer-nogui"
-        )
-
     final_out_dir = Path(output_dir) if output_dir else Path(tempfile.mkdtemp(prefix="doc_convert_"))
     final_out_dir.mkdir(parents=True, exist_ok=True)
+
+    soffice = find_libreoffice()
+    if not soffice:
+        converted = _convert_with_word(source, final_out_dir)
+        if converted:
+            return converted
+        raise DocConversionError(
+            "Legacy .doc support requires LibreOffice or Microsoft Word. "
+            "Install LibreOffice, or re-save the file as .docx and upload again."
+        )
 
     # Isolated work dir with a simple ASCII filename — LO often fails on odd temp names.
     work_root = Path(tempfile.mkdtemp(prefix="doc2docx_"))
@@ -222,6 +225,49 @@ def convert_doc_to_docx(source: Path, output_dir: Path | None = None) -> Path:
         "Re-save the file as .docx in Word and upload again, or install full LibreOffice writer. "
         f"Details: {detail[:240]}"
     )
+
+
+def _convert_with_word(source: Path, output_dir: Path) -> Path | None:
+    """Convert .doc with Microsoft Word on Windows when LibreOffice is absent."""
+    if os.name != "nt":
+        return None
+    dest = output_dir / f"{source.stem}.docx"
+    if dest.exists():
+        dest = output_dir / f"{source.stem}_{uuid.uuid4().hex[:6]}.docx"
+    script = (
+        "$ErrorActionPreference = 'Stop'\n"
+        "$word = New-Object -ComObject Word.Application\n"
+        "$word.Visible = $false\n"
+        "$word.DisplayAlerts = 0\n"
+        "try {\n"
+        "  $doc = $word.Documents.Open($env:DOC_SRC, $false, $true)\n"
+        "  $doc.SaveAs2($env:DOC_OUT, 16)\n"
+        "  $doc.Close($false)\n"
+        "} finally {\n"
+        "  $word.Quit()\n"
+        "}\n"
+    )
+    env = os.environ.copy()
+    env["DOC_SRC"] = str(source.resolve())
+    env["DOC_OUT"] = str(dest.resolve())
+    try:
+        result = subprocess.run(
+            ["powershell", "-NoProfile", "-NonInteractive", "-Command", script],
+            capture_output=True,
+            text=True,
+            timeout=45,
+            check=False,
+            env=env,
+        )
+    except (subprocess.TimeoutExpired, OSError) as exc:
+        logger.warning("word_conversion_failed error=%s", exc)
+        return None
+    if result.returncode != 0 or not dest.exists() or dest.stat().st_size <= 0:
+        detail = ((result.stderr or result.stdout or "")[:240]).replace("\n", " ")
+        logger.warning("word_conversion_failed code=%s detail=%s", result.returncode, detail)
+        return None
+    logger.info("Converted .doc → .docx via Microsoft Word: %s", dest)
+    return dest
 
 
 def ensure_docx(path: Path) -> Path:

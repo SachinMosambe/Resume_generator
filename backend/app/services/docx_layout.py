@@ -32,6 +32,66 @@ _URL_RIGHT_RE = re.compile(
 )
 
 
+def read_paragraph_alignment(paragraph: Any) -> str:
+    """Return left, center, right, or justify for a DOCX paragraph."""
+    from docx.enum.text import WD_ALIGN_PARAGRAPH
+    from docx.oxml.ns import qn
+
+    jc_map = {
+        "left": "left",
+        "start": "left",
+        "center": "center",
+        "centre": "center",
+        "right": "right",
+        "end": "right",
+        "both": "justify",
+        "justify": "justify",
+        "distribute": "justify",
+    }
+    try:
+        p_pr = paragraph._p.find(qn("w:pPr"))
+        if p_pr is not None:
+            jc = p_pr.find(qn("w:jc"))
+            if jc is not None:
+                val = str(jc.get(qn("w:val")) or "").lower()
+                if val in jc_map:
+                    return jc_map[val]
+    except Exception:
+        pass
+    try:
+        alignment = paragraph.alignment
+    except Exception:
+        alignment = None
+    enum_map = {
+        WD_ALIGN_PARAGRAPH.CENTER: "center",
+        WD_ALIGN_PARAGRAPH.RIGHT: "right",
+        WD_ALIGN_PARAGRAPH.JUSTIFY: "justify",
+        WD_ALIGN_PARAGRAPH.LEFT: "left",
+    }
+    if alignment in enum_map:
+        return enum_map[alignment]
+    try:
+        style_alignment = paragraph.style.paragraph_format.alignment
+    except Exception:
+        style_alignment = None
+    return enum_map.get(style_alignment, "left")
+
+
+def apply_paragraph_alignment(paragraph: Any, alignment: str | None) -> None:
+    """Set paragraph alignment. Unknown values stay left."""
+    from docx.enum.text import WD_ALIGN_PARAGRAPH
+
+    key = str(alignment or "left").strip().lower()
+    paragraph.alignment = {
+        "center": WD_ALIGN_PARAGRAPH.CENTER,
+        "centre": WD_ALIGN_PARAGRAPH.CENTER,
+        "right": WD_ALIGN_PARAGRAPH.RIGHT,
+        "justify": WD_ALIGN_PARAGRAPH.JUSTIFY,
+        "both": WD_ALIGN_PARAGRAPH.JUSTIFY,
+        "left": WD_ALIGN_PARAGRAPH.LEFT,
+    }.get(key, WD_ALIGN_PARAGRAPH.LEFT)
+
+
 def usable_content_width(doc: Any):
     """Return usable body width (Twips/EMU object) for right tab stops."""
     from docx.shared import Inches

@@ -3557,6 +3557,8 @@ class ResumeGenerationService:
 
         metadata = normalize_format_metadata(metadata)
         self._docx_theme = self._docx_theme_from_metadata(metadata)
+        layout = metadata.get("layout") if isinstance(metadata.get("layout"), dict) else {}
+        self._docx_heading_alignment = str(layout.get("heading_alignment") or "left")
         doc = Document()
         styling = (metadata or {}).get("styling") or {}
         body_size = float(styling.get("font_size_body") or 10)
@@ -3631,6 +3633,9 @@ class ResumeGenerationService:
         # viewers show it even when page headers are hidden.
         display_name = str(header.get("name") or "Candidate").strip() or "Candidate"
         name_para = doc.add_paragraph()
+        from app.services.docx_layout import apply_paragraph_alignment
+
+        apply_paragraph_alignment(name_para, layout.get("name_alignment"))
         name_para.paragraph_format.space_before = Pt(0)
         name_para.paragraph_format.space_after = Pt(2)
         name_run = name_para.add_run(display_name)
@@ -3932,6 +3937,12 @@ class ResumeGenerationService:
             title_para.paragraph_format.space_before = Pt(14)
             title_para.paragraph_format.space_after = Pt(self._theme_space_after())
             title_para.paragraph_format.keep_with_next = True
+            from app.services.docx_layout import apply_paragraph_alignment
+
+            apply_paragraph_alignment(
+                title_para,
+                getattr(self, "_docx_heading_alignment", None) or "left",
+            )
             # No section underline / divider lines.
 
         if not content:

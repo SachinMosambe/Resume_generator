@@ -15,6 +15,15 @@ except ImportError:  # pragma: no cover
 logger = logging.getLogger(__name__)
 
 
+def _name_position(alignment: str) -> str:
+    return {
+        "center": "top_center",
+        "centre": "top_center",
+        "right": "top_right",
+        "left": "top_left",
+    }.get(str(alignment or "left").strip().lower(), "top_left")
+
+
 class FormatExtractionError(ValueError):
     pass
 
@@ -147,6 +156,8 @@ class FormatExtractionService:
 
         from app.models.format_schema import DEFAULT_REQUIRED_SECTIONS, normalize_format_metadata
 
+        name_alignment = str(styling.pop("name_alignment", "") or "left")
+        heading_alignment = str(styling.pop("heading_alignment", "") or "left")
         body_sections = [s for s in sections if s != "header"] or list(sections)
         required = [s for s in DEFAULT_REQUIRED_SECTIONS if s in body_sections]
         if not required:
@@ -166,7 +177,9 @@ class FormatExtractionService:
                 "layout": {
                     "type": self._infer_layout(text),
                     "logo_position": "top_right",
-                    "name_position": "top_left",
+                    "name_alignment": name_alignment,
+                    "heading_alignment": heading_alignment,
+                    "name_position": _name_position(name_alignment),
                     "company_header": "center" if company_header else None,
                     "company_footer": "center" if company_footer else None,
                     "dates": "right_aligned",
@@ -263,6 +276,7 @@ class FormatExtractionService:
         color_text = max(color_counts, key=color_counts.get) if color_counts else "#000000"
         # Prefer body size for headlines too (client policy: Arial 10 throughout).
         resolved_body = int(body_size) or 10
+        pdf_alignment = self._pdf_name_alignment(path)
         styling = {
             "font_family": font_family or "Arial",
             "font_size_header": resolved_body,
@@ -274,6 +288,8 @@ class FormatExtractionService:
             "line_spacing": 1.0,
             "space_after_para": 6.0,
             "layout": "single_column_ats",
+            "name_alignment": pdf_alignment.get("name_alignment") or "left",
+            "heading_alignment": pdf_alignment.get("heading_alignment") or "left",
         }
         return "\n".join(pages), styling, logos, header_text, footer_text
     
@@ -474,6 +490,48 @@ class FormatExtractionService:
         logger.warning("No logos extracted from PDF")
         return logos
 
+    def _pdf_name_alignment(self, path: Path) -> dict[str, str]:
+        """Infer name/heading alignment from where the first page places those lines."""
+        try:
+            import pdfplumber
+        except ImportError:
+            return {"name_alignment": "left", "heading_alignment": "left"}
+
+        name_alignment = "left"
+        heading_values: list[str] = []
+        try:
+            with pdfplumber.open(str(path)) as pdf:
+                if not pdf.pages:
+                    return {"name_alignment": "left", "heading_alignment": "left"}
+                page = pdf.pages[0]
+                width = float(page.width or 0) or 612.0
+                lines = _cluster_pdf_lines(page.extract_words() or [])
+        except Exception:
+            return {"name_alignment": "left", "heading_alignment": "left"}
+
+        seen_heading = False
+        prefix = 0
+        for line in lines:
+            text = line["text"]
+            alignment = _pdf_line_alignment(line["x0"], line["x1"], width)
+            if _line_is_section_heading(text):
+                heading_values.append(alignment)
+                seen_heading = True
+                if len(heading_values) >= 8:
+                    break
+                continue
+            if seen_heading:
+                continue
+            prefix += 1
+            if prefix > 8 or not _looks_like_person_name(text):
+                continue
+            name_alignment = alignment
+            break
+        return {
+            "name_alignment": name_alignment,
+            "heading_alignment": _majority_alignment(heading_values),
+        }
+
     def _extract_docx(self, path: Path) -> tuple[str, dict[str, Any], list[dict], str, str]:
         try:
             import docx
@@ -595,6 +653,7 @@ class FormatExtractionService:
             name_size = body_size
         font_family = font_names[0] if font_names else fallback_family
         color_text = max(color_counts, key=color_counts.get) if color_counts else "#000000"
+        alignments = infer_docx_alignments(document)
 
         return {
             "font_family": font_family or "Arial",
@@ -607,6 +666,8 @@ class FormatExtractionService:
             "line_spacing": 1.0,
             "space_after_para": 6.0,
             "layout": "single_column_ats",
+            "name_alignment": alignments.get("name_alignment") or "left",
+            "heading_alignment": alignments.get("heading_alignment") or "left",
         }
 
     def _docx_run_color_hex(self, run: Any) -> str | None:
@@ -1419,3 +1480,166 @@ class FormatExtractionService:
             "space_after_para": 6.0,
             "layout": "single_column_ats",
         }
+
+
+def _majority_alignment(values: list[str]) -> str:
+    if not values:
+        return "left"
+    counts: dict[str, int] = {}
+    for value in values:
+        counts[value] = counts.get(value, 0) + 1
+    best = max(counts.values())
+    winners = [key for key, count in counts.items() if count == best]
+    if len(winners) == 1:
+        return winners[0]
+    return "left"
+
+
+def _line_is_section_heading(text: str) -> bool:
+    normalized = re.sub(r"[^a-z0-9 ]+", "", text.lower()).strip()
+    if not normalized or len(normalized) > 90:
+        return False
+    matcher = FormatExtractionService._heading_matches
+    for aliases in SECTION_ALIASES.values():
+        if any(matcher(None, normalized, alias) for alias in aliases):
+            return True
+    return False
+
+
+def _looks_like_person_name(text: str) -> bool:
+    clean = re.sub(r"\s+", " ", text or "").strip()
+    if not clean or len(clean) > 60:
+        return False
+    if _line_is_section_heading(clean):
+        return False
+    if any(token in clean for token in ("@", "|", "http", "www.")):
+        return False
+    words = clean.split()
+    if not 1 <= len(words) <= 6:
+        return False
+    letters = re.sub(r"[^A-Za-z]", "", clean)
+    if len(letters) < 2:
+        return False
+    if sum(ch.isdigit() for ch in clean) >= 3:
+        return False
+    return True
+
+
+def _para_font_size(paragraph: Any) -> float:
+    size = 0.0
+    for run in getattr(paragraph, "runs", []) or []:
+        try:
+            if run.font.size:
+                size = max(size, float(run.font.size.pt))
+        except Exception:
+            continue
+    return size
+
+
+def _iter_body_paragraphs(document: Any):
+    from docx.oxml.ns import qn
+    from docx.table import Table
+    from docx.text.paragraph import Paragraph
+
+    for child in document.element.body:
+        if child.tag == qn("w:p"):
+            yield Paragraph(child, document)
+        elif child.tag == qn("w:tbl"):
+            table = Table(child, document)
+            for row in table.rows:
+                for cell in row.cells:
+                    for paragraph in cell.paragraphs:
+                        yield paragraph
+
+
+def infer_docx_alignments(document: Any) -> dict[str, str]:
+    """Read name and section-heading alignment from a company format DOCX.
+
+    The name is the largest short line before the first section heading.
+    Sample employer text is ignored so it cannot leak into the schema.
+    """
+    from app.services.docx_layout import read_paragraph_alignment
+
+    name_alignment = ""
+    name_size = -1.0
+    heading_values: list[str] = []
+    seen_heading = False
+    prefix = 0
+    for paragraph in _iter_body_paragraphs(document):
+        text = re.sub(r"\s+", " ", str(paragraph.text or "")).strip()
+        if not text:
+            continue
+        alignment = read_paragraph_alignment(paragraph)
+        if _line_is_section_heading(text):
+            heading_values.append(alignment)
+            seen_heading = True
+            if len(heading_values) >= 8:
+                break
+            continue
+        if seen_heading:
+            continue
+        prefix += 1
+        if prefix > 8 or not _looks_like_person_name(text):
+            continue
+        size = _para_font_size(paragraph)
+        if size > name_size + 1 or name_size < 0:
+            name_alignment = alignment
+            name_size = size
+    if not name_alignment:
+        header_alignment = _header_name_alignment(document)
+        if header_alignment:
+            name_alignment = header_alignment
+    return {
+        "name_alignment": name_alignment,
+        "heading_alignment": _majority_alignment(heading_values) if heading_values else "",
+    }
+
+
+def _header_name_alignment(document: Any) -> str | None:
+    from app.services.docx_layout import read_paragraph_alignment
+
+    try:
+        sections = list(document.sections)
+    except Exception:
+        return None
+    for section in sections:
+        try:
+            paragraphs = list(section.header.paragraphs)
+        except Exception:
+            continue
+        for paragraph in paragraphs:
+            text = re.sub(r"\s+", " ", str(paragraph.text or "")).strip()
+            if _looks_like_person_name(text):
+                return read_paragraph_alignment(paragraph)
+    return None
+
+
+def _cluster_pdf_lines(words: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    lines: list[dict[str, Any]] = []
+    for word in words:
+        text = str(word.get("text") or "").strip()
+        if not text:
+            continue
+        top = float(word.get("top") or 0)
+        x0 = float(word.get("x0") or 0)
+        x1 = float(word.get("x1") or 0)
+        if lines and abs(top - lines[-1]["top"]) <= 2.5:
+            current = lines[-1]
+            current["text"] = f"{current['text']} {text}"
+            current["x0"] = min(current["x0"], x0)
+            current["x1"] = max(current["x1"], x1)
+            continue
+        lines.append({"text": text, "top": top, "x0": x0, "x1": x1})
+    return lines
+
+
+def _pdf_line_alignment(x0: float, x1: float, width: float) -> str:
+    if width <= 0:
+        return "left"
+    midpoint = (x0 + x1) / 2
+    page_mid = width / 2
+    if abs(midpoint - page_mid) <= width * 0.08 and x0 > width * 0.12:
+        return "center"
+    if x0 > width * 0.62:
+        return "right"
+    return "left"

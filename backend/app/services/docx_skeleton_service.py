@@ -12,6 +12,7 @@ from app.services.doc_converter import DocConversionError, convert_doc_to_docx
 from app.services.docx_layout import (
     add_bullet_paragraph,
     add_left_right_line,
+    apply_paragraph_alignment,
     clean_education_title_dates,
     split_left_right_meta,
     summary_to_bullets,
@@ -73,6 +74,15 @@ def render_from_docx_skeleton(
         logger.warning("skeleton_open_failed", error=str(exc))
         return None
 
+    from app.services.format_extraction_service import infer_docx_alignments
+
+    detected = infer_docx_alignments(doc)
+    layout = metadata.get("layout") if isinstance(metadata.get("layout"), dict) else {}
+    # Read alignment from the template before its sample body is removed.
+    # A saved schema fills in only when the file itself has no signal.
+    name_alignment = str(detected.get("name_alignment") or layout.get("name_alignment") or "left")
+    heading_alignment = str(detected.get("heading_alignment") or layout.get("heading_alignment") or "left")
+
     # Clear body paragraphs/tables but keep section properties + headers/footers.
     _clear_body(doc)
 
@@ -89,6 +99,7 @@ def render_from_docx_skeleton(
     header = document.get("header") or {}
     name = str(header.get("name") or "Candidate").strip() or "Candidate"
     name_para = doc.add_paragraph()
+    apply_paragraph_alignment(name_para, name_alignment)
     name_para.paragraph_format.space_after = Pt(2)
     name_run = name_para.add_run(name)
     name_run.bold = True
@@ -117,6 +128,7 @@ def render_from_docx_skeleton(
             title_para.paragraph_format.space_before = Pt(12)
             title_para.paragraph_format.space_after = Pt(space_after)
             title_para.paragraph_format.keep_with_next = True
+            apply_paragraph_alignment(title_para, heading_alignment)
 
         content = section.get("content")
         stype = str(section.get("type") or "").lower()
