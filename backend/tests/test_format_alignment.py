@@ -7,6 +7,7 @@ from docx.enum.text import WD_ALIGN_PARAGRAPH
 
 from app.services.docx_skeleton_service import render_from_docx_skeleton
 from app.services.format_extraction_service import FormatExtractionService
+from app.services.format_validator import document_section_types, has_critical_findings, validate_format_document
 from app.services.resume_generation_service import ResumeGenerationService
 
 
@@ -87,3 +88,87 @@ def test_left_aligned_name_stays_left(tmp_path):
     template.save(path)
     schema = FormatExtractionService().extract("left.docx", path.read_bytes())
     assert schema["layout"]["name_alignment"] == "left"
+
+
+def test_summary_of_projects_heading_stays_a_projects_section():
+    document = {
+        "header": {"name": "Jordan Rivera"},
+        "sections": [
+            {"type": "bullets", "title": "Professional Summary", "content": ["Ten years building finance systems."]},
+            {"type": "skills", "title": "Skills Profile", "content": ["Python"]},
+            {
+                "type": "experience",
+                "title": "Professional Experience",
+                "content": [
+                    {
+                        "company": "Acme",
+                        "title": "Engineer",
+                        "duration": "2020 - 2024",
+                        "description": ["Shipped the billing API."],
+                    }
+                ],
+            },
+            {
+                "type": "projects",
+                "title": "Summary of Projects",
+                "content": [{"title": "Billing", "description": ["Shipped the billing API."]}],
+            },
+            {
+                "type": "education",
+                "title": "Education",
+                "content": [{"degree": "BS", "institution": "State University"}],
+            },
+        ],
+    }
+    spec = {
+        "section_order": ["summary", "skills", "experience", "education"],
+        "completeness_contract": ["summary", "skills", "experience", "education"],
+    }
+
+    assert document_section_types(document) == [
+        "summary",
+        "skills",
+        "experience",
+        "projects",
+        "education",
+    ]
+    findings = validate_format_document(document, spec)
+    assert not has_critical_findings(findings)
+
+
+def test_template_header_sample_person_is_replaced(tmp_path):
+    template = Document()
+    header = template.sections[0].header
+    header.paragraphs[0].text = "K. Naresh Kumar"
+    header.add_paragraph("Java Backend developer")
+    template.sections[0].footer.paragraphs[0].text = "Aptino Inc."
+    template.add_paragraph("Professional Summary")
+    template.add_paragraph("Sample summary that must not be copied")
+    path = tmp_path / "header_format.docx"
+    template.save(path)
+
+    rendered = render_from_docx_skeleton(
+        path,
+        {**DOC, "header": {"name": "Jordan Rivera", "role": "Data Engineer"}},
+        {"source_type": "docx", "styling": {"font_family": "Arial", "font_size_body": 10}},
+    )
+    doc = Document(io.BytesIO(rendered))
+    header_text = "\n".join(p.text for p in doc.sections[0].header.paragraphs)
+    footer_text = "\n".join(p.text for p in doc.sections[0].footer.paragraphs)
+    assert "Jordan Rivera" in header_text
+    assert "Data Engineer" in header_text
+    assert "K. Naresh Kumar" not in header_text
+    assert "Java Backend developer" not in header_text
+    assert "Aptino Inc." in footer_text
+
+
+def test_credential_without_a_school_is_kept():
+    service = ResumeGenerationService()
+    items = service._filter_grounded_education(
+        [{"degree": "Bachelor of Science", "institution": "State University"}],
+        [
+            {"degree": "Bachelor of Science", "institution": "State University"},
+            {"degree": "CPA Certificate", "institution": ""},
+        ],
+    )
+    assert "CPA Certificate" in [item.get("degree") for item in items]

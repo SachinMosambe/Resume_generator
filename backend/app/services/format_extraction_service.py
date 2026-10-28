@@ -222,7 +222,7 @@ class FormatExtractionService:
         from app.services.doc_converter import DocConversionError, convert_doc_to_docx
 
         try:
-            converted = convert_doc_to_docx(path, output_dir=path.parent)
+            converted = convert_doc_to_docx(path)
         except DocConversionError as exc:
             raise FormatExtractionError(str(exc)) from exc
         try:

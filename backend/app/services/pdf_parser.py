@@ -368,7 +368,7 @@ def _extract_doc(path: str, *, max_chars: int | None = None) -> str:
     from app.services.doc_converter import DocConversionError, convert_doc_to_docx
 
     try:
-        converted = convert_doc_to_docx(Path(path), output_dir=Path(path).parent)
+        converted = convert_doc_to_docx(Path(path))
         return _extract_docx(str(converted), max_chars=max_chars).strip()
     except DocConversionError as exc:
         logger.error("doc_conversion_failed", path=path, error=str(exc))

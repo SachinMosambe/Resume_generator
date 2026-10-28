@@ -666,8 +666,6 @@ def _extract_inline_labels(text: str) -> tuple[list[str], list[str]]:
 
 def _extract_summary(text: str) -> str:
     blocks = _section_blocks(text, _SECTION_HEADINGS["summary"])
-    if not blocks:
-        return ""
     kept: list[str] = []
     for block in blocks:
         cleaned = [line.strip() for line in block if line.strip() and not _summary_noise_line(line)]
@@ -679,7 +677,59 @@ def _extract_summary(text: str) -> str:
                 kept.append(cleaned[0])
             continue
         kept.append("\n".join(cleaned))
-    return "\n".join(kept).strip()
+    labeled = "\n".join(kept).strip()
+    if labeled:
+        return labeled
+    return _extract_unlabeled_summary(text)
+
+
+def _is_unlabeled_summary_line(line: str) -> bool:
+    """A paragraph of introduction, not a role line, skill list, or heading."""
+    words = (line or "").split()
+    if len(words) < 12:
+        return False
+    if len(words) >= 30:
+        return True
+    return bool(re.search(r"[.!?]", line))
+
+
+def _extract_unlabeled_summary(text: str) -> str:
+    """Opening prose used as the summary when the resume never names that section.
+
+    Stops at the first heading, date, or bullet so job text stays in experience.
+    """
+    name = _extract_name(text)
+    kept: list[str] = []
+    for raw in (text or "").splitlines():
+        line = raw.strip()
+        if not line:
+            continue
+        if _is_section_heading_line(line) or _extra_heading(line):
+            break
+        if _DATE_PATTERN.search(line) or _is_bullet(line):
+            break
+        letters = re.sub(r"[^A-Za-z]", "", line)
+        if letters and line == line.upper() and 1 <= len(line.split()) <= 6 and len(line) <= 40:
+            if kept:
+                break
+            continue
+        if _summary_noise_line(line):
+            continue
+        if name and line.casefold() == name.casefold():
+            continue
+        if re.search(r"(?i)\b(?:https?://|www\.|about:blank)\b", line) and len(line.split()) <= 3:
+            continue
+        if _ROLE_WORD.search(line) and len(line) <= 80 and len(line.split()) <= 8:
+            continue
+        if _is_unlabeled_summary_line(line):
+            kept.append(line)
+            continue
+        if kept:
+            break
+    summary = "\n".join(kept).strip()
+    if len(summary.split()) < 12:
+        return ""
+    return summary
 
 
 def _is_skill_category_line(line: str) -> bool:

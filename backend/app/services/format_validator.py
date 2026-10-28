@@ -8,10 +8,26 @@ from app.agent_pipeline.state import FormatSpec, ResumeKB, norm_text
 from app.models.format_schema import normalize_format_metadata
 
 
+# Structural types win over the heading. A projects block titled "Summary of Projects"
+# must stay projects; a title scan would call it a second summary and reject the file.
+_EXPLICIT_SECTION_TYPES = {
+    "summary",
+    "skills",
+    "experience",
+    "projects",
+    "education",
+    "certifications",
+    "achievements",
+    "languages",
+}
+
+
 def _section_type(section: dict[str, Any]) -> str:
     stype = str(section.get("type") or "").strip().lower()
     title = str(section.get("title") or "").strip().lower()
-    # Composed docs often use type "text" for summary — prefer title cues.
+    if stype in _EXPLICIT_SECTION_TYPES:
+        return stype
+    # Composed docs often use type "text" or "bullets" for summary — use the heading then.
     for key in (
         "summary",
         "skills",

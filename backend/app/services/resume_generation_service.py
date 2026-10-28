@@ -1826,13 +1826,25 @@ class ResumeGenerationService:
             )
             for item in grounded
         }
+        present_degrees = {
+            self._normalize_entity_name(item.get("degree") or item.get("field") or "")
+            for item in grounded
+        }
         for src in source_list:
             key = self._normalize_entity_name(
                 src.get("institution") or src.get("school") or src.get("university") or ""
             )
+            degree_key = self._normalize_entity_name(src.get("degree") or src.get("field") or "")
             if key and key not in present:
                 grounded.append(dict(src))
                 present.add(key)
+                if degree_key:
+                    present_degrees.add(degree_key)
+                continue
+            # A credential with no school (CPA Certificate) still has to be kept.
+            if degree_key and not key and degree_key not in present_degrees:
+                grounded.append(dict(src))
+                present_degrees.add(degree_key)
         return grounded
 
     def _filter_grounded_skills(self, content: Any, candidate_data: dict[str, Any]) -> dict[str, list[str]]:

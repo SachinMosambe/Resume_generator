@@ -35,6 +35,23 @@ def _docx(*lines):
     return buf.getvalue()
 
 
+def test_shortened_education_date_still_passes():
+    store = {
+        **STORE,
+        "education": [
+            {"degree": "Bachelor of Science, Computer Science", "institution": "State University", "year": "06/1994"}
+        ],
+    }
+    lines = [
+        "Jordan Rivera", "Staff Engineer", "Acme Corp", "Jul. 2021 – Present",
+        "Led migration to event-driven payments.",
+        "Bachelor of Science, Computer Science", "State University", "1994",
+        "Languages: Python, Go", "Publications", "Streaming joins. 2022.",
+    ]
+    report = check_output_integrity(store, _docx(*lines))
+    assert report.status == "passed", report.warnings
+
+
 def test_all_present_passes():
     report = check_output_integrity(STORE, _docx(*FULL))
     assert report.status == "passed", report.warnings

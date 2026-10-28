@@ -113,6 +113,47 @@ def test_numeric_dates_keep_every_role_and_education():
     assert "1991" in associate["year"]
 
 
+UNLABELED_SUMMARY = """
+DAVID BREIG
++1 312-305-9049
+david.breig@example.com
+about:blank
+I am a planning and reporting professional with over 30 years of experience installing and configuring enterprise systems for finance teams.
+Experience with installation and configuration of planning systems on Windows and UNIX environments for large customers.
+PROJECT SUMMARIES
+Independent Consultant Work – Oracle EPM (December 2020 to Present)
+• Led an implementation of a planning solution for a construction company.
+"""
+
+
+def test_unlabeled_opening_prose_becomes_the_summary():
+    data = parse_resume_detailed(None, UNLABELED_SUMMARY)
+    summary = data["summary"]
+    assert "30 years" in summary
+    assert "UNIX" in summary
+    assert "PROJECT SUMMARIES" not in summary
+    assert "construction company" not in summary
+    bullets = " ".join(b for role in data["experience"] for b in role["description"])
+    assert "construction company" in bullets
+    assert "30 years" not in bullets
+
+
+def test_role_line_without_a_summary_stays_empty():
+    data = parse_resume_detailed(
+        None,
+        """
+Ada Lovelace
+Staff Engineer
+Experience
+Engineer | Analytical Engines Jan 2020 - Dec 2022
+• Built a calculation engine for the finance team.
+""",
+    )
+    assert data["summary"] == ""
+    assert data["headline"] == "Staff Engineer"
+    assert "calculation engine" in " ".join(data["experience"][0]["description"])
+
+
 def test_line_break_hyphen_is_rejoined():
     text = """
 Jordan Rivera

@@ -48,7 +48,7 @@ def render_from_docx_skeleton(
     tmp_converted: Path | None = None
     if source_type == "doc" or path.suffix.lower() == ".doc":
         try:
-            tmp_converted = convert_doc_to_docx(path, output_dir=path.parent)
+            tmp_converted = convert_doc_to_docx(path)
             work_path = tmp_converted
         except DocConversionError as exc:
             logger.warning("skeleton_doc_convert_failed", error=str(exc))
@@ -98,6 +98,7 @@ def render_from_docx_skeleton(
 
     header = document.get("header") or {}
     name = str(header.get("name") or "Candidate").strip() or "Candidate"
+    _replace_sample_header_identity(doc, name, str(header.get("role") or "").strip())
     name_para = doc.add_paragraph()
     apply_paragraph_alignment(name_para, name_alignment)
     name_para.paragraph_format.space_after = Pt(2)
@@ -241,6 +242,91 @@ def _rgb(value: Any, default: tuple[int, int, int]) -> Any:
         return RGBColor(*parse_hex_rgb(str(value or "")))
     except Exception:
         return RGBColor(*default)
+
+
+def _name_key(text: str) -> str:
+    import re
+
+    return re.sub(r"[^a-z]+", " ", str(text or "").lower()).strip()
+
+
+def _looks_like_person_name(text: str) -> bool:
+    """A short personal name, not a company line or a section heading."""
+    import re
+
+    raw = " ".join(str(text or "").split())
+    if not raw or len(raw) > 48 or any(ch.isdigit() for ch in raw):
+        return False
+    if not re.fullmatch(r"[A-Za-z][A-Za-z.'’\- ]*", raw):
+        return False
+    words = [w for w in raw.replace(".", " ").split() if w]
+    if not 2 <= len(words) <= 4:
+        return False
+    blocked = (
+        "summary", "experience", "education", "skill", "project", "profile",
+        "inc", "llc", "ltd", "corp", "company", "services", "consultancy",
+        "technologies", "solutions", "university", "college",
+    )
+    low = _name_key(raw)
+    if any(token in low.split() for token in blocked):
+        return False
+    return all(word[:1].isupper() for word in words)
+
+
+def _looks_like_sample_headline(text: str) -> bool:
+    """A template header role line such as 'Java Backend developer'."""
+    import re
+
+    raw = " ".join(str(text or "").split())
+    if not raw or len(raw) > 60 or any(ch.isdigit() for ch in raw):
+        return False
+    if re.search(r"@|www\.|http|blvd|suite|street|road", raw, re.I):
+        return False
+    return bool(
+        re.search(
+            r"\b(?:developer|engineer|consultant|analyst|architect|manager|lead|programmer|designer|tester)\b",
+            raw,
+            re.I,
+        )
+    )
+
+
+def _set_paragraph_text(paragraph: Any, text: str) -> None:
+    if paragraph.runs:
+        paragraph.runs[0].text = text
+        for run in paragraph.runs[1:]:
+            run.text = ""
+        return
+    paragraph.add_run(text)
+
+
+def _header_parts(section: Any) -> list[Any]:
+    parts = [section.header]
+    try:
+        if section.different_first_page_header_footer:
+            parts.append(section.first_page_header)
+    except Exception:
+        pass
+    return parts
+
+
+def _replace_sample_header_identity(doc: Any, candidate_name: str, candidate_role: str) -> None:
+    """Replace the template person's name and headline. Leave company footer branding."""
+    for section in doc.sections:
+        for header in _header_parts(section):
+            paragraphs = list(header.paragraphs)
+            for table in header.tables:
+                for row in table.rows:
+                    for cell in row.cells:
+                        paragraphs.extend(cell.paragraphs)
+            for paragraph in paragraphs:
+                current = " ".join((paragraph.text or "").split())
+                if not current:
+                    continue
+                if _looks_like_person_name(current) and candidate_name:
+                    _set_paragraph_text(paragraph, candidate_name)
+                elif _looks_like_sample_headline(current):
+                    _set_paragraph_text(paragraph, candidate_role)
 
 
 def _clear_body(doc: Any) -> None:

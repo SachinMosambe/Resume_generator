@@ -14,6 +14,8 @@ from typing import Any
 
 from docx import Document
 
+from app.services.docx_layout import clean_education_title_dates
+
 # Below this share of a core field found in the output, the document is marked failed.
 _FAIL_RATIO = 0.5
 _CORE_CHECKS = ("companies", "titles", "dates", "bullets")
@@ -41,6 +43,18 @@ def _docx_text(data: bytes) -> str:
         for part in (section.header, section.footer):
             parts.extend(p.text for p in part.paragraphs)
     return _norm("\n".join(parts))
+
+
+def _education_needle(value: Any, hay: str) -> Any:
+    """Use the rendered form when a heading crumb or month prefix was removed."""
+    raw = _norm(value)
+    if not raw or raw in hay:
+        return value
+    title, dates = clean_education_title_dates(str(value or ""), str(value or ""))
+    for alt in (title, dates):
+        if _norm(alt) and _norm(alt) in hay:
+            return alt
+    return value
 
 
 def _check(name: str, expected: list[Any], hay: str, checks: dict, warnings: list[str], label: str) -> None:
@@ -80,7 +94,7 @@ def check_output_integrity(
     _check("bullets", bullets, hay, checks, warnings, "experience bullets")
 
     edu = [e for e in store.get("education") or [] if isinstance(e, dict)]
-    edu_fields = [e.get(k) for e in edu for k in ("degree", "institution", "school", "year")]
+    edu_fields = [_education_needle(e.get(k), hay) for e in edu for k in ("degree", "institution", "school", "year")]
     _check("education", edu_fields, hay, checks, warnings, "education fields")
 
     grouped = store.get("skills_by_category") or {}
