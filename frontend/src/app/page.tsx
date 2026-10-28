@@ -1,15 +1,25 @@
 "use client";
 
-import { ChangeEvent, FormEvent, useCallback, useEffect, useMemo, useState } from "react";
+import { ChangeEvent, DragEvent, FormEvent, useCallback, useEffect, useMemo, useState } from "react";
 import toast, { Toaster } from "react-hot-toast";
 import {
   FileText,
+  FolderOpen,
   Loader2,
+  RefreshCw,
+  Search,
   Sparkles,
   Trash2,
   Upload,
   X,
 } from "lucide-react";
+
+import { Badge } from "@/components/ui/badge";
+import { Button } from "@/components/ui/button";
+import { Card, CardContent } from "@/components/ui/card";
+import { Input } from "@/components/ui/input";
+import { Label } from "@/components/ui/label";
+import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 
 type TemplateMode = "aptino_default" | "client_format" | "saved_format";
 
@@ -82,6 +92,9 @@ const API_URL = process.env.NEXT_PUBLIC_API_URL || "http://localhost:8000";
 const ACCEPT_DOCS =
   ".pdf,.doc,.docx,application/pdf,application/msword,application/vnd.openxmlformats-officedocument.wordprocessingml.document";
 
+const fieldClass =
+  "h-12 rounded-xl border-neutral-300 bg-white px-4 text-neutral-900 shadow-none focus-visible:ring-[#FF5050]/30";
+
 function FilePicker({
   label,
   hint,
@@ -89,6 +102,7 @@ function FilePicker({
   accept,
   onChange,
   onClear,
+  fill = false,
 }: {
   label: string;
   hint: string;
@@ -96,53 +110,81 @@ function FilePicker({
   accept: string;
   onChange: (file: File | null) => void;
   onClear: () => void;
+  fill?: boolean;
 }) {
+  const [dragOver, setDragOver] = useState(false);
   const inputId = useMemo(() => `file-${label.replace(/\s+/g, "-").toLowerCase()}`, [label]);
 
   const handleChange = (event: ChangeEvent<HTMLInputElement>) => {
     onChange(event.target.files?.[0] || null);
   };
 
-  return (
-    <div className="space-y-2">
-      <label className="text-[11px] font-bold uppercase tracking-wider text-gray-400">
-        {label}
-      </label>
-      {!file ? (
-        <label
-          htmlFor={inputId}
-          className="flex cursor-pointer flex-col items-center justify-center gap-2 rounded-xl border border-dashed border-gray-300 bg-gray-50/60 px-4 py-8 text-center transition hover:border-[#FF5050]/60 hover:bg-[#FF5050]/5"
+  const handleDrop = (event: DragEvent<HTMLLabelElement>) => {
+    event.preventDefault();
+    setDragOver(false);
+    onChange(event.dataTransfer.files?.[0] || null);
+  };
+
+  if (file) {
+    return (
+      <div className={fill ? "flex h-full flex-col gap-2" : "space-y-2"}>
+        <Label className="text-sm font-medium text-neutral-900">{label}</Label>
+        <div
+          className={`flex items-center gap-3 rounded-xl border border-neutral-200 bg-neutral-50 p-4 ${
+            fill ? "min-h-72 flex-1" : ""
+          }`}
         >
-          <Upload className="h-6 w-6 text-gray-400" />
-          <span className="text-sm font-semibold text-gray-700">Drop or click to upload</span>
-          <span className="text-xs text-gray-400">{hint}</span>
-          <input
-            id={inputId}
-            type="file"
-            accept={accept}
-            className="hidden"
-            onChange={handleChange}
-          />
-        </label>
-      ) : (
-        <div className="flex items-center justify-between gap-3 rounded-xl border border-gray-200 bg-white px-4 py-3">
-          <div className="flex min-w-0 items-center gap-3">
-            <FileText className="h-5 w-5 shrink-0 text-[#FF5050]" />
-            <div className="min-w-0">
-              <p className="truncate text-sm font-semibold text-gray-900">{file.name}</p>
-              <p className="text-xs text-gray-400">{(file.size / 1024).toFixed(1)} KB</p>
-            </div>
+          <div className="flex h-8 w-8 shrink-0 items-center justify-center rounded-lg bg-[#FF5050]/10 text-[#FF5050]">
+            <FileText className="h-4 w-4" />
           </div>
-          <button
+          <div className="min-w-0 flex-1">
+            <p className="truncate text-sm font-medium text-neutral-900">{file.name}</p>
+            <p className="text-xs text-neutral-500">{(file.size / 1024).toFixed(1)} KB</p>
+          </div>
+          <Button
             type="button"
+            variant="ghost"
+            size="icon"
             onClick={onClear}
-            className="rounded-lg p-1.5 text-gray-400 transition hover:bg-gray-100 hover:text-gray-700"
+            className="h-8 w-8 text-neutral-400 hover:text-neutral-700"
             aria-label="Remove file"
           >
             <X className="h-4 w-4" />
-          </button>
+          </Button>
         </div>
-      )}
+      </div>
+    );
+  }
+
+  return (
+    <div className={fill ? "flex h-full flex-col gap-2" : "space-y-2"}>
+      <Label className="text-sm font-medium text-neutral-900">{label}</Label>
+      <label
+        htmlFor={inputId}
+        onDragOver={(event) => {
+          event.preventDefault();
+          setDragOver(true);
+        }}
+        onDragLeave={() => setDragOver(false)}
+        onDrop={handleDrop}
+        className={`cursor-pointer rounded-xl border-2 border-dashed px-6 py-8 text-center transition ${
+          fill ? "flex min-h-72 flex-1 flex-col items-center justify-center" : "block"
+        } ${
+          dragOver
+            ? "border-[#FF5050] bg-[#FF5050]/5"
+            : "border-neutral-300 bg-neutral-50 hover:border-[#FF5050]/50 hover:bg-[#FF5050]/5"
+        }`}
+      >
+        <div className="mx-auto mb-4 flex h-12 w-12 items-center justify-center rounded-full bg-neutral-200">
+          <Upload className="h-6 w-6 text-neutral-600" />
+        </div>
+        <p className="mb-1 text-base font-medium text-neutral-900">Drop your file here</p>
+        <p className="mb-4 text-sm text-neutral-500">{hint}</p>
+        <span className="inline-flex h-10 items-center rounded-xl border border-neutral-300 bg-white px-4 text-sm font-medium text-neutral-800">
+          Browse files
+        </span>
+        <input id={inputId} type="file" accept={accept} className="hidden" onChange={handleChange} />
+      </label>
     </div>
   );
 }
@@ -159,6 +201,7 @@ export default function HomePage() {
   const [saveFormatAs, setSaveFormatAs] = useState(false);
   const [formatName, setFormatName] = useState("");
   const [isLoadingFormats, setIsLoadingFormats] = useState(false);
+  const [formatQuery, setFormatQuery] = useState("");
   const [review, setReview] = useState<Review | null>(null);
 
   const loadFormats = useCallback(async () => {
@@ -178,6 +221,10 @@ export default function HomePage() {
   useEffect(() => {
     void loadFormats();
   }, [loadFormats]);
+
+  const filteredFormats = savedFormats.filter((fmt) =>
+    fmt.name.toLowerCase().includes(formatQuery.toLowerCase()),
+  );
 
   const canSubmit =
     Boolean(resumeFile) &&
@@ -284,225 +331,268 @@ export default function HomePage() {
   };
 
   return (
-    <main className="min-h-screen bg-slate-50/80">
+    <main className="min-h-screen px-4 py-8 sm:px-6 sm:py-12">
       <Toaster position="top-right" />
-      <div className="mx-auto max-w-3xl px-4 py-10 md:px-6 md:py-14">
-        <header className="mb-8 space-y-2">
-          <div className="inline-flex items-center gap-2 rounded-full border border-gray-200 bg-white px-3 py-1 text-xs font-semibold text-gray-500">
-            <span className="h-2 w-2 rounded-full bg-[#FF5050]" />
-            Resume Generator
-          </div>
-          <h1 className="text-3xl font-bold tracking-tight text-gray-900 md:text-4xl">
-            Generate a client-ready resume
-          </h1>
-          <p className="max-w-2xl text-sm text-gray-500 md:text-base">
-            Upload a candidate resume, pick Aptino default, upload a company format (PDF/DOC/DOCX),
-            or reuse a saved format — then download a polished DOCX.
-          </p>
-        </header>
-
-        <form
-          onSubmit={handleSubmit}
-          className="space-y-6 rounded-2xl border border-gray-200/70 bg-white p-5 shadow-sm md:p-7"
-        >
-          <FilePicker
-            label="Candidate resume"
-            hint="PDF, DOC, or DOCX up to 10 MB"
-            file={resumeFile}
-            accept={ACCEPT_DOCS}
-            onChange={setResumeFile}
-            onClear={() => setResumeFile(null)}
-          />
-
-          <div className="grid gap-4 sm:grid-cols-2">
-            <div className="space-y-1.5">
-              <label className="text-[11px] font-bold uppercase tracking-wider text-gray-400">
-                Client name (optional)
-              </label>
-              <input
-                value={clientName}
-                onChange={(e) => setClientName(e.target.value)}
-                placeholder="e.g. Acme Corp"
-                className="h-10 w-full rounded-lg border border-gray-200 bg-gray-50/50 px-3 text-sm text-gray-900 outline-none transition focus:border-[#FF5050] focus:ring-1 focus:ring-[#FF5050]/30"
-              />
+      <Card className="mx-auto w-full max-w-5xl rounded-3xl border-neutral-200 bg-white shadow-2xl">
+        <CardContent className="p-4 sm:p-6 lg:p-8">
+          <div className="mb-6 flex items-start gap-3 sm:gap-4">
+            <div className="flex h-10 w-10 shrink-0 items-center justify-center rounded-2xl bg-[#FF5050] sm:h-12 sm:w-12">
+              <FileText className="h-5 w-5 text-white sm:h-6 sm:w-6" />
             </div>
-            <div className="space-y-1.5">
-              <label className="text-[11px] font-bold uppercase tracking-wider text-gray-400">
-                Target role (optional)
-              </label>
-              <input
-                value={jobRole}
-                onChange={(e) => setJobRole(e.target.value)}
-                placeholder="e.g. Senior Software Engineer"
-                className="h-10 w-full rounded-lg border border-gray-200 bg-gray-50/50 px-3 text-sm text-gray-900 outline-none transition focus:border-[#FF5050] focus:ring-1 focus:ring-[#FF5050]/30"
-              />
+            <div className="min-w-0 flex-1">
+              <h1 className="mb-2 text-base font-semibold text-neutral-900 sm:text-lg">
+                Generate a client-ready resume
+              </h1>
+              <p className="max-w-xl text-sm font-normal leading-relaxed text-neutral-600">
+                Drop a candidate resume, pick a company format, and download a polished DOCX you can
+                review before sending.
+              </p>
             </div>
           </div>
 
-          <div className="space-y-3">
-            <p className="text-[11px] font-bold uppercase tracking-wider text-gray-400">
-              Template
-            </p>
-            <div className="grid gap-3 sm:grid-cols-3">
-              <button
-                type="button"
-                onClick={() => setTemplateMode("aptino_default")}
-                className={`rounded-xl border px-4 py-3 text-left transition ${
-                  templateMode === "aptino_default"
-                    ? "border-[#FF5050] bg-[#FF5050]/5 ring-1 ring-[#FF5050]/30"
-                    : "border-gray-200 bg-gray-50/40 hover:border-gray-300"
-                }`}
-              >
-                <p className="text-sm font-semibold text-gray-900">Aptino default</p>
-                <p className="mt-0.5 text-xs text-gray-500">Built-in logo and footer</p>
-              </button>
-              <button
-                type="button"
-                onClick={() => setTemplateMode("client_format")}
-                className={`rounded-xl border px-4 py-3 text-left transition ${
-                  templateMode === "client_format"
-                    ? "border-[#FF5050] bg-[#FF5050]/5 ring-1 ring-[#FF5050]/30"
-                    : "border-gray-200 bg-gray-50/40 hover:border-gray-300"
-                }`}
-              >
-                <p className="text-sm font-semibold text-gray-900">Upload format</p>
-                <p className="mt-0.5 text-xs text-gray-500">PDF, DOC, or DOCX</p>
-              </button>
-              <button
-                type="button"
-                onClick={() => {
-                  setTemplateMode("saved_format");
-                  void loadFormats();
-                }}
-                className={`rounded-xl border px-4 py-3 text-left transition ${
-                  templateMode === "saved_format"
-                    ? "border-[#FF5050] bg-[#FF5050]/5 ring-1 ring-[#FF5050]/30"
-                    : "border-gray-200 bg-gray-50/40 hover:border-gray-300"
-                }`}
-              >
-                <p className="text-sm font-semibold text-gray-900">Saved format</p>
-                <p className="mt-0.5 text-xs text-gray-500">Reuse a stored profile</p>
-              </button>
-            </div>
-          </div>
-
-          {templateMode === "client_format" && (
-            <div className="space-y-4">
+          <form onSubmit={handleSubmit} className="lg:grid lg:grid-cols-2 lg:items-stretch lg:gap-8">
+            <div className="mb-6 lg:mb-0 lg:h-full">
               <FilePicker
-                label="Company format template"
-                hint="PDF, DOC, or DOCX — DOCX recommended for closest match"
-                file={templateFile}
+                label="Candidate resume"
+                hint="PDF, DOC, or DOCX up to 10 MB"
+                file={resumeFile}
                 accept={ACCEPT_DOCS}
-                onChange={setTemplateFile}
-                onClear={() => setTemplateFile(null)}
+                onChange={setResumeFile}
+                onClear={() => setResumeFile(null)}
+                fill
               />
-              <label className="flex items-start gap-3 rounded-xl border border-gray-200 bg-gray-50/50 px-4 py-3">
-                <input
-                  type="checkbox"
-                  checked={saveFormatAs}
-                  onChange={(e) => setSaveFormatAs(e.target.checked)}
-                  className="mt-1"
-                />
-                <span className="space-y-1">
-                  <span className="block text-sm font-semibold text-gray-900">
-                    Save this format for reuse
-                  </span>
-                  <span className="block text-xs text-gray-500">
-                    Stores fonts, section order, logos, and the original file.
-                  </span>
-                </span>
-              </label>
-              {saveFormatAs && (
-                <input
-                  value={formatName}
-                  onChange={(e) => setFormatName(e.target.value)}
-                  placeholder="Format name (e.g. Acme Corp 2026)"
-                  className="h-10 w-full rounded-lg border border-gray-200 bg-white px-3 text-sm text-gray-900 outline-none transition focus:border-[#FF5050] focus:ring-1 focus:ring-[#FF5050]/30"
-                />
-              )}
             </div>
-          )}
 
-          {templateMode === "saved_format" && (
-            <div className="space-y-3">
-              <div className="flex items-center justify-between">
-                <label className="text-[11px] font-bold uppercase tracking-wider text-gray-400">
-                  Saved company formats
-                </label>
-                <button
-                  type="button"
-                  onClick={() => void loadFormats()}
-                  className="text-xs font-semibold text-[#FF5050] hover:underline"
-                >
-                  {isLoadingFormats ? "Loading…" : "Refresh"}
-                </button>
+            <div className="flex flex-col gap-6">
+            <div className="grid grid-cols-1 gap-4 sm:grid-cols-2 sm:gap-6">
+              <div>
+                <Label htmlFor="client-name" className="mb-3 block text-sm font-medium text-neutral-900">
+                  Client name
+                </Label>
+                <Input
+                  id="client-name"
+                  value={clientName}
+                  onChange={(e) => setClientName(e.target.value)}
+                  placeholder="e.g. Acme Corp"
+                  className={fieldClass}
+                />
               </div>
-              {savedFormats.length === 0 ? (
-                <p className="rounded-xl border border-dashed border-gray-200 bg-gray-50/60 px-4 py-6 text-center text-sm text-gray-500">
-                  No saved formats yet. Upload a PDF/DOC/DOCX and check “Save this format”.
-                </p>
-              ) : (
-                <ul className="space-y-2">
-                  {savedFormats.map((fmt) => (
-                    <li
-                      key={fmt.id}
-                      className={`flex items-start justify-between gap-3 rounded-xl border px-4 py-3 transition ${
-                        selectedFormatId === fmt.id
-                          ? "border-[#FF5050] bg-[#FF5050]/5"
-                          : "border-gray-200 bg-white hover:border-gray-300"
-                      }`}
-                    >
-                      <button
-                        type="button"
-                        className="min-w-0 flex-1 text-left"
-                        onClick={() => setSelectedFormatId(fmt.id)}
-                      >
-                        <p className="truncate text-sm font-semibold text-gray-900">{fmt.name}</p>
-                        <p className="mt-0.5 text-xs text-gray-500">
-                          {(fmt.source_type || "file").toUpperCase()}
-                          {typeof fmt.section_count === "number" ? ` · ${fmt.section_count} sections` : ""}
-                          {typeof fmt.logo_count === "number" ? ` · ${fmt.logo_count} logos` : ""}
-                          {fmt.extraction_confidence ? ` · ${fmt.extraction_confidence}` : ""}
-                        </p>
-                        {fmt.preview_text ? (
-                          <p className="mt-1 line-clamp-2 text-xs text-gray-400">{fmt.preview_text}</p>
-                        ) : null}
-                      </button>
-                      <button
-                        type="button"
-                        onClick={() => void handleDeleteFormat(fmt.id)}
-                        className="rounded-lg p-1.5 text-gray-400 transition hover:bg-gray-100 hover:text-red-500"
-                        aria-label={`Delete ${fmt.name}`}
-                      >
-                        <Trash2 className="h-4 w-4" />
-                      </button>
-                    </li>
-                  ))}
-                </ul>
-              )}
+              <div>
+                <Label htmlFor="job-role" className="mb-3 block text-sm font-medium text-neutral-900">
+                  Target role
+                </Label>
+                <Input
+                  id="job-role"
+                  value={jobRole}
+                  onChange={(e) => setJobRole(e.target.value)}
+                  placeholder="e.g. Senior Software Engineer"
+                  className={fieldClass}
+                />
+              </div>
             </div>
-          )}
 
-          <button
-            type="submit"
-            disabled={!canSubmit}
-            className="inline-flex h-11 w-full items-center justify-center gap-2 rounded-xl bg-[#FF5050] px-4 text-sm font-semibold text-white transition hover:bg-[#e84545] disabled:cursor-not-allowed disabled:opacity-50"
-          >
-            {isGenerating ? (
-              <>
-                <Loader2 className="h-4 w-4 animate-spin" />
-                Generating…
-              </>
-            ) : (
-              <>
-                <Sparkles className="h-4 w-4" />
-                Generate &amp; download DOCX
-              </>
-            )}
-          </button>
-        </form>
-        {review && <ReviewPanel review={review} />}
-      </div>
+            <div>
+              <Label className="mb-3 block text-sm font-medium text-neutral-900">Template</Label>
+              <Tabs
+                value={templateMode}
+                onValueChange={(value) => {
+                  const mode = value as TemplateMode;
+                  setTemplateMode(mode);
+                  if (mode === "saved_format") void loadFormats();
+                }}
+              >
+                <TabsList className="grid h-auto w-full grid-cols-3 rounded-xl bg-neutral-100 p-1">
+                  <TabsTrigger
+                    value="aptino_default"
+                    className="rounded-lg text-xs font-medium data-[state=active]:bg-white data-[state=active]:text-[#FF5050] data-[state=active]:shadow-sm sm:text-sm"
+                  >
+                    <Sparkles className="mr-1 h-4 w-4 sm:mr-2" />
+                    <span className="hidden sm:inline">Aptino default</span>
+                    <span className="sm:hidden">Default</span>
+                  </TabsTrigger>
+                  <TabsTrigger
+                    value="client_format"
+                    className="rounded-lg text-xs font-medium data-[state=active]:bg-white data-[state=active]:text-[#FF5050] data-[state=active]:shadow-sm sm:text-sm"
+                  >
+                    <Upload className="mr-1 h-4 w-4 sm:mr-2" />
+                    <span className="hidden sm:inline">Upload format</span>
+                    <span className="sm:hidden">Upload</span>
+                  </TabsTrigger>
+                  <TabsTrigger
+                    value="saved_format"
+                    className="rounded-lg text-xs font-medium data-[state=active]:bg-white data-[state=active]:text-[#FF5050] data-[state=active]:shadow-sm sm:text-sm"
+                  >
+                    <FolderOpen className="mr-1 h-4 w-4 sm:mr-2" />
+                    <span className="hidden sm:inline">Saved format</span>
+                    <span className="sm:hidden">Saved</span>
+                  </TabsTrigger>
+                </TabsList>
+
+                <TabsContent value="aptino_default" className="mt-6">
+                  <div className="rounded-xl border border-neutral-200 bg-neutral-50 p-4">
+                    <p className="text-sm font-medium text-neutral-900">Built-in Aptino layout</p>
+                    <p className="mt-1 text-sm leading-relaxed text-neutral-500">
+                      Uses the standard logo, footer, and section order. No company template needed.
+                    </p>
+                  </div>
+                </TabsContent>
+
+                <TabsContent value="client_format" className="mt-6 space-y-4">
+                  <FilePicker
+                    label="Company format template"
+                    hint="PDF, DOC, or DOCX — DOCX matches closest"
+                    file={templateFile}
+                    accept={ACCEPT_DOCS}
+                    onChange={setTemplateFile}
+                    onClear={() => setTemplateFile(null)}
+                  />
+                  <label className="flex cursor-pointer items-start gap-3 rounded-xl border border-neutral-200 bg-neutral-50 px-4 py-3">
+                    <input
+                      type="checkbox"
+                      checked={saveFormatAs}
+                      onChange={(e) => setSaveFormatAs(e.target.checked)}
+                      className="mt-1 accent-[#FF5050]"
+                    />
+                    <span className="space-y-1">
+                      <span className="block text-sm font-medium text-neutral-900">
+                        Save this format for reuse
+                      </span>
+                      <span className="block text-xs text-neutral-500">
+                        Stores alignment, fonts, section order, logos, and the original file.
+                      </span>
+                    </span>
+                  </label>
+                  {saveFormatAs && (
+                    <Input
+                      value={formatName}
+                      onChange={(e) => setFormatName(e.target.value)}
+                      placeholder="Format name (e.g. Acme Corp 2026)"
+                      className={fieldClass}
+                      aria-label="Format name"
+                    />
+                  )}
+                </TabsContent>
+
+                <TabsContent value="saved_format" className="mt-6 space-y-4">
+                  <div className="flex items-center gap-2">
+                    <div className="relative min-w-0 flex-1">
+                      <Search className="pointer-events-none absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-neutral-400" />
+                      <Input
+                        placeholder="Search formats..."
+                        value={formatQuery}
+                        onChange={(e) => setFormatQuery(e.target.value)}
+                        className={`${fieldClass} pl-10`}
+                      />
+                    </div>
+                    <Button
+                      type="button"
+                      variant="outline"
+                      size="icon"
+                      className="h-12 w-12 shrink-0 rounded-xl border-neutral-300"
+                      onClick={() => void loadFormats()}
+                      aria-label="Refresh saved formats"
+                    >
+                      <RefreshCw className={`h-4 w-4 ${isLoadingFormats ? "animate-spin" : ""}`} />
+                    </Button>
+                  </div>
+
+                  {savedFormats.length === 0 ? (
+                    <p className="rounded-xl border border-dashed border-neutral-300 bg-neutral-50 px-4 py-8 text-center text-sm text-neutral-500">
+                      No saved formats yet. Upload a template and check “Save this format”.
+                    </p>
+                  ) : filteredFormats.length === 0 ? (
+                    <p className="rounded-xl border border-dashed border-neutral-300 bg-neutral-50 px-4 py-8 text-center text-sm text-neutral-500">
+                      No formats match “{formatQuery}”.
+                    </p>
+                  ) : (
+                    <ul className="max-h-64 space-y-2 overflow-y-auto">
+                      {filteredFormats.map((fmt) => {
+                        const selected = selectedFormatId === fmt.id;
+                        return (
+                          <li
+                            key={fmt.id}
+                            className={`rounded-xl border p-4 transition ${
+                              selected
+                                ? "border-[#FF5050] bg-[#FF5050]/5"
+                                : "border-neutral-200 bg-white hover:border-neutral-300"
+                            }`}
+                          >
+                            <div className="flex items-center gap-3">
+                              <button
+                                type="button"
+                                className="flex min-w-0 flex-1 items-center gap-3 text-left"
+                                onClick={() => setSelectedFormatId(fmt.id)}
+                              >
+                                <div className="flex h-8 w-8 shrink-0 items-center justify-center rounded-lg bg-neutral-200 text-neutral-700">
+                                  <FileText className="h-4 w-4" />
+                                </div>
+                                <div className="min-w-0 flex-1">
+                                  <div className="mb-1 flex items-center gap-2">
+                                    <p className="truncate text-sm font-medium text-neutral-900">{fmt.name}</p>
+                                    {fmt.extraction_confidence ? (
+                                      <Badge className="border-transparent bg-neutral-100 px-2 py-0.5 text-xs font-medium text-neutral-700 hover:bg-neutral-100">
+                                        {fmt.extraction_confidence}
+                                      </Badge>
+                                    ) : null}
+                                  </div>
+                                  <p className="text-xs text-neutral-500">
+                                    {(fmt.source_type || "file").toUpperCase()}
+                                    {typeof fmt.section_count === "number"
+                                      ? ` · ${fmt.section_count} sections`
+                                      : ""}
+                                    {typeof fmt.logo_count === "number" ? ` · ${fmt.logo_count} logos` : ""}
+                                  </p>
+                                  {fmt.preview_text ? (
+                                    <p className="mt-1 line-clamp-2 text-xs text-neutral-400">{fmt.preview_text}</p>
+                                  ) : null}
+                                </div>
+                              </button>
+                              <Button
+                                type="button"
+                                variant="ghost"
+                                size="icon"
+                                className="h-8 w-8 text-neutral-400 hover:text-red-500"
+                                onClick={() => void handleDeleteFormat(fmt.id)}
+                                aria-label={`Delete ${fmt.name}`}
+                              >
+                                <Trash2 className="h-4 w-4" />
+                              </Button>
+                            </div>
+                          </li>
+                        );
+                      })}
+                    </ul>
+                  )}
+                </TabsContent>
+              </Tabs>
+            </div>
+
+            </div>
+
+            <div className="mt-6 flex flex-col gap-3 border-t border-neutral-200 pt-6 sm:flex-row sm:items-center sm:justify-between lg:col-span-2 lg:mt-0">
+              <p className="text-xs text-neutral-500">Downloads a DOCX when generation finishes.</p>
+              <Button
+                type="submit"
+                disabled={!canSubmit}
+                className="h-12 rounded-xl bg-[#FF5050] px-8 font-medium text-white hover:bg-[#e84545]"
+              >
+                {isGenerating ? (
+                  <>
+                    <Loader2 className="mr-2 h-4 w-4 animate-spin" />
+                    Generating…
+                  </>
+                ) : (
+                  <>
+                    <Sparkles className="mr-2 h-4 w-4" />
+                    Generate
+                  </>
+                )}
+              </Button>
+            </div>
+          </form>
+          {review && <ReviewPanel review={review} />}
+        </CardContent>
+      </Card>
     </main>
   );
 }
