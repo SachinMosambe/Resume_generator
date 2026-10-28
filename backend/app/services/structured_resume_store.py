@@ -51,6 +51,7 @@ def build_structured_resume(candidate_data: dict[str, Any]) -> dict[str, Any]:
                 candidate_data.get("job_role")
                 or candidate_data.get("job_title")
                 or candidate_data.get("job_applied")
+                or candidate_data.get("headline")
                 or ""
             ).strip(),
         },

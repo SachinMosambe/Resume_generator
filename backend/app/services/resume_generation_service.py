@@ -478,6 +478,7 @@ class ResumeGenerationService:
                 self._candidate_attr(candidate, "job_role")
                 or self._candidate_attr(candidate, "job_title")
                 or pipeline.get("target_role")
+                or detailed_data.get("headline")
                 or ""
             ),
             "client_name": self._candidate_attr(candidate, "client_name") or pipeline.get("client_name") or "",

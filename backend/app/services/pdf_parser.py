@@ -595,6 +595,24 @@ def _band_gutter(window: list[list], candidates: list[float]) -> float | None:
 
 
 _WORDY = re.compile(r"[A-Za-z]{3,}")
+# Profile-sheet field names. A band of these is a form, not two resume columns.
+_PROFILE_LABELS = {
+    "previous", "preferred", "desired work", "settings", "willing to relocate",
+    "employment type", "total experience", "profile source", "profile downloaded",
+    "work authorization", "visa sponsorship", "desired salary",
+}
+_CONTACT_TEXT = re.compile(
+    r"(@|\d{3}[-.\s]\d{3}[-.\s]\d{4}|\b[A-Z]{2}\s+\d{5}\b|"
+    r"\b(?:st|street|dr|drive|ave|avenue|rd|road|ln|lane|blvd|way)\b)",
+    re.IGNORECASE,
+)
+
+
+def _is_profile_label(text: str) -> bool:
+    normalized = re.sub(r"[^a-z0-9 ]+", "", (text or "").lower()).strip()
+    if normalized in _PROFILE_LABELS:
+        return True
+    return any(normalized.startswith(f"{label} ") for label in _PROFILE_LABELS)
 
 
 def _is_column_band(run: list[list], x: float) -> bool:
@@ -621,7 +639,43 @@ def _is_column_band(run: list[list], x: float) -> bool:
     short_labels = sum(1 for t in lefts if len(t.split()) <= 3)
     if paired >= 0.8 * len(lefts) and short_labels >= 0.8 * len(lefts):
         return False
+    # A profile form lists field names down the left. Read each row across.
+    if sum(1 for text in lefts if _is_profile_label(text)) >= 2:
+        return False
+    # Name beside an address is a header, not a second column of the resume.
+    sides = lefts + rights
+    long_lines = sum(1 for text in sides if len(text.split()) >= 10)
+    contact_lines = sum(1 for text in sides if _CONTACT_TEXT.search(text))
+    if contact_lines >= 2 and long_lines < 2:
+        return False
     return True
+
+
+def _split_is_form_or_header(lines: list[list], width: float) -> bool:
+    """True when the page gutter is a profile form or a name-beside-address header.
+
+    Those must be read across each row. A real sidebar still has sentences on the buffered side.
+    """
+    gutter = _column_gutter(lines, width)
+    if gutter is None:
+        return False
+    lefts: list[str] = []
+    rights: list[str] = []
+    for line in lines:
+        if _line_crosses_gutter(line, gutter):
+            continue
+        left = _join_layout_words([w for w in line if (float(w[0]) + float(w[2])) / 2 < gutter])
+        right = _join_layout_words([w for w in line if (float(w[0]) + float(w[2])) / 2 >= gutter])
+        if left:
+            lefts.append(left)
+        if right:
+            rights.append(right)
+    if sum(1 for text in lefts if _is_profile_label(text)) >= 2:
+        return True
+    sides = lefts + rights
+    long_lines = sum(1 for text in sides if len(text.split()) >= 10)
+    contact_lines = sum(1 for text in sides if _CONTACT_TEXT.search(text))
+    return contact_lines >= 2 and long_lines < 2
 
 
 def _emit_band(band: list[list], gutter: float) -> list[str]:
@@ -715,6 +769,10 @@ def _layout_page_text(words: list, width: float) -> tuple[str, bool]:
         used_columns = True
         i = j
     if not used_columns:
+        # A rejected gutter can still be a real sidebar, which the legacy reader keeps intact.
+        # A profile form or a contact header must stay in row order instead.
+        if candidates and _split_is_form_or_header(lines, width):
+            return _stitch_hyphens("\n".join(out).strip()), False
         return _legacy_layout_page_text(lines, width)
     return _stitch_hyphens("\n".join(out).strip()), used_columns
 

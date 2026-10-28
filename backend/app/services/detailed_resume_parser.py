@@ -20,8 +20,8 @@ _SECTION_HEADINGS = {
     ],
     "experience": [
         "experience", "work experience", "professional experience", "employment history", "career history",
-        "work history", "professional background", "employment", "relevant experience", "where ive worked",
-        "career experience", "industry experience",
+        "work history", "job history", "professional background", "employment", "relevant experience",
+        "where ive worked", "career experience", "industry experience",
     ],
     "education": ["education", "academic background", "academics", "qualifications", "degrees", "academic qualifications", "educational background", "academic credentials"],
     "projects": ["projects", "personal projects", "academic projects", "key projects", "project experience"],
@@ -71,11 +71,23 @@ _MONTH = (
 )
 _DATE_SEP = r"(?:[-–—/]|to)"
 _MONTH_YEAR = rf"{_MONTH}\.?\s*\d{{4}}"
+# 5/2025 - present, 7/2022 - 12/2024, 01/2012 - 12/2018. Not a bare month/year.
+_NUM_MY = r"(?:0?[1-9]|1[0-2])/(?:19|20)\d{2}"
 _DATE_PATTERN = re.compile(
     rf"(?:{_MONTH_YEAR}\s*{_DATE_SEP}\s*(?:Present|Current|{_MONTH_YEAR}|\d{{4}})"
+    rf"|{_NUM_MY}\s*{_DATE_SEP}\s*(?:Present|Current|{_NUM_MY}|(?:19|20)\d{{4}})"
     rf"|\d{{4}}\s*{_DATE_SEP}\s*(?:Present|Current|\d{{4}}))",
     re.IGNORECASE,
 )
+# Form labels that must not close or open a real section.
+_NOT_HEADINGS = {
+    "employment type", "total experience", "work authorization", "profile source",
+    "profile downloaded", "desired work", "willing to relocate", "desired salary",
+    "previous", "preferred", "settings",
+}
+_COVER_LABELS = _NOT_HEADINGS | {
+    "visa sponsorship", "authorized to work",
+}
 
 _DICE_NOISE_RE = re.compile(
     r"(?i)\b("
@@ -111,9 +123,25 @@ def _normalize_heading(line: str) -> str:
     return re.sub(r"[^a-z0-9 ]+", "", line.lower()).strip()
 
 
+def _is_labeled_value_line(line: str) -> bool:
+    """True for 'Languages: Swift, Objective-C', which is a list rather than a heading."""
+    raw = re.sub(r"^[\-\*\u2022•>\s]+", "", (line or "").strip())
+    if ":" not in raw:
+        return False
+    _left, right = raw.split(":", 1)
+    right = right.strip()
+    return bool(right) and ("," in right or len(right.split()) >= 2)
+
+
+def _line_matches_heading(line: str, headings: set[str]) -> bool:
+    if _is_labeled_value_line(line):
+        return False
+    return _is_known_heading(_normalize_heading(line), headings)
+
+
 def _is_known_heading(normalized: str, headings: set[str]) -> bool:
     """True when a line is a section heading, not body text that starts with a heading word."""
-    if not normalized:
+    if not normalized or normalized in _NOT_HEADINGS:
         return False
     if normalized in headings:
         return True
@@ -145,11 +173,11 @@ def _find_all_sections(text: str, target_keys: list[str]) -> list[str]:
             if in_section:
                 captured.append("")
             continue
-        if _is_known_heading(normalized, target_normalized):
+        if _line_matches_heading(line, target_normalized):
             in_section = True
             captured.append("")  # separate blocks
             continue
-        if in_section and (_is_known_heading(normalized, all_normalized) or _extra_heading(line)):
+        if in_section and (_line_matches_heading(line, all_normalized) or _extra_heading(line)):
             in_section = False
             continue
         if in_section:
@@ -174,14 +202,44 @@ def _find_section(text: str, target_keys: list[str]) -> list[str]:
             if in_section:
                 captured.append("")
             continue
-        if _is_known_heading(normalized, target_normalized):
+        if _line_matches_heading(line, target_normalized):
             in_section = True
             continue
-        if in_section and (_is_known_heading(normalized, all_normalized) or _extra_heading(line)):
+        if in_section and (_line_matches_heading(line, all_normalized) or _extra_heading(line)):
             break
         if in_section:
             captured.append(line)
     return captured
+
+
+def _section_blocks(text: str, target_keys: list[str]) -> list[list[str]]:
+    """Every span under a target heading, so a cover-sheet heading cannot hide the real one."""
+    all_normalized = set()
+    for aliases in _SECTION_HEADINGS.values():
+        all_normalized.update(_normalize_heading(a) for a in aliases)
+    target_normalized = {_normalize_heading(k) for k in target_keys}
+    blocks: list[list[str]] = []
+    current: list[str] | None = None
+    for raw_line in (text or "").splitlines():
+        line = raw_line.strip()
+        if not line:
+            if current is not None:
+                current.append("")
+            continue
+        if _line_matches_heading(line, target_normalized):
+            if current is not None:
+                blocks.append(current)
+            current = []
+            continue
+        if current is not None and (_line_matches_heading(line, all_normalized) or _extra_heading(line)):
+            blocks.append(current)
+            current = None
+            continue
+        if current is not None:
+            current.append(line)
+    if current is not None:
+        blocks.append(current)
+    return blocks
 
 
 def _extract_additional_sections(text: str) -> list[dict[str, Any]]:
@@ -225,13 +283,12 @@ def _without_reference_sections(text: str) -> str:
 
 def _is_section_heading_line(line: str) -> bool:
     """Heuristic: detect if a line is likely a section heading."""
-    normalized = _normalize_heading(line)
-    if not normalized:
+    if not (line or "").strip():
         return False
     all_normalized = set()
     for aliases in _SECTION_HEADINGS.values():
         all_normalized.update(_normalize_heading(a) for a in aliases)
-    return _is_known_heading(normalized, all_normalized)
+    return _line_matches_heading(line, all_normalized)
 
 
 # ─── Contact extractors ────────────────────────────────────────
@@ -444,23 +501,185 @@ def _extract_location(text: str) -> str:
 
 
 # ─── Section extractors ────────────────────────────────────────
-def _extract_summary(text: str) -> str:
-    lines = _find_section(text, _SECTION_HEADINGS["summary"])
-    if not lines:
-        return ""
-    paragraphs = []
-    current: list[str] = []
-    for line in lines:
+def _is_cover_label_line(line: str) -> bool:
+    normalized = _normalize_heading(line)
+    if normalized in _COVER_LABELS:
+        return True
+    return any(
+        normalized.startswith(f"{label} ") and len(normalized[len(label):].split()) <= 6
+        for label in _COVER_LABELS
+    )
+
+
+def _is_contact_only_line(line: str) -> bool:
+    text = (line or "").strip()
+    if not text:
+        return False
+    if "@" in text:
+        return True
+    if re.search(r"\d{3}[-.\s]\d{3}[-.\s]\d{4}", text):
+        return True
+    if re.search(r"\d", text) and re.search(
+        r"(?i)\b(?:st|street|dr|drive|ave|avenue|rd|road|ln|lane|blvd|way|ct|court)\b",
+        text,
+    ):
+        return True
+    if re.search(r"\b[A-Za-z .]+,\s*[A-Z]{2}\s+\d{5}\b", text):
+        return True
+    return False
+
+
+def _summary_noise_line(line: str) -> bool:
+    text = (line or "").strip()
+    if not text:
+        return True
+    if _is_cover_label_line(text) or _DICE_NOISE_RE.search(text) or _is_contact_only_line(text):
+        return True
+    labeled = re.sub(r"^[\-\*\u2022•>\s]+", "", text)
+    return bool(re.match(r"(?i)^(languages|technologies|technical skills|tools)\s*:", labeled))
+
+
+def _strip_profile_cover(text: str) -> str:
+    """Drop a Dice-style label sheet that sits in front of the real resume."""
+    lines = (text or "").splitlines()
+    hits = [i for i, line in enumerate(lines) if _is_cover_label_line(line)]
+    if len(hits) < 3:
+        return text
+    start = hits[0]
+    end = hits[-1] + 1
+    while end < len(lines):
+        raw = lines[end].strip()
+        if not raw:
+            end += 1
+            continue
+        if _is_cover_label_line(raw) or _is_contact_only_line(raw):
+            end += 1
+            continue
+        if sum(c.isalpha() for c in raw) >= 80 or _is_bullet(raw):
+            break
+        if _is_section_heading_line(raw):
+            break
+        if (
+            _ROLE_WORD.search(raw)
+            and len(raw.split()) >= 4
+            and len(raw) <= 100
+            and "@" not in raw
+        ):
+            break
+        if len(raw.split()) <= 14:
+            end += 1
+            continue
+        break
+    return "\n".join(lines[:start] + lines[end:])
+
+
+def _attach_orphan_bullets(text: str) -> str:
+    lines = (text or "").splitlines()
+    output: list[str] = []
+    index = 0
+    while index < len(lines):
+        if re.fullmatch(r"[\-\*\u2022•]+", lines[index].strip()) and index + 1 < len(lines):
+            output.append(f"{lines[index].strip()} {lines[index + 1].strip()}")
+            index += 2
+            continue
+        output.append(lines[index])
+        index += 1
+    return "\n".join(output)
+
+
+_HYPHEN_KEEP = {
+    "time", "site", "house", "term", "source", "scale", "level", "world", "facing",
+    "functional", "end", "day", "known", "based", "driven", "ready", "side", "free",
+    "wide", "first", "native", "powered", "assisted", "grade", "the", "art",
+    "defined", "ended", "oriented", "evaluated", "enabled", "focused", "related",
+    "sized", "owned", "made", "founder", "author",
+}
+_COMPOUND_LEFT = {
+    "well", "self", "open", "cross", "multi", "non", "pre", "over", "under", "full",
+    "part", "real", "high", "low", "long", "short", "client", "user", "large", "small",
+    "best", "state", "end", "day", "co", "re", "de", "un", "mid", "sub", "pro", "ex",
+}
+
+
+_HYPHEN_SUFFIX = re.compile(
+    r"(?:ing|ed|tions|tion|ments|ment|ances|ance|ences|ence)$",
+    re.IGNORECASE,
+)
+
+
+def _join_break_hyphens(text: str) -> str:
+    """Join a wrap fragment such as 'en-hancing'. Keep names and compounds ('scott-symes', 'full-time')."""
+
+    def repl(match: re.Match) -> str:
+        left, right = match.group(1), match.group(2)
+        if right.lower() in _HYPHEN_KEEP or left.lower() in _COMPOUND_LEFT or left.isupper():
+            return match.group(0)
+        joined = left + right
+        if _HYPHEN_SUFFIX.search(joined):
+            return joined
+        return match.group(0)
+
+    return re.sub(r"([A-Za-z]{2,})-([a-z]{3,})", repl, text or "")
+
+
+def _prepare_resume_text(text: str) -> str:
+    return _strip_profile_cover(_join_break_hyphens(_attach_orphan_bullets(text)))
+
+
+def _extract_headline(text: str, name: str) -> str:
+    """Role line under the name and above the first section, such as 'Senior Software Engineer'."""
+    for raw in (text or "").splitlines():
+        line = raw.strip()
         if not line:
-            if current:
-                paragraphs.append(" ".join(current))
-                current = []
+            continue
+        if _is_section_heading_line(line) or _extra_heading(line):
+            break
+        if name and line.casefold() == name.casefold():
+            continue
+        if _summary_noise_line(line) or _DATE_PATTERN.search(line):
+            continue
+        if _ROLE_WORD.search(line) and len(line) <= 80 and len(line.split()) <= 8:
+            return _clean_text(line)
+    return ""
+
+
+def _extract_inline_labels(text: str) -> tuple[list[str], list[str]]:
+    """'Languages: Swift, Objective-C' and 'Technologies: SwiftUI, UIKit' outside a section."""
+    languages: list[str] = []
+    skills: list[str] = []
+    for raw in (text or "").splitlines():
+        clean = _clean_bullet_text(raw)
+        match = re.match(r"(?i)^(languages|technologies|technical skills|tools)\s*:\s*(.+)$", clean)
+        if not match:
+            continue
+        parts = [
+            part.strip(" ,;")
+            for part in _split_skills_payload(match.group(2))
+            if part.strip(" ,;")
+        ]
+        if match.group(1).lower() == "languages":
+            languages.extend(parts)
         else:
-            current.append(line)
-    if current:
-        paragraphs.append(" ".join(current))
-    # No hard truncate — store keeps full summary for any-length resumes.
-    return " ".join(paragraphs).strip()
+            skills.extend(parts)
+    return _dedupe(languages), _dedupe(skills)
+
+
+def _extract_summary(text: str) -> str:
+    blocks = _section_blocks(text, _SECTION_HEADINGS["summary"])
+    if not blocks:
+        return ""
+    kept: list[str] = []
+    for block in blocks:
+        cleaned = [line.strip() for line in block if line.strip() and not _summary_noise_line(line)]
+        if not cleaned:
+            continue
+        # A cover sheet under the first "Summary" is a stack of one- and two-word labels.
+        if not any(len(line.split()) >= 8 for line in cleaned):
+            if len(cleaned) == 1 and _ROLE_WORD.search(cleaned[0]) and len(cleaned[0]) <= 90:
+                kept.append(cleaned[0])
+            continue
+        kept.append("\n".join(cleaned))
+    return "\n".join(kept).strip()
 
 
 def _is_skill_category_line(line: str) -> bool:
@@ -698,10 +917,18 @@ def _parse_job_header_line(line: str, date_match: re.Match) -> dict[str, str]:
 
 
 def _extract_experience(text: str) -> list[dict[str, Any]]:
-    lines = _find_section(text, _SECTION_HEADINGS["experience"])
-    # Fallback: whole document when heading-based section is empty/missing.
-    if not lines or sum(1 for ln in lines if _DATE_PATTERN.search(ln)) == 0:
+    blocks = _section_blocks(text, _SECTION_HEADINGS["experience"])
+    dated = [block for block in blocks if any(_DATE_PATTERN.search(line or "") for line in block)]
+    chosen = dated or [block for block in blocks if any(line.strip() for line in block)]
+    if chosen:
+        lines = []
+        for block in chosen:
+            lines.extend(block)
+            lines.append("")
+    else:
+        # Fallback: whole document when no experience heading is present.
         lines = [ln.strip() for ln in (text or "").splitlines()]
+    experience_headings = {_normalize_heading(alias) for alias in _SECTION_HEADINGS["experience"]}
 
     experiences: list[dict[str, Any]] = []
     current_job: dict[str, Any] | None = None
@@ -743,8 +970,16 @@ def _extract_experience(text: str) -> list[dict[str, Any]]:
             i += 1
             continue
 
-        # Skip section headings and Dice profile noise so they never become roles.
-        if _is_section_heading_line(line) or _extra_heading(line) or _DICE_NOISE_RE.search(line):
+        # A later section ends the roles. Skipping the heading and continuing
+        # used to glue skills and education onto the last job.
+        if _is_section_heading_line(line) or _extra_heading(line):
+            norm = _normalize_heading(line)
+            if current_job and not _is_known_heading(norm, experience_headings):
+                _save_current()
+                break
+            i += 1
+            continue
+        if _DICE_NOISE_RE.search(line):
             i += 1
             continue
 
@@ -785,6 +1020,8 @@ def _extract_experience(text: str) -> list[dict[str, Any]]:
                         scanned += 1
                         continue
                     if _DATE_PATTERN.search(candidate) or _is_bullet(candidate):
+                        break
+                    if re.match(r"(?i)^responsibilities\b", candidate):
                         break
                     # Location crumbs like "TX" / "India" / "Irving, TX" — keep as location.
                     if _looks_like_location_only(candidate):
@@ -907,7 +1144,9 @@ def _extract_experience(text: str) -> list[dict[str, Any]]:
                 continue
             clean = _clean_bullet_text(line)
             if clean and not _DATE_PATTERN.search(clean):
-                if _is_bullet(line):
+                if current_bullets and re.fullmatch(r"\([^)]{1,40}\)", clean):
+                    current_bullets[-1] = f"{current_bullets[-1]} {clean}".strip()
+                elif _is_bullet(line):
                     current_bullets.append(clean)
                 elif current_bullets and not clean[:1].isupper():
                     # Soft wrap / continuation of previous bullet.
@@ -1196,6 +1435,7 @@ def _extract_education(text: str) -> list[dict[str, Any]]:
     education: list[dict[str, Any]] = []
     current: dict[str, Any] | None = None
     current_details: list[str] = []
+    pending_school = ""
 
     def _save_current():
         nonlocal current, current_details
@@ -1253,6 +1493,19 @@ def _extract_education(text: str) -> list[dict[str, Any]]:
 
         line_lower = line.lower()
         has_degree = _line_has_degree(line_lower)
+        looks_like_school = bool(
+            re.search(
+                r"(?i)\b(university|college|institute|school|academy)\b",
+                line,
+            )
+        )
+        # "Western Washington University" on the line above "06/1994 - Bachelor..."
+        if looks_like_school and not has_degree and not _DATE_PATTERN.search(line):
+            if current and not current.get("institution"):
+                current["institution"] = _clean_text(line)
+            else:
+                pending_school = _clean_text(line)
+            continue
 
         # Skip non-degree job-like dated lines, but KEEP degree rows that include
         # dates + pipes (e.g. "M.Tech ... | CGPA:9.09/10 Aug 2022—May 2024").
@@ -1263,25 +1516,34 @@ def _extract_education(text: str) -> list[dict[str, Any]]:
             if current:
                 _save_current()
 
-            # Prefer full date ranges on education lines when present.
-            date_match = _DATE_PATTERN.search(line)
-            year = date_match.group(0).strip() if date_match else ""
-            if not year:
-                year_match = year_re.search(line)
-                year = year_match.group(1) if year_match else ""
+            # "06/1994 - Bachelor of Science" — drop the whole token, not only the year.
+            leading_my = re.match(r"^(?P<my>\d{1,2}/\d{4})\b\s*[-–—:]?\s*", line)
+            if leading_my:
+                year = leading_my.group("my")
+                degree_line = line[leading_my.end():].strip()
+            else:
+                degree_line = line
+                date_match = _DATE_PATTERN.search(degree_line)
+                year = date_match.group(0).strip() if date_match else ""
+                if not year:
+                    year_match = year_re.search(degree_line)
+                    year = year_match.group(1) if year_match else ""
             # CGPA on same line: "...|CGPA:9.09/10 Aug 2022—May 2024"
             cgpa = ""
             cgpa_match = re.search(
                 r"(?:cgpa|gpa|percentage)[\s:]*([\d.]+(?:\s*/\s*\d+)?)",
-                line,
+                degree_line,
                 re.IGNORECASE,
             )
             if cgpa_match:
                 cgpa = cgpa_match.group(1).strip()
-            inst_match = inst_re.search(line)
+            inst_match = inst_re.search(degree_line)
             institution = inst_match.group(1) if inst_match else ""
+            if not institution and pending_school:
+                institution = pending_school
+            pending_school = ""
 
-            degree = line
+            degree = degree_line
             if institution:
                 degree = degree.replace(institution, "").strip()
             if year:
@@ -1615,7 +1877,7 @@ def _dedupe(items: list[str]) -> list[str]:
 def _empty_resume_data() -> dict[str, Any]:
     return {
         "name": "", "email": "", "phone": "", "location": "",
-        "linkedin": "", "portfolio": "", "summary": "",
+        "linkedin": "", "portfolio": "", "headline": "", "summary": "",
         "skills": [], "skills_by_category": {}, "experience": [], "education": [],
         "projects": [], "certifications": [], "achievements": [], "languages": [],
         "additional_sections": [],
@@ -1638,7 +1900,7 @@ def parse_resume_detailed(resume_path: str | None, resume_text: str | None = Non
     # Repair jammed PDF text once up front so section extractors see readable lines.
     from app.services.pdf_parser import repair_collapsed_spaces
 
-    resume_text = repair_collapsed_spaces(resume_text)
+    resume_text = _prepare_resume_text(repair_collapsed_spaces(resume_text))
 
     skills_by_category = _extract_skills_by_category(resume_text)
     skills = []
@@ -1646,15 +1908,25 @@ def parse_resume_detailed(resume_path: str | None, resume_text: str | None = Non
         skills.extend(values)
     if not skills:
         skills = _extract_skills(resume_text)
+    inline_languages, inline_skills = _extract_inline_labels(resume_text)
+    if inline_skills:
+        skills = _dedupe([*skills, *inline_skills])
+        if not skills_by_category:
+            skills_by_category = {"Technical Skills": inline_skills}
 
     contact_text = _without_reference_sections(resume_text)
+    name = _extract_name(resume_text)
+    languages = _extract_bullet_list(resume_text, "languages")
+    if any(len(item) > 40 for item in languages):
+        languages = []
     result = {
-        "name": _extract_name(resume_text),
+        "name": name,
         "email": _extract_email(contact_text),
         "phone": _extract_phone(contact_text),
         "location": _extract_location(contact_text),
         "linkedin": _extract_linkedin(contact_text),
         "portfolio": _extract_portfolio(contact_text),
+        "headline": _extract_headline(resume_text, name),
         "summary": _extract_summary(resume_text),
         "skills": _dedupe(skills),
         "skills_by_category": skills_by_category,
@@ -1663,7 +1935,7 @@ def parse_resume_detailed(resume_path: str | None, resume_text: str | None = Non
         "projects": _extract_projects(resume_text),
         "certifications": _extract_bullet_list(resume_text, "certifications"),
         "achievements": _extract_bullet_list(resume_text, "achievements"),
-        "languages": _extract_bullet_list(resume_text, "languages"),
+        "languages": _dedupe([*inline_languages, *languages]),
         "additional_sections": _extract_additional_sections(resume_text),
     }
 

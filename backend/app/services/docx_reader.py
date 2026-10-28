@@ -89,10 +89,15 @@ class _Reader:
 
     def table(self, table: Table, origin: str) -> None:
         seen: set[int] = set()
+        # Hold the elements. id() of a cell element is reused after it is freed,
+        # which made a later merged cell look like a duplicate and dropped its text.
+        pinned: list[Any] = []
         for row in table.rows:
             cells = []
             for cell in row.cells:
-                key = id(cell._tc)
+                element = cell._tc
+                pinned.append(element)
+                key = id(element)
                 if key in seen:
                     continue
                 seen.add(key)
