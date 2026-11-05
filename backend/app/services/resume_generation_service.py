@@ -416,19 +416,24 @@ class ResumeGenerationService:
             }
         else:
             skills_by_category = self._group_skills_for_resume(skills)
-        summary = (
-            detailed_data.get("summary")
-            or detailed_data.get("professional_summary")
-            or pipeline.get("summary")
-            or pipeline.get("professional_summary")
-            or pipeline.get("objective")
-            or self._candidate_attr(candidate, "main_summary")
-            or self._candidate_attr(candidate, "linkedin_summary")
-            or manual_entry.get("additional_info")
-            or manual_entry.get("notes")
-            or self._fallback_summary_from_candidate_fields(candidate, skills)
-            or ""
-        )
+        # A named summary section is copied as written. Profile and opening-prose
+        # fallbacks run only when the resume never names that section.
+        if detailed_data.get("summary_from_section"):
+            summary = detailed_data.get("summary") or ""
+        else:
+            summary = (
+                detailed_data.get("summary")
+                or detailed_data.get("professional_summary")
+                or pipeline.get("summary")
+                or pipeline.get("professional_summary")
+                or pipeline.get("objective")
+                or self._candidate_attr(candidate, "main_summary")
+                or self._candidate_attr(candidate, "linkedin_summary")
+                or manual_entry.get("additional_info")
+                or manual_entry.get("notes")
+                or self._fallback_summary_from_candidate_fields(candidate, skills)
+                or ""
+            )
         languages = merge_field("languages", ["languages", "spoken_languages"])
         candidate_language = self._candidate_attr(candidate, "language")
         if candidate_language:
@@ -1666,6 +1671,16 @@ class ResumeGenerationService:
         def _period(entry: dict[str, Any]) -> str:
             return re.sub(r"[^a-z0-9]+", "", str(entry.get("duration") or entry.get("dates") or "").lower())
 
+        def _same_role_title(left: Any, right: Any) -> bool:
+            """Same job when one title is the other with a project name appended."""
+            a = re.sub(r"\s+", " ", str(left or "").strip().lower())
+            b = re.sub(r"\s+", " ", str(right or "").strip().lower())
+            if not a or not b or a == b:
+                return True
+            a_left = a.split("|", 1)[0].strip()
+            b_left = b.split("|", 1)[0].strip()
+            return a_left == b_left or a.startswith(b) or b.startswith(a)
+
         for item in items:
             if not isinstance(item, dict):
                 continue
@@ -1720,6 +1735,15 @@ class ResumeGenerationService:
 
             if key in index:
                 prev = out[index[key]]
+                if _same_role_title(item.get("title"), prev.get("title")):
+                    if _title_score(item) > _title_score(prev):
+                        prev["title"] = item.get("title")
+                    merged = self._experience_bullet_list(prev)
+                    for bullet in self._experience_bullet_list(item):
+                        if bullet not in merged:
+                            merged.append(bullet)
+                    prev["description"] = merged
+                    continue
                 prev_bullets = _bullet_count(prev)
                 new_bullets = _bullet_count(item)
                 distinct_titles = (
@@ -2963,45 +2987,79 @@ class ResumeGenerationService:
     def _normalize_skill_category(self, value: Any) -> str:
         category = self._clean_inline_text(value).strip(" :")
         low = category.casefold()
+        if not low:
+            return ""
         # Exact-ish aliases first — never let "soft" match inside "software".
         if re.search(r"\bsoft\s*skills?\b", low):
             return "Soft Skills"
         if "software development" in low or re.search(r"\bsoftware\b", low):
             return "Software Development"
-        if "generative" in low or "llm" in low:
+        if "generative" in low or re.search(r"\bllms?\b", low):
             return "Data & AI"
-        mapping = {
+
+        # Generic buckets only. A specific source heading such as
+        # "Cloud Contact Center (CCaaS)" or "Programming & Data" stays as written.
+        token_bucket = {
             "language": "Programming Languages",
+            "languages": "Programming Languages",
             "programming": "Programming Languages",
             "frontend": "Frontend",
-            "front end": "Frontend",
             "backend": "Backend & Frameworks",
-            "back end": "Backend & Frameworks",
             "framework": "Backend & Frameworks",
+            "frameworks": "Backend & Frameworks",
             "database": "Databases",
+            "databases": "Databases",
             "cloud": "Cloud & DevOps",
             "devops": "Cloud & DevOps",
-            "machine learning": "Data & AI",
             "testing": "Testing & QA",
             "qa": "Testing & QA",
             "tool": "Tools & Platforms",
+            "tools": "Tools & Platforms",
             "platform": "Tools & Platforms",
+            "platforms": "Tools & Platforms",
             "architecture": "Architecture & Practices",
             "practice": "Architecture & Practices",
-            "methodolog": "Architecture & Practices",
+            "practices": "Architecture & Practices",
+            "methodology": "Architecture & Practices",
+            "methodologies": "Architecture & Practices",
             "business": "Business & Domain",
             "domain": "Business & Domain",
             "additional": "Additional Skills",
             "other": "Additional Skills",
+            "data": "Data & AI",
+            "ai": "Data & AI",
+            "ml": "Data & AI",
         }
-        # Prefer longer markers first to avoid partial collisions.
-        for marker, normalized in sorted(mapping.items(), key=lambda x: len(x[0]), reverse=True):
-            if marker in low:
-                return normalized
-        # Short tokens that are unsafe as substrings.
-        if re.search(r"(?i)\b(data|ai)\b", low):
-            return "Data & AI"
-        if category and len(category) <= 36:
+        filler = {"and", "or", "of", "the", "skills", "skill", "technologies", "technology", "tech"}
+        working = low
+        buckets: list[str] = []
+        for phrase, bucket in (
+            ("machine learning", "Data & AI"),
+            ("front end", "Frontend"),
+            ("back end", "Backend & Frameworks"),
+        ):
+            if phrase in working:
+                buckets.append(bucket)
+                working = working.replace(phrase, " ")
+
+        tokens = re.findall(r"[a-z0-9+#]+", working)
+        if "front" in tokens and "end" in tokens:
+            tokens = ["frontend" if token == "front" else token for token in tokens if token != "end"]
+        if "back" in tokens and "end" in tokens:
+            tokens = ["backend" if token == "back" else token for token in tokens if token != "end"]
+
+        unknown = False
+        for token in tokens:
+            if token in filler:
+                continue
+            bucket = token_bucket.get(token)
+            if bucket:
+                buckets.append(bucket)
+            else:
+                unknown = True
+        if buckets and not unknown and len(set(buckets)) == 1:
+            return buckets[0]
+        if len(category) <= 60:
             return category
         return "Additional Skills"
 
@@ -3011,7 +3069,7 @@ class ResumeGenerationService:
             return True
         if "@" in low or "http://" in low or "https://" in low:
             return True
-        if len(skill) > 70 or len(skill.split()) > 8:
+        if len(skill) > 100 or len(skill.split()) > 12:
             return True
         if low.endswith(":"):
             return True
@@ -3099,11 +3157,17 @@ class ResumeGenerationService:
         if isinstance(source, str):
             from app.services.detailed_resume_parser import _split_skills_payload
 
-            return [
+            parts = [
                 self._clean_inline_text(part)
                 for part in _split_skills_payload(source)
                 if self._clean_inline_text(part)
             ]
+            # "Python, Java, SQL" is a list. A competency phrase that contains a
+            # comma stays one skill.
+            if len(parts) > 1 and any(len(part.split()) >= 4 for part in parts):
+                whole = self._clean_inline_text(source)
+                return [whole] if whole else []
+            return parts
         return [self._clean_inline_text(source)]
 
     def _extract_skills_from_text(self, resume_text: str) -> list[str]:
@@ -4009,10 +4073,30 @@ class ResumeGenerationService:
                     p.paragraph_format.space_after = Pt(self._theme_space_after())
 
         elif section_type == "skills":
+            from app.services.docx_layout import add_bullet_paragraph, skills_render_as_bullets
+
             if isinstance(content, dict):
                 for category, skill_list in content.items():
                     skills = [str(item) for item in self._as_list(skill_list) if str(item).strip()]
                     if not skills:
+                        continue
+                    if skills_render_as_bullets(str(category), skills):
+                        cat_para = doc.add_paragraph()
+                        cat_para.paragraph_format.space_after = Pt(2)
+                        cat_run = cat_para.add_run(str(category))
+                        cat_run.bold = True
+                        cat_run.font.name = font_family
+                        cat_run.font.size = Pt(body_size)
+                        cat_run.font.color.rgb = self._theme_text()
+                        for skill in skills:
+                            add_bullet_paragraph(
+                                doc,
+                                skill,
+                                font_family=font_family,
+                                body_size=body_size,
+                                color=self._theme_text(),
+                                space_after=1,
+                            )
                         continue
                     cat_para = doc.add_paragraph()
                     cat_para.paragraph_format.space_after = Pt(3)
@@ -4397,10 +4481,18 @@ class ResumeGenerationService:
             return
 
         if section_type == "skills":
+            from app.services.docx_layout import skills_render_as_bullets
+
             if isinstance(content, dict):
                 for category, values in content.items():
                     skills = [str(item) for item in self._as_list(values) if str(item).strip()]
-                    if skills:
+                    if not skills:
+                        continue
+                    if skills_render_as_bullets(str(category), skills):
+                        story.append(paragraph_cls(escape(str(category)), item_title_style))
+                        for skill in skills:
+                            story.append(paragraph_cls(f"- {escape(skill)}", bullet_style))
+                    else:
                         story.append(paragraph_cls(escape(f"{category}: {', '.join(skills)}"), body_style))
             else:
                 skills = [str(item) for item in self._as_list(content) if str(item).strip()]

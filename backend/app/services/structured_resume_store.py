@@ -571,19 +571,6 @@ def _normalize_experience(item: Any) -> dict[str, Any]:
     }
 
 
-_ACTION_VERB_START = re.compile(
-    r"^(?:"
-    r"Architected|Developed|Designed|Implemented|Built|Led|Created|Improved|Optimized|"
-    r"Deployed|Integrated|Managed|Delivered|Engineered|Collaborated|Mentored|Configured|"
-    r"Migrated|Reduced|Increased|Automated|Established|Owned|Supported|Analyzed|Processed|"
-    r"Enabled|Wrote|Maintained|Refactored|Troubleshot|Coordinated|Partnered|Worked|"
-    r"Responsible|Spearheaded|Drove|Executed|Enhanced|Launched|Conducted|Performed|"
-    r"Utilized|Leveraged|Applied|Contributed|Assisted|Presented|Facilitated"
-    r")\b",
-    re.I,
-)
-
-
 def expand_to_bullets(values: list[Any], *, max_bullets: int | None = None) -> list[str]:
     """
     Turn paragraph streams into discrete professional bullets.
@@ -610,25 +597,9 @@ def expand_to_bullets(values: list[Any], *, max_bullets: int | None = None) -> l
             chunk = re.sub(r"\s+", " ", chunk).strip()
             if not chunk:
                 continue
-            sentence_count = len(re.findall(r"[.!?](?:\s+|$)", chunk))
-            if len(chunk) >= 180 and sentence_count >= 2:
-                sentences = re.split(r"(?<=[.!?])\s+(?=[A-Z\"'])", chunk)
-                buf: list[str] = []
-                for sentence in sentences:
-                    s = sentence.strip()
-                    if not s:
-                        continue
-                    if buf and _ACTION_VERB_START.match(s):
-                        joined = " ".join(buf).strip()
-                        if joined:
-                            out.append(joined)
-                        buf = [s]
-                    else:
-                        buf.append(s)
-                if buf:
-                    out.append(" ".join(buf).strip())
-            else:
-                out.append(chunk)
+            # A source achievement stays one bullet. Splitting its sentences
+            # makes the generated resume longer than the original.
+            out.append(chunk)
 
     # Deduplicate while preserving order.
     seen: set[str] = set()

@@ -430,6 +430,18 @@ def _looks_like_bullet_as_title(title: str) -> bool:
     text = str(title or "").strip()
     if not text:
         return False
+    # "Role Title | Project Name" is one job title, not an achievement sentence.
+    if "|" in text:
+        left = text.split("|", 1)[0].strip()
+        if (
+            re.search(
+                r"(?i)\b(engineer|developer|analyst|manager|architect|consultant|lead|director|"
+                r"specialist|programmer|admin|administrator|executive)\b",
+                left,
+            )
+            and len(left.split()) <= 10
+        ):
+            return False
     words = text.split()
     if text[:1].islower():
         return True
@@ -562,7 +574,7 @@ def _repair_and_check_skills(
                 skills = []
                 for v in vals or []:
                     name = restore_tech_names(normalize_skill_token(str(v)))
-                    if not name or len(name) > 80 or len(name.split()) > 12:
+                    if not name or len(name) > 120 or len(name.split()) > 14:
                         continue
                     if re.search(r"(?i)\b(responsible for|architected and|developed a)\b", name):
                         continue

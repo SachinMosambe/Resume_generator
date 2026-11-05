@@ -123,6 +123,22 @@ def split_left_right_meta(text: str) -> tuple[str, str]:
     return raw, ""
 
 
+def skills_render_as_bullets(category: str, skills: list[str]) -> bool:
+    """Phrase lists such as Core Competencies stay one bullet each.
+
+    Short tool groups stay on a single "Category: a, b, c" line.
+    """
+    items = [str(skill).strip() for skill in skills if str(skill).strip()]
+    if len(items) < 2:
+        return False
+    if "competenc" in str(category or "").casefold():
+        return True
+    if len(items) < 4:
+        return False
+    long_items = sum(1 for skill in items if len(skill.split()) >= 5)
+    return long_items >= (len(items) + 1) // 2
+
+
 def add_bullet_paragraph(
     doc: Any,
     text: str,
@@ -244,6 +260,36 @@ def add_left_right_line(
     return line
 
 
+def _rejoin_wrapped_summary(text: str) -> str:
+    """Join line wraps. A new sentence starts only after .!? and a capital letter."""
+    parts: list[str] = []
+    buf = ""
+    for raw in re.split(r"\r?\n", text or ""):
+        line = raw.strip()
+        if not line:
+            if buf:
+                parts.append(buf)
+                buf = ""
+            continue
+        if not buf:
+            buf = line
+            continue
+        if re.search(r"[.!?]$", buf) and line[:1].isupper():
+            parts.append(buf)
+            buf = line
+        else:
+            # A wrapped line sometimes repeats its last word on the next line.
+            buf_words = buf.split()
+            line_words = line.split()
+            if buf_words and line_words and buf_words[-1].lower() == line_words[0].lower():
+                line = " ".join(line_words[1:])
+            if line:
+                buf = f"{buf} {line}".strip()
+    if buf:
+        parts.append(buf)
+    return "\n".join(parts)
+
+
 def summary_to_bullets(value: Any) -> list[str]:
     """Turn summary text/list into bullet lines (never one mashed paragraph)."""
     import ast
@@ -273,24 +319,25 @@ def summary_to_bullets(value: Any) -> list[str]:
             else:
                 raw_parts.append(str(item or "").strip())
     else:
-        text = str(value or "").strip()
+        text = _rejoin_wrapped_summary(str(value or "").strip())
         if not text:
             return []
-        # Prefer explicit bullets / newlines; else split on sentence boundaries.
-        if re.search(r"[•\n\r]|(?:^|\s)[-–—]\s+", text):
-            raw_parts = re.split(r"(?:\r?\n)+|[•]+|(?:^|\s)[-–—]\s+", text)
+        # Bullets stay separate. Wrapped prose is split on sentences, not hyphens.
+        # "U.S. Green" is an initial, not a sentence boundary.
+        if re.search(r"[•]|(?:^|\n)\s*[-–—]\s+\S", text):
+            raw_parts = re.split(r"(?:\r?\n)+|[•]+|(?:^|\n)\s*[-–—]\s+", text)
+        elif len(text) < 160 and text.count(".") <= 1:
+            raw_parts = [text]
         else:
-            # Keep short one-liners intact; split long prose into sentences.
-            if len(text) < 160 and text.count(".") <= 1:
-                raw_parts = [text]
-            else:
-                raw_parts = re.split(r"(?<=[.!?])\s+(?=[A-Z(])", text)
+            raw_parts = re.split(r"(?<![A-Z])(?<=[.!?])\s+(?=[A-Z(])", text)
 
     bullets: list[str] = []
     seen: set[str] = set()
     for part in raw_parts:
         clean = re.sub(r"\s+", " ", str(part or "").strip(" \t•-–—[]'\""))
         if len(clean) < 12:
+            if bullets and clean:
+                bullets[-1] = f"{bullets[-1]} {clean}".strip()
             continue
         # Skip list-repr debris.
         if clean.startswith("[") or clean.endswith("]") or clean.count("'") >= 2 and len(clean) < 40:

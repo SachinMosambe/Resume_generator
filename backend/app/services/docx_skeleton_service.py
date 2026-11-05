@@ -418,10 +418,31 @@ def _add_plain_or_split_line(
 def _add_skills(doc: Any, content: Any, font_family: str, body_size: float, color: Any) -> None:
     from docx.shared import Pt
 
+    from app.services.docx_layout import add_bullet_paragraph, skills_render_as_bullets
+
     if isinstance(content, dict):
         for category, skill_list in content.items():
             skills = [str(s).strip() for s in (skill_list or []) if str(s).strip()]
             if not skills:
+                continue
+            if skills_render_as_bullets(str(category), skills):
+                p = doc.add_paragraph()
+                cat = p.add_run(str(category))
+                cat.bold = True
+                cat.italic = False
+                cat.underline = False
+                cat.font.name = font_family
+                cat.font.size = Pt(body_size)
+                cat.font.color.rgb = color
+                for skill in skills:
+                    add_bullet_paragraph(
+                        doc,
+                        skill,
+                        font_family=font_family,
+                        body_size=body_size,
+                        color=color,
+                        space_after=1,
+                    )
                 continue
             p = doc.add_paragraph()
             cat = p.add_run(f"{category}: ")
