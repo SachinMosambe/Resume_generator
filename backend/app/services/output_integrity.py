@@ -42,6 +42,9 @@ def _docx_text(data: bytes) -> str:
     for section in doc.sections:
         for part in (section.header, section.footer):
             parts.extend(p.text for p in part.paragraphs)
+            for table in part.tables:
+                for row in table.rows:
+                    parts.extend(c.text for c in row.cells)
     return _norm("\n".join(parts))
 
 
@@ -67,6 +70,41 @@ def _check(name: str, expected: list[Any], hay: str, checks: dict, warnings: lis
         warnings.append(f"{len(missing)} of {len(items)} {label} from the source were not found in the output.")
 
 
+_SKIP_SOURCE_LINE = re.compile(
+    r"(?i)(@|https?://|www\.|linkedin|\d{3}[-.\s)]+\d{3}[-.\s]\d{4}|references available|"
+    r"preferred|desired work|willing to relocate|work authorization|employment type|profile source|"
+    r"profile downloaded|total experience|visa sponsorship|authorized to work|contract\s*-\s*corp|"
+    r"gap\s*period|on-site or hybrid|contract to hire)"
+)
+_SOURCE_DATE = re.compile(
+    r"(?i)\b(?:jan|feb|mar|apr|may|jun|jul|aug|sep|oct|nov|dec)[a-z]*\.?\s*\d{4}|\b\d{1,2}/\d{4}\b|\b(?:19|20)\d{2}\s*[-–—]"
+)
+
+
+def _source_lines_missing(source_text: str, hay: str, *, min_words: int = 6, min_share: float = 0.3) -> int:
+    """Count substantial source lines whose wording is mostly absent from the output.
+
+    The field checks above compare parsed data with the document, so a line the parser
+    never read cannot fail them. This compares the source text itself. Lines that are
+    expected to change shape (contact details, dated role headers, profile-sheet labels)
+    are skipped.
+    """
+    padded = f" {hay} "
+    missing = 0
+    for raw in (source_text or "").splitlines():
+        line = raw.strip()
+        if not line or _SKIP_SOURCE_LINE.search(line) or _SOURCE_DATE.search(line):
+            continue
+        words = _norm(line).split()
+        if len(words) < min_words:
+            continue
+        grams = [" ".join(words[i : i + 4]) for i in range(len(words) - 3)]
+        found = sum(1 for g in grams if f" {g} " in padded)
+        if found < min_share * len(grams):
+            missing += 1
+    return missing
+
+
 def check_output_integrity(
     store: dict,
     docx_bytes: bytes,
@@ -75,6 +113,7 @@ def check_output_integrity(
     allowed_text: str = "",
     suppressed_sections: list[str] | None = None,
     extraction_meta: dict | None = None,
+    source_text: str = "",
 ) -> IntegrityReport:
     try:
         hay = _docx_text(docx_bytes)
@@ -135,6 +174,14 @@ def check_output_integrity(
         )
     if ocr:
         warnings.append(f"{len(ocr)} page(s) were read with OCR; check names, dates, and numbers.")
+
+    if source_text:
+        lost = _source_lines_missing(source_text, hay)
+        checks["source_lines"] = {"ok": not lost, "expected": 0, "found": lost}
+        if lost:
+            warnings.append(
+                f"{lost} line(s) of the source resume were not found in the output; compare before sending."
+            )
 
     for title in suppressed:
         warnings.append(f"Section '{title}' was omitted by client policy.")

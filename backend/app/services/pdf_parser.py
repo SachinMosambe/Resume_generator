@@ -144,6 +144,82 @@ def _extract_html(path: str) -> str:
     return parser.text()
 
 
+_LIGATURES = {
+    "ﬀ": "ff", "ﬁ": "fi", "ﬂ": "fl", "ﬃ": "ffi", "ﬄ": "ffl",
+    "ﬅ": "st", "ﬆ": "st",
+}
+# Short prefixes that are written hyphenated on purpose ("co-founder", "re-engineered").
+_KEEP_HYPHEN_LEFT = {"co", "non", "self", "cross", "anti"}
+# Standalone words that commonly follow a hyphen in a compound ("data-driven", "real-time").
+_COMPOUND_RIGHT = {
+    "based", "driven", "time", "end", "level", "scale", "facing", "oriented", "focused", "making",
+    "side", "first", "native", "powered", "assisted", "enabled", "aware", "ready", "free", "wide",
+    "term", "source", "house", "site", "related", "specific", "sized", "owned", "led", "centric",
+    "functional", "critical", "intensive", "friendly", "grade", "class", "tier", "party", "stack",
+    "commerce", "mail", "learning", "service", "tracking", "monitoring", "management", "processing",
+    "deployment", "placement", "calculation", "detection", "building", "solving", "sharing",
+    "testing", "planning", "reporting", "handling", "generation", "integration", "development",
+    "engineering", "augmented", "tuning", "trainer", "live", "prem", "premise", "premises",
+    "shift", "left", "right", "loop", "touch", "call", "art", "fly", "demand", "boarding",
+}
+
+
+def _join_wrapped_hyphen(left: str, cont: str, vocab: set[str], hyphenated: set[str]) -> bool:
+    """True when 'left-' at a line end plus 'cont' on the next line is one word split by wrapping."""
+    low_left, low_cont = left.lower(), cont.lower()
+    if f"{low_left}-{low_cont}" in hyphenated:
+        return False  # the same compound appears hyphenated mid-line elsewhere
+    if low_left + low_cont in vocab:
+        return True
+    if low_left in _KEEP_HYPHEN_LEFT or low_cont in _COMPOUND_RIGHT:
+        return False
+    if len(cont) <= 4 or low_cont in _HYPHEN_FRAGMENT:
+        return True
+    # Both halves are words used elsewhere in the document: a real compound.
+    if low_left in vocab and low_cont in vocab:
+        return False
+    return True
+
+
+def finalize_pdf_text(text: str) -> str:
+    """Normalize ligatures and rejoin words that PDF line wrapping split with a hyphen.
+
+    Only PDF text gets this treatment: DOCX/DOC text is never wrapped by the extractor,
+    so a hyphen there is always the author's.
+    """
+    if not text:
+        return text or ""
+    for lig, repl in _LIGATURES.items():
+        text = text.replace(lig, repl)
+    text = text.replace("­\n", "").replace("­", "")
+    lines = text.splitlines()
+    # Vocabulary from text that is not at a wrap point.
+    body = re.sub(r"[A-Za-z]+-\s*\n\s*[a-z][A-Za-z]*", " ", text)
+    vocab = {w.lower() for w in re.findall(r"[A-Za-z]+", body)}
+    hyphenated = {m.group(0).lower() for m in re.finditer(r"[A-Za-z]+-[A-Za-z]+", body)}
+    output: list[str] = []
+    index = 0
+    while index < len(lines):
+        line = lines[index]
+        stripped = line.rstrip()
+        match = re.search(r"([A-Za-z]{2,})-$", stripped)
+        if match and index + 1 < len(lines):
+            nxt = lines[index + 1].strip()
+            cont_match = re.match(r"([a-z][A-Za-z]*)", nxt)
+            if cont_match:
+                if _join_wrapped_hyphen(match.group(1), cont_match.group(1), vocab, hyphenated):
+                    lines[index + 1] = stripped[:-1] + nxt
+                else:
+                    lines[index + 1] = stripped + nxt
+                index += 1  # the merged line may itself end with a wrap hyphen
+                continue
+        output.append(line)
+        index += 1
+    # Drop lines that are a lone icon-font glyph (e.g. a private-use or Latin-1 symbol).
+    output = [ln for ln in output if not re.fullmatch(r"\s*[À-ÿ-]\s*", ln)]
+    return "\n".join(output)
+
+
 def _new_meta() -> dict:
     return {"ocr_pages": [], "ocr_missing_pages": []}
 
@@ -184,6 +260,7 @@ def extract_text_from_document(
                     text = _extract_pdfplumber(path, max_pages=max_pdf_pages).strip()
             else:
                 text = _extract_pdf(path, meta).strip()
+            text = finalize_pdf_text(text)
         elif ext == ".docx":
             text = _extract_docx(path, max_chars=max_chars if lightweight else None).strip()
         elif ext == ".doc":

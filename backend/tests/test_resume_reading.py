@@ -218,6 +218,42 @@ B.S. Computer Science, State University, 2015
     assert "well-defined" in bullets
 
 
+def test_author_compounds_keep_their_hyphen():
+    text = """
+Jordan Rivera
+Experience
+Engineer | Acme Jan 2020 - Dec 2022
+• Built dashboards that support data-driven decision-making for the finance team.
+• Provided post-deployment support and LLM fine-tuning for a patient-monitoring app.
+• Automated premium-calculation and records-management workflows.
+Education
+B.S. Computer Science, State University, 2015
+"""
+    data = parse_resume_detailed(None, text)
+    bullets = " ".join(data["experience"][0]["description"])
+    for compound in ("decision-making", "post-deployment", "fine-tuning", "patient-monitoring",
+                     "premium-calculation", "records-management"):
+        assert compound in bullets
+
+
+def test_pdf_wrap_hyphens_rejoined_with_document_vocabulary():
+    from app.services.pdf_parser import finalize_pdf_text
+
+    text = (
+        "• Internal sales tool for sector/solution/project informa-\n"
+        "tion and functionality includ-\n"
+        "ing search. Implemented the information view, including\n"
+        "• Supports data-driven decision-\n"
+        "making with oﬄine-sync and work-\n"
+        "ﬂows\n"
+    )
+    out = finalize_pdf_text(text)
+    assert "information and functionality including search" in out
+    assert "decision-making" in out
+    assert "offline-sync" in out
+    assert "workflows" in out
+
+
 def test_label_value_cover_is_read_by_row(tmp_path):
     import pymupdf as fitz
 
@@ -431,9 +467,59 @@ Duration: Nov 2022 – Present
     assert data["experience"][0]["company"].startswith("CVS")
 
 
-def test_specific_skill_categories_keep_their_source_names():
+def test_skills_block_stops_at_unlisted_heading_but_keeps_acronym_wraps():
+    text = """
+Jordan Rivera
+KEY STRONG SUITS
+Cloud Platforms | Amazon Web Services (AWS) | Microsoft Azure | GCP
+Frameworks Python, PyTorch, Pinecone (Vector DB),
+LSTM
+DevOps Jenkins, Git, Docker
+DELIVERY & EXECUTION
+ACME CORP \tOctober 2023 - Present
+Senior Engineer
+• Contributed to the streamlining of deployment pipelines.
+"""
+    data = parse_resume_detailed(None, text)
+    groups = data["skills_by_category"]
+    assert groups["Cloud Platforms"] == ["Amazon Web Services (AWS)", "Microsoft Azure", "GCP"]
+    assert "LSTM" in groups["Frameworks"]
+    assert groups["DevOps"] == ["Jenkins", "Git", "Docker"]
+    flat = " ".join(s for values in groups.values() for s in values)
+    assert "streamlining" not in flat and "ACME" not in flat
+
+
+def test_bullet_with_year_range_is_kept():
+    text = """
+Jordan Rivera
+Experience
+Acme Library  January 2011 – October 2013
+Database Architect
+• Migrated an organization-critical SQL Server 2008 to 2012, preserving archives
+• Engineered SQL Server 2016/2019 content-store deployments
+Education
+B.S. Computer Science, State University, 2010
+"""
+    bullets = " ".join(parse_resume_detailed(None, text)["experience"][0]["description"])
+    assert "SQL Server 2008 to 2012" in bullets
+    assert "2016/2019" in bullets
+
+
+def test_faithful_mode_keeps_every_source_skill_category():
     from app.services.resume_generation_service import ResumeGenerationService
 
+    service = ResumeGenerationService()
+    grouped = service._clean_skill_groups(
+        {"ML & AI": ["RAG"], "Cloud": ["AWS"], "Data Eng.": ["SQL"], "DevOps": ["Docker"]}
+    )
+    assert list(grouped) == ["ML & AI", "Cloud", "Data Eng.", "DevOps"]
+
+
+def test_specific_skill_categories_keep_their_source_names(monkeypatch):
+    from app.core.config import settings
+    from app.services.resume_generation_service import ResumeGenerationService
+
+    monkeypatch.setattr(settings, "RESUME_OUTPUT_MODE", "condensed")
     service = ResumeGenerationService()
     assert service._normalize_skill_category("Cloud") == "Cloud & DevOps"
     assert service._normalize_skill_category("Programming") == "Programming Languages"
@@ -632,3 +718,42 @@ References available upon request. Please send an email – thanks!
     degrees = " ".join(row.get("degree") or "" for row in data["education"])
     assert "()" not in degrees
     assert "•" not in degrees
+
+
+def test_headline_with_separators_and_not_from_experience():
+    text = """
+Brett Example | brett@example.com
+Senior DBA & Cloud Infrastructure Engineer | High-Availability Systems Expert
+PROFESSIONAL SUMMARY
+A world-class DBA with over 15 years of experience in architecting and administering complex database systems.
+"""
+    assert parse_resume_detailed(None, text)["headline"].startswith("Senior DBA & Cloud")
+
+    no_header = """
+DAVID EXAMPLE
+I am a planning professional with over 30 years of experience with strategic and financial planning systems.
+Acme Bus (Chicago, IL) (Mar 2014 – Mar 2015)
+Oracle Hyperion Planning Project Manager and Functional Lead
+• Implemented Oracle Hyperion Planning
+"""
+    assert parse_resume_detailed(None, no_header)["headline"] == ""
+
+
+def test_environment_line_above_next_role_is_kept():
+    text = """
+Jordan Rivera
+Experience
+Acme Corp, Plano, TX (Aug 2023 to April 2026) | Java Engineer | CAMP (Customer Platforms)
+• Built onboarding services.
+Environment: Java 17, Spring Boot, Kafka
+Globex, Remote (Aug 2021 to Aug 2023)
+Backend Developer
+• Built eligibility services.
+Environment: Java 11, Angular
+Education
+B.S. Computer Science, State University, 2015
+"""
+    roles = parse_resume_detailed(None, text)["experience"]
+    assert roles[0]["technologies"] == ["Java 17", "Spring Boot", "Kafka"]
+    assert roles[0]["project"] == "CAMP (Customer Platforms)"
+    assert roles[1]["technologies"] == ["Java 11", "Angular"]

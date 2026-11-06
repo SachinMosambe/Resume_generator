@@ -561,7 +561,7 @@ def _normalize_experience(item: Any) -> dict[str, Any]:
         if name.lower().startswith("environment"):
             continue
         clean_techs.append(name)
-    return {
+    normalized = {
         "title": title,
         "company": company,
         "location": location,
@@ -569,6 +569,11 @@ def _normalize_experience(item: Any) -> dict[str, Any]:
         "description": expand_to_bullets(_as_list(desc)),
         "technologies": clean_techs,
     }
+    # Engagement / client project named on the role header ("| CAMP (...)").
+    project = str(item.get("project") or item.get("project_name") or "").strip()
+    if project:
+        normalized["project"] = project
+    return normalized
 
 
 def expand_to_bullets(values: list[Any], *, max_bullets: int | None = None) -> list[str]:

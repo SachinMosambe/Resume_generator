@@ -530,6 +530,10 @@ def _add_record(
 
     if item.get("degree") and not item.get("company"):
         title, dates = clean_education_title_dates(title, dates)
+        # Honours / licences / coursework written under a degree.
+        if not bullets and item.get("details"):
+            details = item.get("details")
+            bullets = [details] if isinstance(details, str) else list(details)
 
     # Prefer explicit date/url fields; else peel from company/title strings.
     primary = company or title
@@ -631,3 +635,19 @@ def _add_record(
             )
         else:
             _add_bullet(doc, text, font_family, body_size, color_text)
+
+    # The role's "Environment: Java, Spring Boot, ..." line from the source resume.
+    techs = [str(t).strip() for t in (item.get("technologies") or []) if str(t).strip()]
+    if techs and not item.get("degree") and (item.get("title") or item.get("company")):
+        env_p = doc.add_paragraph()
+        env_p.paragraph_format.space_before = Pt(1)
+        env_p.paragraph_format.space_after = Pt(4)
+        label = env_p.add_run("Environment: ")
+        label.bold = True
+        label.font.name = font_family
+        label.font.size = Pt(body_size)
+        label.font.color.rgb = color_text
+        value = env_p.add_run(", ".join(techs))
+        value.font.name = font_family
+        value.font.size = Pt(body_size)
+        value.font.color.rgb = color_text

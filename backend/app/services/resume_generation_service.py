@@ -117,6 +117,7 @@ class ResumeGenerationService:
                 allowed_text="\n".join([raw, *branding, *(document.get("company_footer_lines") or [])]),
                 suppressed_sections=list(document.get("suppressed_sections") or []),
                 extraction_meta=(candidate.extracted_data or {}).get("extraction_meta"),
+                source_text=raw,
             )
         except Exception as exc:
             logger.warning("integrity_check_failed", error_type=type(exc).__name__)
@@ -2989,6 +2990,10 @@ class ResumeGenerationService:
         low = category.casefold()
         if not low:
             return ""
+        # Faithful mode keeps the candidate's own category labels ("ML & AI", "Data Eng.",
+        # "Cloud Platforms"). Renaming them into generic buckets also merged separate rows.
+        if settings.faithful_mode and len(category) <= 60:
+            return category
         # Exact-ish aliases first — never let "soft" match inside "software".
         if re.search(r"\bsoft\s*skills?\b", low):
             return "Soft Skills"
@@ -4262,6 +4267,18 @@ class ResumeGenerationService:
             gpa_run.font.name = font_family
             gpa_run.font.size = Pt(body_size)
 
+        # Honours, coursework, licences written under the degree are candidate facts too.
+        shown = " ".join([degree, institution, year, str(item.get("cgpa") or "")]).casefold()
+        for detail in self._as_list(item.get("details")):
+            text = self._clean_inline_text(detail)
+            if not text or text.casefold() in shown:
+                continue
+            detail_line = doc.add_paragraph(style="List Bullet")
+            detail_line.paragraph_format.space_after = Pt(1)
+            detail_run = detail_line.add_run(text)
+            detail_run.font.name = font_family
+            detail_run.font.size = Pt(body_size)
+
     def _add_docx_record(
         self,
         doc: Any,
@@ -4462,6 +4479,23 @@ class ResumeGenerationService:
                         bullet_p.paragraph_format.first_line_indent = Inches(-0.15)
                     except Exception:
                         pass
+
+        # The role's "Environment: Java, Spring Boot, ..." line from the source resume.
+        techs = [self._clean_inline_text(t) for t in self._as_list(item.get("technologies"))]
+        techs = [t for t in techs if t]
+        if techs and (item.get("title") or item.get("company")):
+            env_p = doc.add_paragraph()
+            env_p.paragraph_format.space_before = Pt(1)
+            env_p.paragraph_format.space_after = Pt(4)
+            label = env_p.add_run("Environment: ")
+            label.bold = True
+            label.font.name = font_family
+            label.font.size = Pt(body_size)
+            label.font.color.rgb = self._theme_text()
+            value = env_p.add_run(", ".join(techs))
+            value.font.name = font_family
+            value.font.size = Pt(body_size)
+            value.font.color.rgb = self._theme_text()
 
     def _append_section(
         self,

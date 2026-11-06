@@ -128,3 +128,11 @@ def test_api_returns_review_headers_visible_to_browser(fixtures, tmp_path, monke
 
 def test_unreadable_docx_fails():
     assert check_output_integrity(STORE, b"not a docx").status == "failed"
+
+
+def test_source_line_missing_from_output_needs_review():
+    source = "\n".join([*FULL, "Led migration of the ledger platform to a new event-driven architecture design"])
+    report = check_output_integrity(STORE, _docx(*FULL), source_text=source)
+    assert report.status == "needs_review"
+    assert report.checks["source_lines"]["found"] == 1
+    assert check_output_integrity(STORE, _docx(*FULL), source_text="\n".join(FULL)).status == "passed"
