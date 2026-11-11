@@ -170,6 +170,66 @@ def test_gate_math_reports_numerator_denominator_and_ids(runner):
     assert runner.golden_exit_code(list(gates.values()), 0) == 1
 
 
+def test_unassigned_bullets_missing_from_docx_and_incorrectly_passed_fail_gate(runner):
+    manifest = json.loads(MANIFEST.read_text(encoding="utf-8"))
+    fixture = next(f for f in manifest["fixtures"] if f["id"] == "bullet_only_experience")
+    preserved = list(fixture["expected_bullet_substrings"])
+    missing = runner.golden_expectation_failures(fixture, fixture["expected_name"], preserved)
+
+    assert missing == [f"bullet:{bullet}" for bullet in preserved]
+
+    result = {
+        "id": fixture["id"],
+        "runs": {
+            "aptino": {
+                "status": "passed",
+                "expectation_failures": missing,
+                "style_failures": None,
+            }
+        },
+        "parse": {
+            "roles": 0,
+            "bad_name": False,
+            "annotated_titled_roles": 0,
+            "untitled_source_titled_roles": [],
+        },
+    }
+    gates = {
+        gate["gate"]: gate
+        for gate in runner.compute_golden_gates(manifest, [result], {fixture["id"]: fixture})
+    }
+    assert gates["passed_pct"]["met"] is False
+    assert gates["silent_omission_pct"]["met"] is False
+    assert runner.golden_exit_code(list(gates.values()), 1) == 1
+
+
+def test_unassigned_bullet_fixture_requires_needs_review_even_when_rendered(runner):
+    manifest = json.loads(MANIFEST.read_text(encoding="utf-8"))
+    fixture = next(f for f in manifest["fixtures"] if f["id"] == "bullet_only_experience")
+    result = {
+        "id": fixture["id"],
+        "runs": {
+            "aptino": {
+                "status": "passed",
+                "expectation_failures": [],
+                "style_failures": None,
+            }
+        },
+        "parse": {
+            "roles": 0,
+            "bad_name": False,
+            "annotated_titled_roles": 0,
+            "untitled_source_titled_roles": [],
+        },
+    }
+    gates = {
+        gate["gate"]: gate
+        for gate in runner.compute_golden_gates(manifest, [result], {fixture["id"]: fixture})
+    }
+    assert gates["passed_pct"]["met"] is False
+    assert runner.golden_exit_code(list(gates.values()), 1) == 1
+
+
 def test_numeric_level_suffix_stays_in_the_title():
     """Regression found by the golden gate: 'Engineer II | dates' parsed as title 'Engineer', company 'II'."""
     from app.services.detailed_resume_parser import parse_resume_detailed

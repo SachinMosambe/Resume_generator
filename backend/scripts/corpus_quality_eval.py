@@ -616,12 +616,10 @@ def _contains(haystack: str, needle: str) -> bool:
 def golden_expectation_failures(fixture: dict, out_txt: str, preserved: list[str] | None = None) -> list[str]:
     """Material content the manifest says must survive into the rendered resume.
 
-    ``preserved`` is parser-kept text that is deliberately not rendered as a job (unassigned
-    bullets). It only counts for fixtures that declare ``allow_unassigned_bullets``.
+    ``preserved`` is retained for call compatibility, but parser-kept text does not count:
+    omission checks measure only content actually rendered in the DOCX.
     """
     hay = norm(out_txt)
-    if fixture.get("allow_unassigned_bullets") and preserved:
-        hay = f"{hay} {norm(' '.join(preserved))}"
     missing: list[str] = []
     for role in fixture.get("expected_roles") or []:
         company = role.get("company") or ""
@@ -759,8 +757,10 @@ def compute_golden_gates(manifest: dict, results: list[dict], fixtures_by_id: di
     parsed = [(r["id"], r["parse"]) for r in results if r.get("parse")]
 
     def run_ok(fid: str, run: dict) -> bool:
-        expected = fixtures_by_id[fid].get("expected_status", "passed")
-        return run["status"] in GOLDEN_STATUS_OK.get(expected, {expected}) and not run["expectation_failures"]
+        fixture = fixtures_by_id[fid]
+        expected = fixture.get("expected_status", "passed")
+        accepted = {expected} if fixture.get("allow_unassigned_bullets") else GOLDEN_STATUS_OK.get(expected, {expected})
+        return run["status"] in accepted and not run["expectation_failures"]
 
     # passed_pct / failed_pct: every scored valid input x format stays in the denominator.
     bad_runs = [f"{fid}@{fmt}" for fid, fmt, run in runs if not run_ok(fid, run)]
