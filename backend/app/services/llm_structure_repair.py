@@ -25,9 +25,13 @@ from app.services.source_evidence import detect_employment_evidence
 # client(system_prompt, user_prompt) -> parsed JSON dict (or raw JSON string)
 RepairClient = Callable[[str, str], Any]
 
-ELIGIBILITY_CONFIDENCE = 0.55
+ELIGIBILITY_CONFIDENCE = 0.70
 MAX_SOURCE_CHARS = 48000
 _MIN_FACT_CHARS = 2
+# company / title: a single-token value must be at least this long (rejects 1-2 char junk).
+_MIN_SINGLE_TOKEN_CHARS = 3
+# Bullets with at least this many words get no partial credit (see _bullet_grounded).
+_LONG_BULLET_WORDS = 6
 
 
 class _RepairRole(BaseModel):
@@ -68,11 +72,19 @@ def is_repair_eligible(source_text: str, parsed: dict) -> bool:
         confidence = score_parse(parsed, source_text)["confidence"]
     if float(confidence) < ELIGIBILITY_CONFIDENCE:
         return True
+    reasons = meta.get("reasons")
+    if reasons is None:
+        reasons = score_parse(parsed, source_text)["reasons"]
+    reasons = set(reasons or [])
+    # Targeted weakness signals; each still needs the matching work evidence / roles.
+    if "expected_experience_missing" in reasons and evidence.has_work_history and not roles:
+        return True
+    if "ambiguous_role_assignment" in reasons and evidence.has_work_history:
+        return True
+    if "role_identity_garbled" in reasons and roles:
+        return True
     if roles:
         empty = sum(1 for r in roles if not str(r.get("title") or "").strip())
-        reasons = meta.get("reasons")
-        if reasons is None:
-            reasons = score_parse(parsed, source_text)["reasons"]
         if empty / len(roles) >= 0.5 and "source_backed_titles_unresolved" in reasons:
             return True
     return False
@@ -115,10 +127,44 @@ def _duration_in_source(duration: str, source_word_list: list[str]) -> bool:
     words = _words(duration)
     if not words:
         return False
+    return _contiguous_run(words, source_word_list)
+
+
+def _contiguous_run(words: list[str], source_word_list: list[str]) -> bool:
+    """True when ``words`` appears as one contiguous run of tokens in the source."""
     n = len(words)
+    if n == 0:
+        return False
+    first = words[0]
     return any(
-        source_word_list[i : i + n] == words for i in range(len(source_word_list) - n + 1)
+        source_word_list[i] == first and source_word_list[i : i + n] == words
+        for i in range(len(source_word_list) - n + 1)
     )
+
+
+def _identity_field_in_source(
+    value: str, source_norm: str, source_word_list: list[str]
+) -> bool:
+    """Company / title check: contiguous word match; no 1-2 char single-token junk."""
+    words = _words(value)
+    if not words:
+        return False
+    if len(words) >= 2:
+        return _contiguous_run(words, source_word_list)
+    return len(words[0]) >= _MIN_SINGLE_TOKEN_CHARS and _norm(value) in source_norm
+
+
+def _bullet_grounded(bullet: str, source_norm: str) -> bool:
+    """A bullet must appear whole in the source (reflow/punctuation agnostic).
+
+    There is deliberately no partial credit: a bullet that merely shares a few words
+    (or a long fragment) with the source is a paraphrase, not a copy. For bullets of
+    ``_LONG_BULLET_WORDS``+ words the full ``_norm(bullet)`` must be in the source; a
+    word-run covering most of the bullet is NOT accepted because the remainder would be
+    unverified text.
+    """
+    key = _norm(bullet)
+    return len(key) >= _MIN_FACT_CHARS and key in source_norm
 
 
 _BULLET_LINE_RE = re.compile(r"^\s*[•\u2022\u25cf\u25aa\u25e6\u2023\u00b7\-\*\u2013\u2014\u25a0]\s*")
@@ -230,6 +276,10 @@ def _validate_repair(
             key = _norm(value)
             if len(key) < _MIN_FACT_CHARS or key not in source_norm:
                 return None, f"{label}_not_in_source"
+            if label in ("company", "title") and not _identity_field_in_source(
+                value, source_norm, source_word_list
+            ):
+                return None, f"{label}_not_in_source"
         if not _duration_in_source(role.duration, source_word_list):
             return None, "duration_not_in_source"
         anchor_key = _norm(company or title)
@@ -256,7 +306,7 @@ def _validate_repair(
             key = _norm(bullet)
             if not key:
                 continue
-            if len(key) < _MIN_FACT_CHARS:
+            if not _bullet_grounded(bullet, source_norm):
                 return None, "bullet_not_in_source"
             hits = _positions(source_norm, key)
             if not hits:
@@ -320,10 +370,13 @@ def _merge_roles(roles: list[_RepairRole], old_roles: list[dict]) -> list[dict[s
 
 _SYSTEM_PROMPT = (
     "You repair the STRUCTURE of the work-experience section of a resume. "
-    "Copy text exactly as written in the source. Never invent, paraphrase, translate, "
-    "merge or summarize. Never add a company, title, date, location or bullet that is not "
-    "in the source. Put each bullet under the employer whose block it appears in. "
-    "If you are unsure of a field, return an empty string for it. "
+    "Copy exact phrases from the source only: every company, title, location, date range "
+    "and bullet must be a verbatim span of the source text. "
+    "Do NOT paraphrase, reword, shorten, translate, merge, split or summarize anything. "
+    "Do NOT invent employers, titles, dates, locations or bullets, and do not combine words "
+    "from different places in the source into a new phrase. "
+    "Put each bullet under the employer whose block it appears in. "
+    "If you are unsure of a field, return an empty string for it (or omit the bullet). "
     "Return ONLY one JSON object: "
     '{"experience":[{"title":"","company":"","location":"","duration":"","description":["..."]}]}'
 )

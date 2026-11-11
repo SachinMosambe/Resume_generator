@@ -404,3 +404,89 @@ def test_rejects_bullet_under_employer_only_mentioned_in_another_bullet():
     parsed["parse_meta"] = score_parse(parsed, MENTION_SOURCE)
     out = maybe_repair_parse(MENTION_SOURCE, parsed, client=_stub(bad))
     assert out["experience"] == [] and out["parse_meta"]["llm_repaired"] is False
+
+
+# ---------------------------------------------------------------------------
+# Hybrid accuracy upgrades: broader eligibility + stronger source checks
+# ---------------------------------------------------------------------------
+
+def _healthy_with_meta(confidence, reasons):
+    parsed = _weak_parse(experience=_good_repair()["experience"])
+    parsed["parse_meta"] = {"confidence": confidence, "reasons": list(reasons)}
+    return parsed
+
+
+def test_eligible_at_confidence_065_with_work_history():
+    assert lsr.ELIGIBILITY_CONFIDENCE == 0.70
+    assert is_repair_eligible(SOURCE, _healthy_with_meta(0.65, []))
+
+
+def test_not_eligible_at_or_above_threshold_without_reasons():
+    assert not is_repair_eligible(SOURCE, _healthy_with_meta(0.70, []))
+    assert not is_repair_eligible(SOURCE, _healthy_with_meta(0.9, []))
+
+
+def test_ambiguous_role_assignment_reason_is_eligible():
+    assert is_repair_eligible(SOURCE, _healthy_with_meta(0.80, ["ambiguous_role_assignment"]))
+
+
+def test_role_identity_garbled_reason_is_eligible_with_roles():
+    assert is_repair_eligible(SOURCE, _healthy_with_meta(0.80, ["role_identity_garbled"]))
+
+
+def test_expected_experience_missing_reason_needs_work_evidence():
+    parsed = _weak_parse()
+    parsed["parse_meta"] = {"confidence": 0.9, "reasons": ["expected_experience_missing"]}
+    assert is_repair_eligible(SOURCE, parsed)
+    src = "Jane Doe\nEDUCATION\nB.S. Computer Science, State University 2016\n"
+    edu = {"name": "Jane Doe", "experience": [], "education": [{"degree": "B.S."}]}
+    edu["parse_meta"] = {"confidence": 0.9, "reasons": ["expected_experience_missing"]}
+    assert not is_repair_eligible(src, edu)
+
+
+def test_reason_based_eligibility_still_skips_already_repaired():
+    parsed = _healthy_with_meta(0.80, ["ambiguous_role_assignment"])
+    parsed["parse_meta"]["llm_repaired"] = True
+    assert not is_repair_eligible(SOURCE, parsed)
+
+
+def test_rejects_paraphrased_bullet_sharing_a_few_words():
+    for fake in (
+        "Built the billing pipeline for large enterprise customers worldwide.",
+        "Built the billing pipeline for enterprise clients and mentored five junior engineers.",
+        "Cut deployment time substantially across the platform.",
+    ):
+        bad = _good_repair()
+        bad["experience"][0]["description"][0] = fake
+        parsed = _weak_parse()
+        out = maybe_repair_parse(SOURCE, parsed, client=_stub(bad))
+        assert out is parsed and out["parse_meta"]["llm_repaired"] is False
+
+
+def test_rejects_company_matching_only_when_letters_are_collapsed():
+    bad = _good_repair()
+    bad["experience"][0]["company"] = "Ac meInc"  # alnum-collapsed "acmeinc" is in the source
+    parsed = _weak_parse()
+    out = maybe_repair_parse(SOURCE, parsed, client=_stub(bad))
+    assert out is parsed and out["parse_meta"]["llm_repaired"] is False
+
+
+def test_rejects_title_words_not_contiguous_in_source():
+    bad = _good_repair()
+    bad["experience"][0]["title"] = "Engineer Senior"
+    parsed = _weak_parse()
+    out = maybe_repair_parse(SOURCE, parsed, client=_stub(bad))
+    assert out is parsed and out["parse_meta"]["llm_repaired"] is False
+
+
+def test_rejects_one_or_two_char_single_token_company():
+    bad = _good_repair()
+    bad["experience"][1]["company"] = "Be"  # substring of "Beta" but 2-char junk
+    parsed = _weak_parse()
+    out = maybe_repair_parse(SOURCE, parsed, client=_stub(bad))
+    assert out is parsed and out["parse_meta"]["llm_repaired"] is False
+
+
+def test_system_prompt_demands_verbatim_copy():
+    prompt = lsr._SYSTEM_PROMPT.lower()
+    assert "verbatim" in prompt and "paraphrase" in prompt and "invent" in prompt

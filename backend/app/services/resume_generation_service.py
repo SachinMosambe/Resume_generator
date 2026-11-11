@@ -335,7 +335,8 @@ class ResumeGenerationService:
                 )
             except Exception as e:
                 logger.error("detailed_parse_failed", candidate_id=str(candidate.id), error=str(e))
-            # Optional, off by default: one source-checked LLM structure repair per generation.
+            # Gated by RESUME_LLM_PARSE_FALLBACK (default on; golden CI forces it off): at most
+            # one source-checked LLM structure repair per generation, only for weak parses.
             if detailed_data and getattr(settings, "RESUME_LLM_PARSE_FALLBACK", False):
                 try:
                     from app.services.llm_structure_repair import maybe_repair_parse
