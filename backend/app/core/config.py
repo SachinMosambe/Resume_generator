@@ -33,7 +33,8 @@ class Settings(BaseSettings):
     RESUME_LLM_POLISH: bool = False
     # Optional one-shot, source-checked LLM structure repair when the deterministic parse is
     # weak. Default OFF (golden/scored CI stays deterministic). Rejected output is discarded.
-    RESUME_LLM_PARSE_FALLBACK: bool = False
+    # Accuracy-first: eligible weak parses may call Bedrock once (source-checked). Golden CI forces off.
+    RESUME_LLM_PARSE_FALLBACK: bool = True
     RESUME_LLM_PARSE_TIMEOUT_SECONDS: float = 45.0
 
     # Multi-agent pipeline (extract -> plan -> write -> critique -> refine).

@@ -224,8 +224,25 @@ def _heading_position(company: str, title: str, padded: str) -> int | None:
 
 
 def _misassigned_bullets(roles: list[dict], hay: str) -> int:
-    """Count bullets found only under a different role's heading than the store assigns."""
+    """Count uniquely owned bullets that appear only under a different role's heading.
+
+    Conservative rules to avoid false fails on real resumes:
+    - Skip bullets whose normalized text appears under more than one store role (shared boilerplate).
+    - A bullet is wrong only if it is missing from its own role window AND present in another
+      located role's window. Hits in summary/skills/footer outside all role windows are ignored.
+    - If fewer than two role headings can be located, skip the check (return 0).
+    """
     padded = f" {hay} "
+    owned_counts: dict[str, int] = {}
+    for role in roles:
+        seen: set[str] = set()
+        for bullet in role.get("description") or []:
+            needle = _norm(bullet) if isinstance(bullet, str) else ""
+            if len(needle.split()) < _MIN_ROLE_BULLET_WORDS or needle in seen:
+                continue
+            seen.add(needle)
+            owned_counts[needle] = owned_counts.get(needle, 0) + 1
+
     located: list[tuple[int, dict]] = []
     for role in roles:
         pos = _heading_position(_norm(role.get("company")), _norm(role.get("title")), padded)
@@ -237,17 +254,30 @@ def _misassigned_bullets(roles: list[dict], hay: str) -> int:
     starts = [p for p, _ in located]
     if len(set(starts)) != len(starts):
         return 0
+    windows = []
+    for idx, start in enumerate(starts):
+        end = starts[idx + 1] if idx + 1 < len(starts) else len(padded) + 1
+        windows.append((start, end))
+
     wrong = 0
     for idx, (start, role) in enumerate(located):
-        end = starts[idx + 1] if idx + 1 < len(starts) else len(padded) + 1
+        end = windows[idx][1]
         for bullet in role.get("description") or []:
             needle = _norm(bullet) if isinstance(bullet, str) else ""
             if len(needle.split()) < _MIN_ROLE_BULLET_WORDS:
                 continue
+            if owned_counts.get(needle, 0) != 1:
+                continue
             hits = _find_all(padded, needle)
             if not hits or any(start <= h < end for h in hits):
                 continue
-            if any(h >= starts[0] for h in hits):
+            in_other_role = any(
+                w_start <= h < w_end
+                for j, (w_start, w_end) in enumerate(windows)
+                if j != idx
+                for h in hits
+            )
+            if in_other_role:
                 wrong += 1
     return wrong
 

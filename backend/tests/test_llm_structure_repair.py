@@ -206,9 +206,8 @@ def test_already_repaired_not_repeated():
     assert again is once and calls == []
 
 
-def test_flag_defaults_off():
-    assert Settings.model_fields["RESUME_LLM_PARSE_FALLBACK"].default is False
-    assert lsr.settings.RESUME_LLM_PARSE_FALLBACK is False
+def test_flag_defaults_on_for_accuracy():
+    assert Settings.model_fields["RESUME_LLM_PARSE_FALLBACK"].default is True
 
 
 def test_generation_service_skips_repair_when_flag_off(monkeypatch):

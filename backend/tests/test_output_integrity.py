@@ -252,6 +252,48 @@ def test_wrong_assignment_check_can_be_disabled():
     assert check_output_integrity(TWO_ROLES, docx, verify_role_assignment=False).status == "passed"
 
 
+def test_repeated_bullet_across_roles_does_not_fail():
+    """Shared boilerplate bullets must not trigger bullet_wrong_role."""
+    shared = "Collaborated with product and design partners on roadmap delivery."
+    store = {
+        **STORE,
+        "experience": [
+            {"company": "Acme Corp", "title": "Staff Engineer", "duration": "Jul 2021 - Present",
+             "description": [shared, "Led migration to event-driven payments."]},
+            {"company": "Globex Inc", "title": "Developer", "duration": "Jan 2015 - Jun 2021",
+             "description": [shared, "Built nightly reconciliation jobs for treasury."]},
+        ],
+    }
+    docx = _docx(
+        "Jordan Rivera",
+        "Staff Engineer", "Acme Corp", "Jul. 2021 – Present",
+        shared, "Led migration to event-driven payments.",
+        "Developer", "Globex Inc", "Jan. 2015 – Jun. 2021",
+        shared, "Built nightly reconciliation jobs for treasury.",
+        *TWO_ROLE_TAIL,
+    )
+    report = check_output_integrity(store, docx)
+    assert report.status == "passed"
+    assert not any(w["code"] == "bullet_wrong_role" for w in report.warnings)
+
+
+def test_bullet_outside_all_role_windows_does_not_fail():
+    """A unique bullet repeated in Skills must not count as wrong-employer assignment."""
+    docx = _docx(
+        "Jordan Rivera",
+        "Staff Engineer", "Acme Corp", "Jul. 2021 – Present",
+        "Led migration to event-driven payments.",
+        "Developer", "Globex Inc", "Jan. 2015 – Jun. 2021",
+        "Built nightly reconciliation jobs for treasury.",
+        *TWO_ROLE_TAIL,
+        "Skills",
+        "Led migration to event-driven payments.",
+    )
+    report = check_output_integrity(TWO_ROLES, docx)
+    assert report.status == "passed"
+    assert not any(w["code"] == "bullet_wrong_role" for w in report.warnings)
+
+
 def test_warning_payload_wraps_legacy_strings_and_caps():
     report = check_output_integrity(STORE, _docx(*FULL))
     report.warnings = [f"legacy {i}" for i in range(12)]
