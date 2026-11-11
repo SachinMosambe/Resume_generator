@@ -471,9 +471,27 @@ _NOT_A_PERSON_NAME = re.compile(
 )
 
 
+_TECH_NAME_TOKENS = {
+    "react", "native", "angular", "angularjs", "vue", "vuejs", "node", "nodejs", "js", "express",
+    "django", "flask", "spring", "boot", "hibernate", "kubernetes", "docker", "terraform", "jenkins",
+    "aws", "azure", "gcp", "sql", "nosql", "mysql", "postgresql", "mongodb", "javascript",
+    "typescript", "python", "java", "html", "css", "redux", "graphql", "kafka", "spark", "hadoop",
+    "tensorflow", "pytorch", "jquery", "android", "ios", "linux", "devops", "agile", "scrum",
+    "flutter", "dotnet", "net", "php", "kotlin", "golang", "scala", "tableau", "power", "bi",
+    "machine", "learning", "data", "science", "cloud", "api", "rest", "microservices",
+}
+
+
+def _looks_like_tech_label(text: str) -> bool:
+    """True for technology labels ("React Native.", "Spring Boot") that are not a person's name."""
+    words = [re.sub(r"[^a-z0-9]", "", w.lower()) for w in str(text or "").split()]
+    words = [w for w in words if w]
+    return bool(words) and all(w in _TECH_NAME_TOKENS for w in words)
+
+
 def _person_name_line(line: str) -> str:
     text = re.sub(r"\s+", " ", str(line or "")).strip()
-    if not text or "@" in text or _NOT_A_PERSON_NAME.search(text):
+    if not text or "@" in text or _NOT_A_PERSON_NAME.search(text) or _looks_like_tech_label(text):
         return ""
     if not re.fullmatch(r"[A-Za-z][A-Za-z .'-]*", text):
         return ""
@@ -533,6 +551,8 @@ def _extract_name(text: str) -> str:
         if re.search(r"\d{4}", line):
             continue
         words = line.split()
+        if _looks_like_tech_label(line):
+            continue
         if 2 <= len(words) <= 5 and not re.search(r"[^a-zA-Z\s.\-']", line):
             title_case = sum(1 for w in words if w and w[0].isupper())
             if title_case >= len(words) // 2:
@@ -1313,6 +1333,19 @@ def _parse_job_header_line(line: str, date_match: re.Match) -> dict[str, str]:
             title = left.strip()
             company = right.strip()
 
+    # "Fabrikam Studio — Designer" before the date: employer, then a short role-word title.
+    if not title and company and "|" not in company:
+        company_title = re.match(r"^(?P<company>[^—–]{2,80}?)\s+[—–]\s+(?P<title>[^—–|,]{2,60})$", company)
+        if (
+            company_title
+            and _ROLE_WORD.search(company_title.group("title"))
+            and not _ROLE_WORD.search(company_title.group("company"))
+            and len(company_title.group("title").split()) <= 6
+            and not _is_invalid_job_title(company_title.group("title"))
+        ):
+            title = company_title.group("title").strip()
+            company = company_title.group("company").strip()
+
     # "Amazon — Seattle, WA" / "Heart and Profit — Remote": dash separates company and place.
     dash_place = re.match(r"^(?P<company>.+?)\s+[—–]\s+(?P<place>[^—–|]+)$", company)
     if dash_place and not location:
@@ -1353,7 +1386,26 @@ def _parse_job_header_line(line: str, date_match: re.Match) -> dict[str, str]:
     return parsed
 
 
+# "(Platform Engineer) 03/19 - Present": title in parens, then the dates, below a company line.
+_PAREN_TITLE = re.compile(
+    r"^\(([^)]{2,80})\)\s*(\d{1,2}/\d{2,4}|\w+\.?\s+\d{4}|\d{4})\s*[-–—]\s*"
+    r"(Present|Current|\d{1,2}/\d{2,4}|\w+\.?\s+\d{4}|\d{4})$",
+    re.I,
+)
+
+
 def _extract_experience(text: str) -> list[dict[str, Any]]:
+    roles, _orphans = _extract_experience_detailed(text)
+    return roles
+
+
+def _extract_experience_detailed(text: str) -> tuple[list[dict[str, Any]], list[str]]:
+    """Return (roles, orphan_bullets).
+
+    Orphan bullets are bullets inside an Experience section that precede any
+    recognised employer/title header. They are only meaningful when no role is found.
+    """
+    orphan_bullets: list[str] = []
     blocks = _section_blocks(text, _SECTION_HEADINGS["experience"])
     dated = [block for block in blocks if any(_DATE_PATTERN.search(line or "") for line in block)]
     chosen = dated or [block for block in blocks if any(line.strip() for line in block)]
@@ -1399,6 +1451,9 @@ def _extract_experience(text: str) -> list[dict[str, Any]]:
                 return
             # Keep Environment techs only — never invent tools from bullet keyword scans.
             experiences.append(current_job)
+        elif current_job and current_bullets:
+            # Date-only header with no employer/title: keep the bullets for review.
+            orphan_bullets.extend(b for b in current_bullets if b and not re.match(r"(?i)^environment\s*:", b))
         current_job = None
         current_bullets = []
 
@@ -1451,6 +1506,28 @@ def _extract_experience(text: str) -> list[dict[str, Any]]:
             i += step
             continue
         next_date = _DATE_PATTERN.search(next_line) if next_line and not _is_bullet(next_line) else None
+
+        # Split header: "Company" then "(Title) 03/19 - Present" (blank lines allowed between).
+        if not date_match and not _is_bullet(line) and not _PAREN_TITLE.match(line):
+            look_ahead = i + 1
+            while look_ahead < len(lines) and not lines[look_ahead].strip():
+                look_ahead += 1
+            paren_line = lines[look_ahead].strip() if look_ahead < len(lines) else ""
+            paren_next = _PAREN_TITLE.match(paren_line) if paren_line else None
+            if paren_next and len(line) <= 100 and not _is_cover_label_line(line):
+                _save_current()
+                pending_company = ""
+                current_job = {
+                    "title": _clean_text(paren_next.group(1)),
+                    "company": _clean_text(line),
+                    "location": "",
+                    "duration": _clean_text(paren_line[paren_line.index(")") + 1 :]),
+                    "description": [],
+                    "technologies": [],
+                }
+                current_bullets = []
+                i = look_ahead + 1
+                continue
 
         if date_match and not _is_bullet(line):
             _save_current()
@@ -1682,6 +1759,11 @@ def _extract_experience(text: str) -> list[dict[str, Any]]:
                 else:
                     # Prefer discrete bullets over paragraph streams.
                     current_bullets.append(clean)
+        elif chosen and _is_bullet(line):
+            # Bullet inside an Experience section before any recognised role header.
+            orphan = _clean_bullet_text(line)
+            if orphan:
+                orphan_bullets.append(orphan)
         i += 1
 
     _save_current()
@@ -1691,7 +1773,7 @@ def _extract_experience(text: str) -> list[dict[str, Any]]:
         role = _promote_title_from_first_bullet(role)
         role["company"] = _strip_engagement_duration(role.get("company"))
         cleaned_roles.append(role)
-    return cleaned_roles
+    return cleaned_roles, orphan_bullets
 
 
 def _strip_engagement_duration(company: Any) -> str:
@@ -2587,6 +2669,7 @@ def parse_resume_detailed(resume_path: str | None, resume_text: str | None = Non
     # Spoken languages are short ("English (Native)"); a long item is a programming-language
     # list or a stray footer and is dropped on its own instead of wiping the whole list.
     languages = [item for item in languages if len(item) <= 40]
+    experience, orphan_bullets = _extract_experience_detailed(resume_text)
     result = {
         "name": name,
         "email": _extract_email(contact_text),
@@ -2599,7 +2682,7 @@ def parse_resume_detailed(resume_path: str | None, resume_text: str | None = Non
         "summary_from_section": summary_from_section,
         "skills": _dedupe(skills),
         "skills_by_category": skills_by_category,
-        "experience": _extract_experience(resume_text),
+        "experience": experience,
         "education": _extract_education(resume_text),
         "projects": _extract_projects(resume_text),
         "certifications": _dedupe(
@@ -2609,6 +2692,15 @@ def parse_resume_detailed(resume_path: str | None, resume_text: str | None = Non
         "languages": _dedupe([*inline_languages, *languages]),
         "additional_sections": _extract_additional_sections(resume_text),
     }
+
+    # Bullet-only layouts: keep source bullets for review instead of dropping them or
+    # inventing an employer. Only surfaced when the source shows work history.
+    from app.services.parse_confidence import score_parse
+    from app.services.source_evidence import detect_employment_evidence
+
+    if not result["experience"] and orphan_bullets and detect_employment_evidence(resume_text).has_work_history:
+        result["unassigned_experience_bullets"] = _dedupe(orphan_bullets)
+    result["parse_meta"] = score_parse(result, resume_text)
 
     logger.info(
         "deterministic_parse_complete",

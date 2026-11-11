@@ -74,6 +74,9 @@ def build_structured_resume(candidate_data: dict[str, Any]) -> dict[str, Any]:
         "languages": _as_str_list(candidate_data.get("languages")),
         "additional_sections": _additional_sections(candidate_data.get("additional_sections")),
         "raw_resume_text": repair_collapsed_spaces(str(candidate_data.get("raw_resume_text") or "")),
+        # Review-only carriers: never rendered as a job. See parse_confidence.score_parse.
+        "parse_meta": dict(candidate_data.get("parse_meta") or {}),
+        "unassigned_experience_bullets": _as_str_list(candidate_data.get("unassigned_experience_bullets")),
         "stats": {
             "experience_count": len(experience),
             "experience_bullets": sum(len(e.get("description") or []) for e in experience),
@@ -114,6 +117,10 @@ def apply_store_to_candidate_data(candidate_data: dict[str, Any], store: dict[st
     merged["achievements"] = store.get("achievements") or []
     merged["languages"] = store.get("languages") or []
     merged["additional_sections"] = store.get("additional_sections") or []
+    if store.get("parse_meta"):
+        merged["parse_meta"] = store["parse_meta"]
+    if store.get("unassigned_experience_bullets"):
+        merged["unassigned_experience_bullets"] = store["unassigned_experience_bullets"]
     merged["structured_resume"] = store
     merged["structured_resume_json"] = store
     return merged
