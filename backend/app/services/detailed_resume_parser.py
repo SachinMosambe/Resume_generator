@@ -1720,6 +1720,48 @@ def _parse_labeled_role_block(
     return job, end
 
 
+_HEADER_FOLLOW_LABEL = re.compile(
+    r"^[\s\-\*\u2022\u25CF●•▪■>]*(?P<label>role|title|job\s+title|designation|position|project)\s*:\s*(?P<value>\S.*)$",
+    re.I,
+)
+
+
+def _consume_header_labels(lines: list[str], start: int, parsed: dict[str, Any]) -> None:
+    """Read explicit 'Role:' / 'Project:' lines directly below a dated company header.
+
+    Only labelled lines with a colon count, and only consecutive ones (blank lines allowed).
+    The title is filled only when the header carried none; the project is filled only when
+    empty. Consumed lines are blanked so they never become bullets. Nothing is guessed.
+    """
+    cursor = start
+    consumed: list[tuple[int, str, str]] = []
+    while cursor < len(lines):
+        raw = lines[cursor].strip()
+        if not raw:
+            cursor += 1
+            continue
+        match = _HEADER_FOLLOW_LABEL.match(raw)
+        if not match or _DATE_PATTERN.search(match.group("value")):
+            break
+        label = re.sub(r"\s+", " ", match.group("label").lower())
+        kind = "project" if label == "project" else "title"
+        if any(kind == seen for _i, seen, _v in consumed):
+            break
+        consumed.append((cursor, kind, match.group("value").strip(" .,;")))
+        cursor += 1
+    for index, kind, value in consumed:
+        if kind == "title":
+            if parsed.get("title") or not value:
+                # Header already named the role; leave the label line for the caller.
+                continue
+            parsed["title"] = _clean_text(value)
+        else:
+            if parsed.get("project"):
+                continue
+            parsed["project"] = _clean_text(value)
+        lines[index] = ""
+
+
 def _is_date_only_line(line: str) -> bool:
     match = _DATE_PATTERN.search(line or "")
     if not match:
@@ -2170,6 +2212,8 @@ def _experience_from_lines(lines: list[str], chosen: bool) -> tuple[list[dict[st
                 parsed["title"], parsed["company"] = parsed["company"], pending_company
             elif parsed["company"] and not _ROLE_WORD.search(parsed["company"]):
                 pending_company = ""
+            # "Role: X" / "Project: Y" lines right under a company + date header.
+            _consume_header_labels(lines, i + 1, parsed)
             # Optional next-line title when header only has company+dates.
             # Skip action-verb / sentence lines (common Dice PDF reordering).
             if not parsed["title"]:

@@ -1,0 +1,17 @@
+Priya Raman
+Senior BPM Developer
+priya.raman@example.com | Austin, TX
+SUMMARY
+Workflow developer focused on case-management platforms.
+EXPERIENCE
+Northwind Traders, Seattle WA    Jan 2020 - Present
+Role: Senior BPM Developer
+Project: Claims Workflow Modernization
+• Built case-management workflows for the claims team.
+• Integrated the workflow engine with the policy system.
+Contoso Insurance, Dallas TX    Mar 2017 - Dec 2019
+Project: Underwriting Automation
+Role: BPM Developer
+• Automated underwriting approval routing.
+EDUCATION
+BS Computer Science, Example State University

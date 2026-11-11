@@ -1761,6 +1761,36 @@
           ]
         }
       ]
+    },
+    {
+      "formats": [
+        "aptino",
+        "capgemini",
+        "suresh"
+      ],
+      "expected_status": "passed",
+      "scored": true,
+      "expects_work_history": true,
+      "id": "company_date_role_project_lines",
+      "pattern": "company_date_then_role_project_labels",
+      "source": "cases/company_date_role_project_lines.txt",
+      "expected_name": "Priya Raman",
+      "expected_roles": [
+        {
+          "company": "Northwind Traders",
+          "title": "Senior BPM Developer",
+          "bullet_substrings": [
+            "case-management workflows"
+          ]
+        },
+        {
+          "company": "Contoso Insurance",
+          "title": "BPM Developer",
+          "bullet_substrings": [
+            "underwriting approval"
+          ]
+        }
+      ]
     }
   ],
   "gates": {

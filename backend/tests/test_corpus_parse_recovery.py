@@ -469,3 +469,30 @@ def test_labels_outside_experience_section_are_not_roles():
     )
     data = parse_resume_detailed(None, text)
     assert [r["company"] for r in data["experience"]] == ["Acme Corp"]
+
+
+def test_company_date_header_with_role_and_project_lines():
+    data = parse_resume_detailed(None, _load("company_date_role_project_lines.txt"))
+    assert len(data["experience"]) == 2
+    first, second = data["experience"]
+    assert first["company"] == "Northwind Traders"
+    assert first["title"] == "Senior BPM Developer"
+    assert first["duration"] == "Jan 2020 - Present"
+    assert first.get("project") == "Claims Workflow Modernization"
+    assert "case-management workflows" in " ".join(first["description"])
+    assert second["company"] == "Contoso Insurance"
+    assert second["title"] == "BPM Developer"
+    assert second.get("project") == "Underwriting Automation"
+    assert "underwriting approval" in " ".join(second["description"])
+    assert not data.get("unassigned_experience_bullets")
+
+
+def test_labels_after_dated_header_never_replace_a_real_title():
+    text = (
+        "Zed Qu\nEXPERIENCE\nLead Engineer | Acme Corp | Jan 2020 - Present\n"
+        "Project: Billing Rewrite\n• Shipped the billing rewrite.\nEDUCATION\nB.S. Example\n"
+    )
+    data = parse_resume_detailed(None, text)
+    role = data["experience"][0]
+    assert role["title"] == "Lead Engineer" and role["company"] == "Acme Corp"
+    assert role.get("project") == "Billing Rewrite"
