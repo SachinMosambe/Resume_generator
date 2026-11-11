@@ -49,16 +49,24 @@ def _finding(severity: str, code: str, message: str) -> dict[str, str]:
 
 
 def warning_payload(report: IntegrityReport, limit: int = 10) -> list[dict[str, str]]:
-    """Header-safe warnings; legacy string warnings are wrapped as objects."""
-    out: list[dict[str, str]] = []
-    for w in report.warnings[:limit]:
+    """Header-safe warnings; legacy strings are wrapped as objects.
+
+    Blocking findings are ordered first (stable otherwise) so that truncation to
+    ``limit`` can never drop a blocking finding in favour of an info one.
+    """
+    normalized: list[dict[str, str]] = []
+    for w in report.warnings:
         if isinstance(w, dict):
-            out.append(w)
+            normalized.append(w)
         else:
-            out.append(
-                _finding(BLOCKING if report.status != "passed" else INFO, "legacy", str(w))
-            )
-    return out
+            normalized.append(_finding(BLOCKING if report.status != "passed" else INFO, "legacy", str(w)))
+    normalized.sort(key=lambda w: 0 if w.get("severity") == BLOCKING else 1)
+    return normalized[:limit]
+
+
+def warning_messages(report: IntegrityReport, limit: int = 10) -> list[str]:
+    """Plain message strings (legacy ``X-Review-Warnings`` format), blocking first."""
+    return [w["message"] for w in warning_payload(report, limit)]
 
 
 def _norm(text: Any) -> str:
@@ -305,9 +313,10 @@ def check_output_integrity(
     elif not roles and (meta.get("employment_evidence") or {}).get("has_work_history"):
         warnings.append(
             _finding(
-                INFO,
+                BLOCKING,
                 "experience_roles_unassigned",
-                "Work history bullets were kept but could not be assigned to employers.",
+                "Work history bullets were kept but could not be assigned to employers; "
+                "the Experience section needs manual review.",
             )
         )
 

@@ -32,3 +32,10 @@ DONE_WITH_CONCERNS (see concerns).
 4. `source_numbers` only checks %/$ figures (not bare integers) to limit false positives.
 5. Zero roles + preserved unassigned bullets passes (info) per brief step 4; arguably still deserves review.
 6. `corpus_quality_eval.py` was untracked and is committed for the first time here. Corpus eval not re-run.
+
+## Review fix round (Important findings)
+- **Zero roles + evidence + preserved unassigned bullets** now yields blocking `experience_roles_unassigned` -> status `needs_review` (was info/`passed`). `expected_experience_missing` remains for the unpreserved case. Test renamed `test_zero_roles_with_preserved_unassigned_bullets_needs_review`; concern 5 above is resolved.
+- **Header compatibility:** `X-Review-Warnings` is again a URL-quoted JSON list of message strings (blocking first, max 10). New additive `X-Review-Warning-Details` = URL-quoted JSON list of `{severity, code, message}` (blocking first, max 10). Both exposed via CORS in `app/main.py` (`expose_headers`). Frontend `parseReview` prefers Details, falls back to `X-Review-Warnings` strings.
+- **Truncation:** `warning_payload` stable-sorts blocking first before capping at 10; new `warning_messages` shares that selection so info can never push blocking out.
+- Tests added: blocking-survives-truncation, legacy-strings-vs-details headers + CORS expose. (`tests/test_resume_api.py` does not exist; header tests live in `tests/test_output_integrity.py`.)
+- Verification: full backend suite 135 passed, 1 skipped; `tests/test_output_integrity.py` all passed; frontend `npx tsc --noEmit` clean.

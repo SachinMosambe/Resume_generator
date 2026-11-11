@@ -62,7 +62,8 @@ Open http://localhost:3000 — upload a resume, choose Aptino default or a clien
   - `client_name`, `job_role` (optional)
   - Response: DOCX file download with headers:
     - `X-Review-Status`: `passed` | `needs_review` | `failed` (see below)
-    - `X-Review-Warnings`: URL-encoded JSON list of recruiter-facing warnings (never resume content)
+    - `X-Review-Warnings`: URL-encoded JSON list of recruiter-facing warning messages (never resume content)
+    - `X-Review-Warning-Details`: URL-encoded JSON list of `{severity, code, message}` objects (additive; blocking first, max 10)
     - `X-Saved-Format-Id` / `X-Saved-Format-Name` when a format was saved
   - 422 with an actionable message for scanned PDFs when OCR is not installed, and for
     oversized or overly complex DOCX archives

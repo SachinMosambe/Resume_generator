@@ -21,7 +21,7 @@ from app.services.aptino_template import build_aptino_client_format
 from app.services.format_extraction_service import FormatExtractionError, FormatExtractionService
 from app.services.format_profile_store import FormatProfileError, load_client_format, save_format_profile
 from app.services.docx_reader import DocxLimitError
-from app.services.output_integrity import warning_payload
+from app.services.output_integrity import warning_messages, warning_payload
 from app.services.pdf_ocr import OcrUnavailableError
 from app.services.pdf_parser import extract_document
 from app.services.resume_generation_service import ResumeGenerationError, ResumeGenerationService
@@ -248,7 +248,9 @@ async def generate_resume(
     report = getattr(service, "last_report", None)
     if report is not None:
         headers["X-Review-Status"] = report.status
-        headers["X-Review-Warnings"] = quote(json.dumps(warning_payload(report)))
+        # Legacy readers: JSON list of message strings. Details: additive {severity, code, message} objects.
+        headers["X-Review-Warnings"] = quote(json.dumps(warning_messages(report)))
+        headers["X-Review-Warning-Details"] = quote(json.dumps(warning_payload(report)))
     return Response(
         content=docx_bytes,
         media_type="application/vnd.openxmlformats-officedocument.wordprocessingml.document",

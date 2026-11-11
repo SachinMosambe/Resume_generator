@@ -2,7 +2,7 @@ import io
 
 from docx import Document
 
-from app.services.output_integrity import check_output_integrity, warning_payload
+from app.services.output_integrity import check_output_integrity, warning_messages, warning_payload
 
 
 def _msgs(report):
@@ -196,13 +196,14 @@ def test_zero_roles_without_evidence_has_no_experience_warning():
     assert not any(w["code"] == "expected_experience_missing" for w in report.warnings)
 
 
-def test_zero_roles_with_preserved_unassigned_bullets_is_not_blocking():
+def test_zero_roles_with_preserved_unassigned_bullets_needs_review():
     store = {**EMPTY_EXP_STORE, "unassigned_experience_bullets": ["Led migration to event-driven payments."]}
     report = check_output_integrity(
         store, _docx(*NO_EXP_LINES, "Led migration to event-driven payments."), parse_meta=EVIDENCE_META
     )
     assert not any(w["code"] == "expected_experience_missing" for w in report.warnings)
-    assert report.status == "passed"
+    assert report.status == "needs_review"
+    assert any(w["severity"] == "blocking" and w["code"] == "experience_roles_unassigned" for w in report.warnings)
 
 
 def test_zero_roles_with_unpreserved_unassigned_bullets_is_blocking():
@@ -258,3 +259,39 @@ def test_warning_payload_wraps_legacy_strings_and_caps():
     payload = warning_payload(report)
     assert len(payload) == 10
     assert payload[0] == {"severity": "blocking", "code": "legacy", "message": "legacy 0"}
+
+
+def test_warning_payload_keeps_blocking_when_truncating():
+    report = check_output_integrity(STORE, _docx(*FULL))
+    info = [{"severity": "info", "code": "i", "message": f"info {i}"} for i in range(12)]
+    blocking = {"severity": "blocking", "code": "b", "message": "blocking last"}
+    report.warnings = [*info, blocking]
+    report.status = "needs_review"
+    payload = warning_payload(report)
+    assert len(payload) == 10
+    assert payload[0] == blocking
+    assert warning_messages(report)[0] == "blocking last"
+
+
+def test_api_review_headers_legacy_strings_and_additive_details(fixtures, tmp_path, monkeypatch):
+    import json
+    from urllib.parse import unquote
+
+    from fastapi.testclient import TestClient
+
+    from app.main import app
+
+    monkeypatch.setenv("UPLOAD_DIR", str(tmp_path))
+    with open(fixtures["single_column_pdf"], "rb") as fh:
+        resp = TestClient(app).post(
+            "/api/generate",
+            files={"resume": ("cv.pdf", fh, "application/pdf")},
+            headers={"Origin": "http://localhost:3000"},
+        )
+    assert resp.status_code == 200
+    legacy = json.loads(unquote(resp.headers["X-Review-Warnings"]))
+    details = json.loads(unquote(resp.headers["X-Review-Warning-Details"]))
+    assert all(isinstance(w, str) for w in legacy)
+    assert all(set(w) == {"severity", "code", "message"} for w in details)
+    assert legacy == [w["message"] for w in details]
+    assert "x-review-warning-details" in resp.headers.get("access-control-expose-headers", "").lower()

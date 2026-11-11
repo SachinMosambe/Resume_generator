@@ -23,6 +23,7 @@ app.add_middleware(
         'X-Saved-Format-Name',
         'X-Review-Status',
         'X-Review-Warnings',
+        'X-Review-Warning-Details',
     ],
 )
 

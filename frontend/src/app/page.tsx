@@ -74,17 +74,21 @@ const REVIEW_STYLES: Record<ReviewStatus, { box: string; title: string; body: st
 function parseReview(response: Response): Review | null {
   const status = response.headers.get("X-Review-Status") as ReviewStatus | null;
   if (!status || !(status in REVIEW_STYLES)) return null;
-  let warnings: ReviewWarning[] = [];
-  try {
-    const parsed = JSON.parse(decodeURIComponent(response.headers.get("X-Review-Warnings") || "[]"));
-    if (Array.isArray(parsed)) {
-      warnings = parsed
+  const readList = (name: string): ReviewWarning[] | null => {
+    const raw = response.headers.get(name);
+    if (!raw) return null;
+    try {
+      const parsed = JSON.parse(decodeURIComponent(raw));
+      if (!Array.isArray(parsed)) return null;
+      return parsed
         .map((w) => normalizeWarning(w, status))
         .filter((w): w is ReviewWarning => w !== null);
+    } catch {
+      return null; /* ignore malformed header */
     }
-  } catch {
-    /* ignore malformed header */
-  }
+  };
+  // Prefer structured details; fall back to the legacy list of message strings.
+  const warnings = readList("X-Review-Warning-Details") ?? readList("X-Review-Warnings") ?? [];
   return { status, warnings };
 }
 
