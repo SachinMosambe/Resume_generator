@@ -22,7 +22,9 @@ from app.services.format_extraction_service import FormatExtractionError, Format
 from app.services.format_profile_store import FormatProfileError, load_client_format, save_format_profile
 from app.services.docx_reader import DocxLimitError
 from app.services.output_integrity import warning_messages, warning_payload
-from app.services.pdf_ocr import OcrUnavailableError
+from app.services.doc_converter import DocConversionError
+from app.services.intake_gate import assess_resume_intake
+from app.services.pdf_ocr import OcrUnavailableError, format_page_refs
 from app.services.pdf_parser import extract_document
 from app.services.resume_generation_service import ResumeGenerationError, ResumeGenerationService
 from app.services.s3_service import sanitize_filename
@@ -115,9 +117,16 @@ async def generate_resume(
         except OSError:
             pass
         if isinstance(exc, OcrUnavailableError):
+            where = format_page_refs(exc.pages)
             detail = (
-                "This PDF is scanned (image only) and OCR is not installed on this server. "
+                f"This PDF is scanned (image only{f'; {where}' if where else ''}) and OCR is not "
+                "available on this server, so no text could be read. "
                 "Upload the original DOCX or a text-based PDF, or enable OCR (see README)."
+            )
+        elif isinstance(exc, DocConversionError):
+            detail = (
+                "This legacy .doc file could not be converted on this server. "
+                "Re-save it as .docx (or PDF) in Word and upload it again."
             )
         elif isinstance(exc, DocxLimitError):
             detail = "This DOCX is too large or complex to process safely. Save a simpler copy and retry."
@@ -134,6 +143,17 @@ async def generate_resume(
             status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
             detail="No readable text was found in this resume. Upload a text-based PDF, DOC, or DOCX.",
         )
+
+    assessment = assess_resume_intake(resume_text)
+    if not assessment.is_resume:
+        extraction_meta["quarantine_reason"] = assessment.reason_code
+        logger.warning("resume_quarantined", reason=assessment.reason_code, signals=assessment.resume_signals)
+        resume_path.unlink(missing_ok=True)
+        try:
+            tmp_dir.rmdir()
+        except OSError:
+            pass
+        raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail=assessment.message)
 
     client_id = (client_name or "").strip() or "Client"
     role = (job_role or "").strip() or None

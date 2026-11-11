@@ -24,6 +24,7 @@ from docx.table import Table
 from docx.text.paragraph import Paragraph
 
 from app.services.docx_layout import clean_education_title_dates
+from app.services.pdf_ocr import format_page_refs
 
 # Below this share of a core field found in the output, the document is marked failed.
 _FAIL_RATIO = 0.5
@@ -368,12 +369,16 @@ def check_output_integrity(
                 BLOCKING,
                 "source_pages_unread",
                 f"{len(unread)} page(s) of the source look like scanned images and could not be read "
-                "(OCR is not available); their content is missing.",
+                f"({format_page_refs(unread)}; OCR is not available); their content is missing.",
             )
         )
     if ocr:
         warnings.append(
-            _finding(INFO, "ocr_used", f"{len(ocr)} page(s) were read with OCR; check names, dates, and numbers.")
+            _finding(
+                INFO,
+                "ocr_used",
+                f"{len(ocr)} page(s) were read with OCR ({format_page_refs(ocr)}); check names, dates, and numbers.",
+            )
         )
 
     if source_text:

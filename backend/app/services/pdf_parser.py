@@ -1,6 +1,7 @@
 """Utility service for extracting raw text from PDF and Word documents."""
 import html as html_lib
 import re
+import shutil
 from contextvars import ContextVar
 from html.parser import HTMLParser
 from pathlib import Path
@@ -221,7 +222,7 @@ def finalize_pdf_text(text: str) -> str:
 
 
 def _new_meta() -> dict:
-    return {"ocr_pages": [], "ocr_missing_pages": []}
+    return {"ocr_pages": [], "ocr_missing_pages": [], "doc_converted": False}
 
 
 _LAST_META: ContextVar[dict] = ContextVar("document_extraction_meta", default=_new_meta())
@@ -265,6 +266,7 @@ def extract_text_from_document(
             text = _extract_docx(path, max_chars=max_chars if lightweight else None).strip()
         elif ext == ".doc":
             text = _extract_doc(path, max_chars=max_chars if lightweight else None).strip()
+            meta["doc_converted"] = True
         elif ext in (".html", ".htm"):
             text = _extract_html(path).strip()
         else:
@@ -444,6 +446,7 @@ def _extract_doc(path: str, *, max_chars: int | None = None) -> str:
     """Extract text from legacy .doc by converting to .docx first."""
     from app.services.doc_converter import DocConversionError, convert_doc_to_docx
 
+    converted: Path | None = None
     try:
         converted = convert_doc_to_docx(Path(path))
         return _extract_docx(str(converted), max_chars=max_chars).strip()
@@ -453,6 +456,9 @@ def _extract_doc(path: str, *, max_chars: int | None = None) -> str:
     except Exception as exc:
         logger.error("doc_extraction_unexpected", path=path, error=str(exc))
         raise DocConversionError(f"Unexpected .doc extraction failure: {exc}") from exc
+    finally:
+        if converted is not None and converted.parent.name.startswith("doc_convert_"):
+            shutil.rmtree(converted.parent, ignore_errors=True)
 
 
 _ICON_TOKEN = re.compile(r"^\(cid:\d+\)$")
@@ -1065,8 +1071,13 @@ def _extract_pdf_with_ocr(path: str, need: list[int], meta: dict) -> str:
                 text = page.get_text("text") or ""
             pages.append(text)
     combined = "\n\n".join(_strip_repeated_header_footer([p for p in pages if p.strip()])).strip()
-    if meta["ocr_missing_pages"] and sum(c.isalpha() for c in combined) < 100:
-        raise pdf_ocr.OcrUnavailableError("PDF has no readable text layer and OCR is unavailable")
+    # Nothing readable at all: fail loudly. If OCR recovered any page, the draft proceeds and
+    # the unread pages are reported through ocr_missing_pages (blocking integrity finding).
+    if meta["ocr_missing_pages"] and not meta["ocr_pages"] and sum(c.isalpha() for c in combined) < 100:
+        raise pdf_ocr.OcrUnavailableError(
+            "PDF has no readable text layer and OCR is unavailable",
+            pages=list(meta["ocr_missing_pages"]),
+        )
     logger.info(
         "pdf_ocr_used",
         ocr_pages=len(meta["ocr_pages"]),

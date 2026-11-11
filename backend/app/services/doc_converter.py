@@ -221,9 +221,8 @@ def convert_doc_to_docx(source: Path, output_dir: Path | None = None) -> Path:
     detail = " | ".join(logs)[:500] if logs else "no converter output"
     logger.error("doc_conversion_failed soffice=%s detail=%s", soffice, detail)
     raise DocConversionError(
-        "Could not convert .doc to .docx. "
-        "Re-save the file as .docx in Word and upload again, or install full LibreOffice writer. "
-        f"Details: {detail[:240]}"
+        "Could not convert this .doc file to .docx. "
+        "Re-save the file as .docx in Word and upload it again."
     )
 
 

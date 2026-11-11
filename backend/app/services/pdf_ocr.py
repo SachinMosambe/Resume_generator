@@ -14,6 +14,28 @@ from app.core.config import settings
 class OcrUnavailableError(RuntimeError):
     """A PDF has no readable text and OCR is not installed or is disabled."""
 
+    def __init__(self, message: str, pages: list[int] | None = None) -> None:
+        super().__init__(message)
+        self.pages: list[int] = list(pages or [])
+
+
+def format_page_refs(pages: list[int] | tuple[int, ...]) -> str:
+    """1-based, recruiter-readable page references: 'page 2', 'pages 1-3 and 5'."""
+    nums = sorted({int(p) for p in pages if int(p) > 0})
+    if not nums:
+        return ""
+    runs: list[tuple[int, int]] = []
+    for n in nums:
+        if runs and n == runs[-1][1] + 1:
+            runs[-1] = (runs[-1][0], n)
+        else:
+            runs.append((n, n))
+    parts = [str(a) if a == b else f"{a}-{b}" for a, b in runs]
+    if len(nums) == 1:
+        return f"page {parts[0]}"
+    joined = parts[0] if len(parts) == 1 else ", ".join(parts[:-1]) + f" and {parts[-1]}"
+    return f"pages {joined}"
+
 
 def ocr_available() -> bool:
     if not settings.RESUME_OCR_ENABLED or shutil.which("tesseract") is None:
