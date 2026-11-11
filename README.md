@@ -65,8 +65,11 @@ Open http://localhost:3000 — upload a resume, choose Aptino default or a clien
     - `X-Review-Warnings`: URL-encoded JSON list of recruiter-facing warning messages (never resume content)
     - `X-Review-Warning-Details`: URL-encoded JSON list of `{severity, code, message}` objects (additive; blocking first, max 10)
     - `X-Saved-Format-Id` / `X-Saved-Format-Name` when a format was saved
-  - 422 with an actionable message for scanned PDFs when OCR is not installed, and for
-    oversized or overly complex DOCX archives
+  - 422 with an actionable message for scanned PDFs when OCR is not installed, for
+    oversized or overly complex DOCX archives, for legacy `.doc` files LibreOffice cannot
+    convert (re-save as `.docx`), and for **quarantined** uploads: files that extract to text
+    but do not look like a resume (certificates, itineraries, and similar) are rejected by the
+    intake gate before generation, with the reason in the message
 
 ## Output fidelity
 
@@ -83,7 +86,7 @@ semantic verification, and never a guarantee of 100% accuracy.
 | Status | Meaning |
 |--------|---------|
 | `passed` | Every checked source field (employers, titles, dates, bullets, education, skills, certifications, other sections) was found in the output. Still skim before sending. |
-| `needs_review` | Some fields were not found, pages were read with OCR, scanned pages could not be read, template sample text appeared, or a section was omitted by policy. Warnings say which. |
+| `needs_review` | Some fields were not found, pages were read with OCR, scanned pages could not be read, template sample text appeared, or a section was omitted by policy. Also set when the parser was unsure: name not confirmed, job titles missing, role headers misread, overlapping employment dates, or bullets with no readable employer (shown under a "Role details need review" entry in Experience). Warnings say which. |
 | `failed` | Fewer than half of the employers, titles, dates, or bullets reached the output, or the DOCX could not be opened. Do not send as-is. |
 
 References sections are omitted from client documents by default; the omission is
