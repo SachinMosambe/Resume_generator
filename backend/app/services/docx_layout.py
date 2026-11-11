@@ -103,6 +103,18 @@ def usable_content_width(doc: Any):
         return Inches(6.5)
 
 
+def has_renderable_content(content: Any) -> bool:
+    """True when a section body has at least one non-blank entry worth a heading."""
+    if content is None:
+        return False
+    if isinstance(content, str):
+        return bool(content.strip())
+    if isinstance(content, dict):
+        return any(has_renderable_content(v) for v in content.values())
+    if isinstance(content, (list, tuple)):
+        return any(has_renderable_content(v) for v in content)
+    return True
+
 def split_left_right_meta(text: str) -> tuple[str, str]:
     """
     Split 'Company Name  June 2013 to September 2014' or '... https://...' into

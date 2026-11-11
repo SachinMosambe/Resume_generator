@@ -4016,6 +4016,11 @@ class ResumeGenerationService:
         title = section.get("title", "")
         content = section.get("content")
 
+        from app.services.docx_layout import has_renderable_content
+
+        if not has_renderable_content(content):
+            return
+
         if title:
             from app.models.format_schema import to_heading_title_case
 

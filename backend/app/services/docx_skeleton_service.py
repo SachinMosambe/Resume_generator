@@ -14,6 +14,7 @@ from app.services.docx_layout import (
     add_left_right_line,
     apply_paragraph_alignment,
     clean_education_title_dates,
+    has_renderable_content,
     split_left_right_meta,
     summary_to_bullets,
     usable_content_width,
@@ -116,6 +117,10 @@ def render_from_docx_skeleton(
         if not isinstance(section, dict):
             continue
         title = str(section.get("title") or "").strip()
+        # A heading with nothing under it (e.g. Capgemini "Summary of Projects" when
+        # the source has no projects) is dropped rather than rendered empty.
+        if not has_renderable_content(section.get("content")):
+            continue
         if title:
             title_para = doc.add_paragraph()
             display_title = to_heading_title_case(title, keep_colon=False)
