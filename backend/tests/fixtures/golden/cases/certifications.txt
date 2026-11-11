@@ -1,0 +1,9 @@
+Casey Example
+casey.example@example.com
+EXPERIENCE
+Data Engineer | Harbor Analytics — 2019 – Present
+• Built streaming ETL pipelines for logistics data.
+CERTIFICATIONS
+AWS Certified Data Engineer - Associate, 2020
+SKILLS
+Python, Spark

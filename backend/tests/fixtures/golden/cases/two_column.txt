@@ -1,0 +1,12 @@
+Casey Example
+casey.example@example.com
+[COLUMN LEFT]
+SKILLS
+Python
+SQL
+[COLUMN RIGHT]
+EXPERIENCE
+Analyst | Harbor Analytics | 2019 – Present
+• Built a weekly sales report for store managers.
+EDUCATION
+B.S. Physics, Example State College

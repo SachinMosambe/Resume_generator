@@ -1,0 +1,10 @@
+Casey Example
+[COLUMN LEFT]
+SKILLS
+Python
+Go
+SQL
+[COLUMN RIGHT]
+EXPERIENCE
+Data Engineer | Harbor Analytics | 2019 – Present
+• Built streaming ETL pipelines for logistics data.

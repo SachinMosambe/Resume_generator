@@ -1,0 +1,11 @@
+Casey Example
+PAGE 1 IMAGE ONLY
+SUMMARY
+Engineer whose resume is stored as a scan.
+PAGE 2 IMAGE ONLY
+EXPERIENCE
+Senior Engineer | ExampleCorp — 2020 – Present
+• shipped the billing service used by internal teams.
+PAGE 3 IMAGE ONLY
+SKILLS
+Python, SQL

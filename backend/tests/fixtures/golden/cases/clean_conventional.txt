@@ -1,0 +1,13 @@
+Alex Example
+Senior Engineer
+alex.example@example.com
+(555) 010-1001
+SUMMARY
+Engineer who shipped platform work for product teams.
+EXPERIENCE
+Senior Engineer | ExampleCorp — Austin, TX 2020 – Present
+• shipped the billing service used by internal teams.
+EDUCATION
+B.S. Computer Science, Example State College
+SKILLS
+Python, SQL

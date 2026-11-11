@@ -1,0 +1,6 @@
+Quinn Harper
+quinn.harper@example.com
+EDUCATION
+B.S. Computer Science — Example State College, 2018
+SKILLS
+Python, SQL

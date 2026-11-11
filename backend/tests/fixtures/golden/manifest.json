@@ -1,0 +1,1461 @@
+{
+  "version": 1,
+  "baseline_run": "corpus_eval_20261111_135025",
+  "fixtures": [
+    {
+      "formats": [
+        "aptino",
+        "capgemini",
+        "suresh"
+      ],
+      "expected_status": "passed",
+      "id": "clean_guillermo_pattern",
+      "pattern": "conventional_clean",
+      "source": "cases/clean_conventional.txt",
+      "scored": true,
+      "expects_work_history": true,
+      "expected_roles": [
+        {
+          "company": "ExampleCorp",
+          "title": "Senior Engineer",
+          "dates_contains": [
+            "2020"
+          ],
+          "bullet_substrings": [
+            "shipped"
+          ]
+        }
+      ],
+      "expected_name": "Alex Example",
+      "style_subset": true
+    },
+    {
+      "formats": [
+        "aptino",
+        "capgemini",
+        "suresh"
+      ],
+      "expected_status": "passed",
+      "id": "dice_wrapper_full_resume",
+      "pattern": "dice_wrapper",
+      "source": "cases/dice_wrapper.txt",
+      "scored": true,
+      "expects_work_history": true,
+      "expected_roles": [
+        {
+          "company": "Amazon",
+          "title": "Software Engineer",
+          "bullet_substrings": [
+            "onboarding tool"
+          ]
+        }
+      ],
+      "expected_name": "Morgan Hale"
+    },
+    {
+      "formats": [
+        "aptino",
+        "capgemini",
+        "suresh"
+      ],
+      "expected_status": "passed",
+      "id": "paren_title_split_header",
+      "pattern": "paren_title",
+      "source": "cases/paren_title.txt",
+      "scored": true,
+      "expects_work_history": true,
+      "expected_roles": [
+        {
+          "company": "Northwind Labs",
+          "title": "Platform Engineer",
+          "dates_contains": [
+            "03/19"
+          ],
+          "bullet_substrings": [
+            "billing service"
+          ]
+        }
+      ],
+      "expected_name": "Jordan Hale"
+    },
+    {
+      "formats": [
+        "aptino",
+        "capgemini",
+        "suresh"
+      ],
+      "expected_status": "passed",
+      "id": "bullet_only_experience",
+      "pattern": "bullet_only",
+      "source": "cases/bullet_only.txt",
+      "scored": true,
+      "expects_work_history": true,
+      "allow_unassigned_bullets": true,
+      "expected_bullet_substrings": [
+        "onboarding checklist",
+        "finance close",
+        "close checklist"
+      ],
+      "expected_name": "Riley Quinn"
+    },
+    {
+      "formats": [
+        "aptino",
+        "capgemini",
+        "suresh"
+      ],
+      "expected_status": "passed",
+      "id": "education_only_complete",
+      "pattern": "education_only",
+      "source": "cases/education_only.txt",
+      "scored": true,
+      "expects_work_history": false,
+      "expected_name": "Quinn Harper",
+      "expected_education_substrings": [
+        "Example State College",
+        "Computer Science"
+      ]
+    },
+    {
+      "formats": [
+        "aptino",
+        "capgemini",
+        "suresh"
+      ],
+      "expected_status": "passed",
+      "id": "clean_one_role",
+      "pattern": "conventional_clean",
+      "source": "cases/clean_one_role.txt",
+      "scored": true,
+      "expects_work_history": true,
+      "expected_name": "Casey Example",
+      "expected_roles": [
+        {
+          "company": "Litware",
+          "title": "Analyst",
+          "dates_contains": [
+            "2021"
+          ],
+          "bullet_substrings": [
+            "monthly books"
+          ]
+        }
+      ],
+      "style_subset": true
+    },
+    {
+      "formats": [
+        "aptino",
+        "capgemini",
+        "suresh"
+      ],
+      "expected_status": "passed",
+      "id": "emdash_role_header",
+      "pattern": "emdash_header",
+      "source": "cases/emdash_header.txt",
+      "scored": true,
+      "expects_work_history": true,
+      "expected_name": "Casey Example",
+      "expected_roles": [
+        {
+          "company": "Fabrikam Studio",
+          "title": "Designer",
+          "dates_contains": [
+            "2019"
+          ],
+          "bullet_substrings": [
+            "settings screens"
+          ]
+        }
+      ]
+    },
+    {
+      "formats": [
+        "aptino",
+        "capgemini",
+        "suresh"
+      ],
+      "expected_status": "passed",
+      "id": "title_only_under_experience",
+      "pattern": "title_only",
+      "source": "cases/title_only.txt",
+      "scored": true,
+      "expects_work_history": true,
+      "expected_name": "Casey Example",
+      "expected_roles": [
+        {
+          "title": "Product Designer",
+          "bullet_substrings": [
+            "settings screens"
+          ]
+        }
+      ]
+    },
+    {
+      "formats": [
+        "aptino",
+        "capgemini",
+        "suresh"
+      ],
+      "expected_status": "passed",
+      "id": "numeric_date_history",
+      "pattern": "numeric_dates",
+      "source": "cases/numeric_dates.txt",
+      "scored": true,
+      "expects_work_history": true,
+      "expected_name": "Casey Example",
+      "expected_roles": [
+        {
+          "company": "Litware",
+          "title": "Analyst",
+          "dates_contains": [
+            "2021"
+          ],
+          "bullet_substrings": [
+            "monthly books"
+          ]
+        },
+        {
+          "company": "Fabrikam Studio",
+          "title": "Designer",
+          "dates_contains": [
+            "2018"
+          ],
+          "bullet_substrings": [
+            "settings screens"
+          ]
+        }
+      ]
+    },
+    {
+      "formats": [
+        "aptino",
+        "capgemini",
+        "suresh"
+      ],
+      "expected_status": "passed",
+      "id": "promotion_same_employer",
+      "pattern": "promotion",
+      "source": "cases/promotion_ladder.txt",
+      "scored": true,
+      "expects_work_history": true,
+      "expected_name": "Casey Example",
+      "expected_roles": [
+        {
+          "company": "ExampleCorp",
+          "title": "Engineer I",
+          "dates_contains": [
+            "2016"
+          ],
+          "bullet_substrings": [
+            "intake form"
+          ]
+        },
+        {
+          "company": "ExampleCorp",
+          "title": "Engineer II",
+          "dates_contains": [
+            "2019"
+          ],
+          "bullet_substrings": [
+            "billing service"
+          ]
+        }
+      ]
+    },
+    {
+      "formats": [
+        "aptino",
+        "capgemini",
+        "suresh"
+      ],
+      "expected_status": "passed",
+      "id": "two_column_body",
+      "pattern": "two_column",
+      "source": "cases/two_column.txt",
+      "scored": true,
+      "expects_work_history": true,
+      "expected_name": "Casey Example",
+      "expected_roles": [
+        {
+          "company": "Harbor Analytics",
+          "title": "Analyst",
+          "dates_contains": [
+            "2019"
+          ],
+          "bullet_substrings": [
+            "sales report"
+          ]
+        }
+      ]
+    },
+    {
+      "formats": [
+        "aptino",
+        "capgemini",
+        "suresh"
+      ],
+      "expected_status": "passed",
+      "id": "two_column_sidebar",
+      "pattern": "two_column",
+      "source": "cases/two_column_sidebar.txt",
+      "scored": true,
+      "expects_work_history": true,
+      "expected_name": "Casey Example",
+      "expected_roles": [
+        {
+          "company": "Harbor Analytics",
+          "title": "Data Engineer",
+          "dates_contains": [
+            "2019"
+          ],
+          "bullet_substrings": [
+            "ETL pipelines"
+          ]
+        }
+      ]
+    },
+    {
+      "formats": [
+        "aptino",
+        "capgemini",
+        "suresh"
+      ],
+      "expected_status": "passed",
+      "id": "table_docx_experience",
+      "pattern": "table_docx",
+      "source": "cases/table_experience.txt",
+      "scored": true,
+      "expects_work_history": true,
+      "builder": "table_docx",
+      "ext": "docx",
+      "expected_name": "Casey Example",
+      "expected_roles": [
+        {
+          "company": "Harbor Analytics",
+          "title": "Data Engineer",
+          "dates_contains": [
+            "2019"
+          ],
+          "bullet_substrings": [
+            "ETL pipelines"
+          ]
+        },
+        {
+          "company": "Litware",
+          "title": "Analyst",
+          "dates_contains": [
+            "2015"
+          ],
+          "bullet_substrings": [
+            "finance reports"
+          ]
+        }
+      ]
+    },
+    {
+      "formats": [
+        "aptino",
+        "capgemini",
+        "suresh"
+      ],
+      "expected_status": "passed",
+      "id": "long_history_twelve_roles",
+      "pattern": "long_history",
+      "source": "cases/long_history.txt",
+      "scored": true,
+      "expects_work_history": true,
+      "expected_name": "Alex Example",
+      "expected_roles": [
+        {
+          "company": "ExampleCorp",
+          "title": "Engineer I",
+          "dates_contains": [
+            "2010"
+          ],
+          "bullet_substrings": [
+            "shipped"
+          ]
+        },
+        {
+          "company": "Northwind Labs",
+          "title": "Engineer II",
+          "dates_contains": [
+            "2011"
+          ],
+          "bullet_substrings": [
+            "kept"
+          ]
+        },
+        {
+          "company": "Contoso Labs",
+          "title": "Analyst",
+          "dates_contains": [
+            "2012"
+          ],
+          "bullet_substrings": [
+            "closed"
+          ]
+        },
+        {
+          "company": "Fabrikam Studio",
+          "title": "Designer",
+          "dates_contains": [
+            "2013"
+          ],
+          "bullet_substrings": [
+            "drew"
+          ]
+        },
+        {
+          "company": "Adventure Works",
+          "title": "Consultant",
+          "dates_contains": [
+            "2014"
+          ],
+          "bullet_substrings": [
+            "mapped"
+          ]
+        },
+        {
+          "company": "Litware",
+          "title": "Developer",
+          "dates_contains": [
+            "2015"
+          ],
+          "bullet_substrings": [
+            "added"
+          ]
+        },
+        {
+          "company": "Tailspin Toys",
+          "title": "Lead",
+          "dates_contains": [
+            "2016"
+          ],
+          "bullet_substrings": [
+            "mentored"
+          ]
+        },
+        {
+          "company": "Alpine Retail",
+          "title": "Manager",
+          "dates_contains": [
+            "2017"
+          ],
+          "bullet_substrings": [
+            "ran"
+          ]
+        },
+        {
+          "company": "Harbor Analytics",
+          "title": "Data Engineer",
+          "dates_contains": [
+            "2018"
+          ],
+          "bullet_substrings": [
+            "built"
+          ]
+        },
+        {
+          "company": "Pioneer Mutual",
+          "title": "Engineer",
+          "dates_contains": [
+            "2019"
+          ],
+          "bullet_substrings": [
+            "documented"
+          ]
+        },
+        {
+          "company": "Cedar Systems",
+          "title": "Senior Engineer",
+          "dates_contains": [
+            "2020"
+          ],
+          "bullet_substrings": [
+            "shipped"
+          ]
+        },
+        {
+          "company": "Wide World Importers",
+          "title": "Staff Engineer",
+          "dates_contains": [
+            "2021"
+          ],
+          "bullet_substrings": [
+            "led"
+          ]
+        }
+      ]
+    },
+    {
+      "formats": [
+        "aptino",
+        "capgemini",
+        "suresh"
+      ],
+      "expected_status": "passed",
+      "id": "missing_optional_sections",
+      "pattern": "missing_optional",
+      "source": "cases/missing_optional.txt",
+      "scored": true,
+      "expects_work_history": true,
+      "absent_sections": [
+        "projects",
+        "certifications",
+        "references"
+      ],
+      "expected_name": "Casey Example",
+      "expected_roles": [
+        {
+          "company": "ExampleCorp",
+          "title": "Senior Engineer",
+          "dates_contains": [
+            "2020"
+          ],
+          "bullet_substrings": [
+            "shipped"
+          ]
+        }
+      ]
+    },
+    {
+      "formats": [
+        "aptino",
+        "capgemini",
+        "suresh"
+      ],
+      "expected_status": "passed",
+      "id": "missing_summary",
+      "pattern": "missing_optional",
+      "source": "cases/missing_summary.txt",
+      "scored": true,
+      "expects_work_history": true,
+      "absent_sections": [
+        "summary"
+      ],
+      "expected_name": "Casey Example",
+      "expected_roles": [
+        {
+          "company": "Litware",
+          "title": "Analyst",
+          "dates_contains": [
+            "2021"
+          ],
+          "bullet_substrings": [
+            "monthly books"
+          ]
+        }
+      ]
+    },
+    {
+      "formats": [
+        "aptino",
+        "capgemini",
+        "suresh"
+      ],
+      "expected_status": "passed",
+      "id": "scanned_image_stub",
+      "pattern": "scanned",
+      "source": "cases/scanned_stub.txt",
+      "scored": true,
+      "expects_work_history": true,
+      "builder": "scanned_pdf",
+      "ext": "pdf",
+      "intake": "ocr",
+      "expected_name": "Casey Example",
+      "expected_roles": [
+        {
+          "company": "ExampleCorp",
+          "title": "Senior Engineer",
+          "dates_contains": [
+            "2020"
+          ],
+          "bullet_substrings": [
+            "shipped"
+          ]
+        }
+      ]
+    },
+    {
+      "formats": [
+        "aptino",
+        "capgemini",
+        "suresh"
+      ],
+      "expected_status": "passed",
+      "id": "scanned_mixed_pages",
+      "pattern": "scanned",
+      "source": "cases/scanned_mixed.txt",
+      "scored": true,
+      "expects_work_history": true,
+      "builder": "mixed_pdf",
+      "ext": "pdf",
+      "intake": "ocr",
+      "expected_name": "Casey Example",
+      "expected_roles": [
+        {
+          "company": "Litware",
+          "title": "Analyst",
+          "dates_contains": [
+            "2021"
+          ],
+          "bullet_substrings": [
+            "monthly books"
+          ]
+        }
+      ]
+    },
+    {
+      "formats": [
+        "aptino",
+        "capgemini",
+        "suresh"
+      ],
+      "expected_status": "passed",
+      "id": "legacy_doc_simple",
+      "pattern": "legacy_doc",
+      "source": "cases/legacy_doc.txt",
+      "scored": true,
+      "expects_work_history": true,
+      "builder": "legacy_doc",
+      "ext": "doc",
+      "expected_name": "Casey Example",
+      "expected_roles": [
+        {
+          "company": "Litware",
+          "title": "Analyst",
+          "dates_contains": [
+            "2021"
+          ],
+          "bullet_substrings": [
+            "monthly books"
+          ]
+        }
+      ]
+    },
+    {
+      "formats": [
+        "aptino",
+        "capgemini",
+        "suresh"
+      ],
+      "expected_status": "passed",
+      "id": "legacy_doc_multi_role",
+      "pattern": "legacy_doc",
+      "source": "cases/legacy_doc_multi.txt",
+      "scored": true,
+      "expects_work_history": true,
+      "builder": "legacy_doc",
+      "ext": "doc",
+      "expected_name": "Casey Example",
+      "expected_roles": [
+        {
+          "company": "Litware",
+          "title": "Analyst",
+          "dates_contains": [
+            "2021"
+          ],
+          "bullet_substrings": [
+            "monthly books"
+          ]
+        },
+        {
+          "company": "Fabrikam Studio",
+          "title": "Designer",
+          "dates_contains": [
+            "2018"
+          ],
+          "bullet_substrings": [
+            "settings screens"
+          ]
+        }
+      ]
+    },
+    {
+      "formats": [
+        "aptino",
+        "capgemini",
+        "suresh"
+      ],
+      "expected_status": "passed",
+      "id": "sparse_profile_needs_full_resume",
+      "pattern": "sparse_profile",
+      "source": "cases/sparse_profile_full.txt",
+      "scored": true,
+      "expects_work_history": true,
+      "expected_name": "Casey Example",
+      "expected_summary_substrings": [
+        "weekly retail reports"
+      ],
+      "expected_roles": [
+        {
+          "company": "Litware",
+          "title": "Analyst",
+          "dates_contains": [
+            "2021"
+          ],
+          "bullet_substrings": [
+            "monthly books"
+          ]
+        }
+      ]
+    },
+    {
+      "formats": [
+        "aptino",
+        "capgemini",
+        "suresh"
+      ],
+      "expected_status": "passed",
+      "id": "sparse_valid_resume",
+      "pattern": "sparse_profile",
+      "source": "cases/sparse_valid.txt",
+      "scored": true,
+      "expects_work_history": true,
+      "expected_name": "Casey Example",
+      "expected_roles": [
+        {
+          "company": "Litware",
+          "title": "Analyst",
+          "dates_contains": [
+            "2021"
+          ],
+          "bullet_substrings": [
+            "monthly books"
+          ]
+        }
+      ]
+    },
+    {
+      "formats": [
+        "aptino",
+        "capgemini",
+        "suresh"
+      ],
+      "expected_status": "needs_review",
+      "id": "ambiguous_role_headers",
+      "pattern": "ambiguous",
+      "source": "cases/ambiguous_headers.txt",
+      "scored": true,
+      "expects_work_history": true,
+      "expected_name": "Casey Example",
+      "expected_bullet_substrings": [
+        "monthly books",
+        "settings screens"
+      ]
+    },
+    {
+      "formats": [
+        "aptino",
+        "capgemini",
+        "suresh"
+      ],
+      "expected_status": "needs_review",
+      "id": "ambiguous_tech_token_name",
+      "pattern": "ambiguous",
+      "source": "cases/ambiguous_name.txt",
+      "scored": true,
+      "expects_work_history": true,
+      "rejected_names": [
+        "React Native",
+        "React Native."
+      ],
+      "expected_roles": [
+        {
+          "company": "Litware",
+          "title": "Analyst",
+          "dates_contains": [
+            "2021"
+          ],
+          "bullet_substrings": [
+            "monthly books"
+          ]
+        }
+      ]
+    },
+    {
+      "formats": [
+        "aptino",
+        "capgemini",
+        "suresh"
+      ],
+      "expected_status": "needs_review",
+      "id": "ambiguous_overlapping_dates",
+      "pattern": "ambiguous",
+      "source": "cases/ambiguous_dates.txt",
+      "scored": true,
+      "expects_work_history": true,
+      "expected_name": "Casey Example",
+      "expected_roles": [
+        {
+          "company": "Litware",
+          "title": "Analyst",
+          "dates_contains": [
+            "2020"
+          ],
+          "bullet_substrings": [
+            "monthly books"
+          ]
+        },
+        {
+          "company": "Fabrikam Studio",
+          "title": "Designer",
+          "dates_contains": [
+            "2021"
+          ],
+          "bullet_substrings": [
+            "settings screens"
+          ]
+        }
+      ]
+    },
+    {
+      "formats": [
+        "aptino",
+        "capgemini",
+        "suresh"
+      ],
+      "expected_status": "passed",
+      "id": "pipe_delimited_headers",
+      "pattern": "pipe_header",
+      "source": "cases/pipe_headers.txt",
+      "scored": true,
+      "expects_work_history": true,
+      "expected_name": "Casey Example",
+      "expected_roles": [
+        {
+          "company": "Litware",
+          "title": "Analyst",
+          "dates_contains": [
+            "2021"
+          ],
+          "bullet_substrings": [
+            "monthly books"
+          ]
+        }
+      ]
+    },
+    {
+      "formats": [
+        "aptino",
+        "capgemini",
+        "suresh"
+      ],
+      "expected_status": "passed",
+      "id": "all_caps_sections",
+      "pattern": "caps_sections",
+      "source": "cases/caps_sections.txt",
+      "scored": true,
+      "expects_work_history": true,
+      "expected_name": "Casey Example",
+      "expected_roles": [
+        {
+          "company": "Litware",
+          "title": "Analyst",
+          "dates_contains": [
+            "2021"
+          ],
+          "bullet_substrings": [
+            "monthly books"
+          ]
+        }
+      ]
+    },
+    {
+      "formats": [
+        "aptino",
+        "capgemini",
+        "suresh"
+      ],
+      "expected_status": "passed",
+      "id": "education_with_single_role",
+      "pattern": "education_plus_role",
+      "source": "cases/education_one_role.txt",
+      "scored": true,
+      "expects_work_history": true,
+      "expected_name": "Casey Example",
+      "expected_roles": [
+        {
+          "company": "Litware",
+          "title": "Analyst",
+          "dates_contains": [
+            "2021"
+          ],
+          "bullet_substrings": [
+            "monthly books"
+          ]
+        }
+      ]
+    },
+    {
+      "formats": [
+        "aptino",
+        "capgemini",
+        "suresh"
+      ],
+      "expected_status": "passed",
+      "id": "skills_only_no_employment",
+      "pattern": "skills_only",
+      "source": "cases/skills_only.txt",
+      "scored": true,
+      "expects_work_history": false,
+      "expected_name": "Casey Example",
+      "expected_skill_substrings": [
+        "Python",
+        "SQL"
+      ]
+    },
+    {
+      "formats": [
+        "aptino",
+        "capgemini",
+        "suresh"
+      ],
+      "expected_status": "passed",
+      "id": "certifications_block",
+      "pattern": "certifications",
+      "source": "cases/certifications.txt",
+      "scored": true,
+      "expects_work_history": true,
+      "expected_name": "Casey Example",
+      "expected_roles": [
+        {
+          "company": "Harbor Analytics",
+          "title": "Data Engineer",
+          "dates_contains": [
+            "2019"
+          ],
+          "bullet_substrings": [
+            "ETL pipelines"
+          ]
+        }
+      ],
+      "expected_certification_substrings": [
+        "AWS Certified Data Engineer"
+      ]
+    },
+    {
+      "formats": [
+        "aptino",
+        "capgemini",
+        "suresh"
+      ],
+      "expected_status": "passed",
+      "id": "references_section_present",
+      "pattern": "references",
+      "source": "cases/references.txt",
+      "scored": true,
+      "expects_work_history": true,
+      "expected_name": "Casey Example",
+      "optional_omitted_sections": [
+        "references"
+      ],
+      "expected_roles": [
+        {
+          "company": "Litware",
+          "title": "Analyst",
+          "dates_contains": [
+            "2021"
+          ],
+          "bullet_substrings": [
+            "monthly books"
+          ]
+        }
+      ]
+    },
+    {
+      "formats": [
+        "aptino",
+        "capgemini",
+        "suresh"
+      ],
+      "expected_status": "needs_review",
+      "id": "empty_title_under_company",
+      "pattern": "empty_title",
+      "source": "cases/empty_title.txt",
+      "scored": true,
+      "expects_work_history": true,
+      "expected_name": "Casey Example",
+      "expected_roles": [
+        {
+          "company": "Litware",
+          "dates_contains": [
+            "2021"
+          ],
+          "bullet_substrings": [
+            "monthly books"
+          ]
+        }
+      ]
+    },
+    {
+      "formats": [
+        "aptino",
+        "capgemini",
+        "suresh"
+      ],
+      "expected_status": "passed",
+      "id": "bullet_only_with_date_lines",
+      "pattern": "bullet_only",
+      "source": "cases/bullet_only_dated.txt",
+      "scored": true,
+      "expects_work_history": true,
+      "allow_unassigned_bullets": true,
+      "expected_name": "Casey Example",
+      "expected_bullet_substrings": [
+        "sales report",
+        "inventory count",
+        "monthly books"
+      ]
+    },
+    {
+      "formats": [
+        "aptino",
+        "capgemini",
+        "suresh"
+      ],
+      "expected_status": "passed",
+      "id": "dice_labels_without_jobs",
+      "pattern": "dice_wrapper",
+      "source": "cases/dice_labels_only.txt",
+      "scored": true,
+      "expects_work_history": false,
+      "expected_name": "Casey Example"
+    },
+    {
+      "formats": [
+        "aptino",
+        "capgemini",
+        "suresh"
+      ],
+      "expected_status": "passed",
+      "id": "two_column_skills_rail",
+      "pattern": "two_column",
+      "source": "cases/two_column_skills.txt",
+      "scored": true,
+      "expects_work_history": true,
+      "expected_name": "Casey Example",
+      "expected_roles": [
+        {
+          "company": "Harbor Analytics",
+          "title": "Data Engineer",
+          "dates_contains": [
+            "2019"
+          ],
+          "bullet_substrings": [
+            "ETL pipelines"
+          ]
+        }
+      ]
+    },
+    {
+      "formats": [
+        "aptino",
+        "capgemini",
+        "suresh"
+      ],
+      "expected_status": "passed",
+      "id": "table_docx_education",
+      "pattern": "table_docx",
+      "source": "cases/table_education.txt",
+      "scored": true,
+      "expects_work_history": true,
+      "builder": "table_docx",
+      "ext": "docx",
+      "expected_name": "Casey Example",
+      "expected_roles": [
+        {
+          "company": "Litware",
+          "title": "Analyst",
+          "dates_contains": [
+            "2021"
+          ],
+          "bullet_substrings": [
+            "monthly books"
+          ]
+        }
+      ]
+    },
+    {
+      "formats": [
+        "aptino",
+        "capgemini",
+        "suresh"
+      ],
+      "expected_status": "passed",
+      "id": "long_bullet_single_role",
+      "pattern": "long_history",
+      "source": "cases/long_bullets.txt",
+      "scored": true,
+      "expects_work_history": true,
+      "expected_name": "Casey Example",
+      "expected_roles": [
+        {
+          "company": "ExampleCorp",
+          "title": "Senior Engineer",
+          "dates_contains": [
+            "2020"
+          ],
+          "bullet_substrings": [
+            "shipped",
+            "queue workers",
+            "finance close",
+            "search index"
+          ]
+        }
+      ]
+    },
+    {
+      "formats": [
+        "aptino",
+        "capgemini",
+        "suresh"
+      ],
+      "expected_status": "passed",
+      "id": "contact_header_block",
+      "pattern": "contact_header",
+      "source": "cases/contact_header.txt",
+      "scored": true,
+      "expects_work_history": true,
+      "expected_name": "Casey Example",
+      "expected_roles": [
+        {
+          "company": "Litware",
+          "title": "Analyst",
+          "dates_contains": [
+            "2015"
+          ],
+          "bullet_substrings": [
+            "finance reports"
+          ]
+        }
+      ]
+    },
+    {
+      "expected_status": "quarantine",
+      "id": "non_resume_certificate",
+      "pattern": "non_resume",
+      "source": "cases/non_resume_certificate.txt",
+      "scored": false,
+      "expects_work_history": false
+    },
+    {
+      "expected_status": "quarantine",
+      "id": "non_resume_travel_history",
+      "pattern": "non_resume",
+      "source": "cases/non_resume_travel.txt",
+      "scored": false,
+      "expects_work_history": false
+    },
+    {
+      "formats": [
+        "aptino",
+        "capgemini",
+        "suresh"
+      ],
+      "expected_status": "passed",
+      "id": "legacy_doc_contract_dates",
+      "pattern": "legacy_doc",
+      "source": "cases/legacy_doc_contract.txt",
+      "scored": true,
+      "expects_work_history": true,
+      "builder": "legacy_doc",
+      "ext": "doc",
+      "expected_name": "Casey Example",
+      "expected_roles": [
+        {
+          "company": "Litware",
+          "title": "Contract Analyst",
+          "dates_contains": [
+            "03/20"
+          ],
+          "bullet_substrings": [
+            "monthly books"
+          ]
+        },
+        {
+          "company": "Harbor Analytics",
+          "title": "Analyst",
+          "dates_contains": [
+            "01/21"
+          ],
+          "bullet_substrings": [
+            "sales report"
+          ]
+        }
+      ]
+    },
+    {
+      "formats": [
+        "aptino",
+        "capgemini",
+        "suresh"
+      ],
+      "expected_status": "passed",
+      "id": "scanned_three_page_stub",
+      "pattern": "scanned",
+      "source": "cases/scanned_three_page.txt",
+      "scored": true,
+      "expects_work_history": true,
+      "builder": "scanned_pdf",
+      "ext": "pdf",
+      "intake": "ocr",
+      "expected_name": "Casey Example",
+      "expected_roles": [
+        {
+          "company": "ExampleCorp",
+          "title": "Senior Engineer",
+          "dates_contains": [
+            "2020"
+          ],
+          "bullet_substrings": [
+            "shipped"
+          ]
+        }
+      ]
+    },
+    {
+      "formats": [
+        "aptino",
+        "capgemini",
+        "suresh"
+      ],
+      "expected_status": "passed",
+      "id": "clean_with_projects",
+      "pattern": "projects_present",
+      "source": "cases/clean_with_projects.txt",
+      "scored": true,
+      "expects_work_history": true,
+      "style_subset": true,
+      "expected_name": "Alex Example",
+      "expected_roles": [
+        {
+          "company": "ExampleCorp",
+          "title": "Senior Engineer",
+          "dates_contains": [
+            "2020"
+          ],
+          "bullet_substrings": [
+            "shipped"
+          ]
+        }
+      ]
+    },
+    {
+      "formats": [
+        "aptino",
+        "capgemini",
+        "suresh"
+      ],
+      "expected_status": "passed",
+      "id": "clean_without_projects",
+      "pattern": "projects_absent",
+      "source": "cases/clean_without_projects.txt",
+      "scored": true,
+      "expects_work_history": true,
+      "style_subset": true,
+      "absent_sections": [
+        "projects"
+      ],
+      "expected_name": "Alex Example",
+      "expected_roles": [
+        {
+          "company": "ExampleCorp",
+          "title": "Senior Engineer",
+          "dates_contains": [
+            "2020"
+          ],
+          "bullet_substrings": [
+            "shipped"
+          ]
+        }
+      ]
+    },
+    {
+      "formats": [
+        "aptino",
+        "capgemini",
+        "suresh"
+      ],
+      "expected_status": "passed",
+      "id": "month_year_range_roles",
+      "pattern": "conventional_clean",
+      "source": "cases/month_year_roles.txt",
+      "scored": true,
+      "expects_work_history": true,
+      "style_subset": true,
+      "expected_name": "Casey Example",
+      "expected_roles": [
+        {
+          "company": "Litware",
+          "title": "Analyst",
+          "dates_contains": [
+            "2019"
+          ],
+          "bullet_substrings": [
+            "finance reports"
+          ]
+        },
+        {
+          "company": "Harbor Analytics",
+          "title": "Data Engineer",
+          "dates_contains": [
+            "2021"
+          ],
+          "bullet_substrings": [
+            "ETL pipelines"
+          ]
+        }
+      ]
+    },
+    {
+      "formats": [
+        "aptino",
+        "capgemini",
+        "suresh"
+      ],
+      "expected_status": "passed",
+      "id": "current_role_present",
+      "pattern": "conventional_clean",
+      "source": "cases/current_role.txt",
+      "scored": true,
+      "expects_work_history": true,
+      "style_subset": true,
+      "expected_name": "Casey Example",
+      "expected_roles": [
+        {
+          "company": "Litware",
+          "title": "Analyst",
+          "dates_contains": [
+            "2022"
+          ],
+          "bullet_substrings": [
+            "monthly books"
+          ]
+        }
+      ]
+    },
+    {
+      "formats": [
+        "aptino",
+        "capgemini",
+        "suresh"
+      ],
+      "expected_status": "passed",
+      "id": "dice_labels_inside_real_resume",
+      "pattern": "dice_wrapper",
+      "source": "cases/dice_inside_resume.txt",
+      "scored": true,
+      "expects_work_history": true,
+      "expected_name": "Casey Example",
+      "expected_summary_substrings": [
+        "weekly retail reports"
+      ],
+      "expected_roles": [
+        {
+          "company": "Litware",
+          "title": "Analyst",
+          "dates_contains": [
+            "2021"
+          ],
+          "bullet_substrings": [
+            "monthly books"
+          ]
+        }
+      ]
+    },
+    {
+      "formats": [
+        "aptino",
+        "capgemini",
+        "suresh"
+      ],
+      "expected_status": "passed",
+      "id": "unicode_bullet_markers",
+      "pattern": "unicode_bullets",
+      "source": "cases/unicode_bullets.txt",
+      "scored": true,
+      "expects_work_history": true,
+      "expected_name": "Casey Example",
+      "expected_roles": [
+        {
+          "company": "Litware",
+          "title": "Analyst",
+          "dates_contains": [
+            "2021"
+          ],
+          "bullet_substrings": [
+            "monthly books",
+            "sales report",
+            "inventory count"
+          ]
+        }
+      ]
+    },
+    {
+      "formats": [
+        "aptino",
+        "capgemini",
+        "suresh"
+      ],
+      "expected_status": "passed",
+      "id": "same_month_two_employers",
+      "pattern": "conventional_clean",
+      "source": "cases/same_month_employers.txt",
+      "scored": true,
+      "expects_work_history": true,
+      "expected_name": "Casey Example",
+      "expected_roles": [
+        {
+          "company": "Litware",
+          "title": "Analyst",
+          "dates_contains": [
+            "2020"
+          ],
+          "bullet_substrings": [
+            "monthly books"
+          ]
+        },
+        {
+          "company": "Fabrikam Studio",
+          "title": "Designer",
+          "dates_contains": [
+            "2020"
+          ],
+          "bullet_substrings": [
+            "settings screens"
+          ]
+        }
+      ]
+    },
+    {
+      "formats": [
+        "aptino",
+        "capgemini",
+        "suresh"
+      ],
+      "expected_status": "needs_review",
+      "id": "ambiguous_company_title_swap",
+      "pattern": "ambiguous",
+      "source": "cases/ambiguous_swap.txt",
+      "scored": true,
+      "expects_work_history": true,
+      "expected_name": "Casey Example",
+      "expected_bullet_substrings": [
+        "monthly books"
+      ]
+    }
+  ],
+  "gates": {
+    "passed_pct_min": 85,
+    "zero_role_pct_max": 3,
+    "empty_title_pct_max": 5,
+    "bad_name_pct_max": 5,
+    "scanned_recovery_pct_min": 90,
+    "doc_conversion_pct_min": 90,
+    "style_assert_pct_min": 100,
+    "failed_pct_max": 2
+  }
+}

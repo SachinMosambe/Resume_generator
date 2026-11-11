@@ -1,0 +1,11 @@
+Casey Example
+casey.example@example.com
+SUMMARY
+Engineer focused on platform work.
+EXPERIENCE
+Senior Engineer | ExampleCorp — 2020 – Present
+• shipped the billing service used by internal teams.
+EDUCATION
+B.S. Computer Science, Example State College
+SKILLS
+Python

@@ -1,0 +1,33 @@
+Alex Example
+alex.example@example.com
+SUMMARY
+Engineer with a long history of platform work.
+EXPERIENCE
+Engineer I | ExampleCorp — Remote 2010 – 2011
+• shipped the intake form for internal teams.
+Engineer II | Northwind Labs — Remote 2011 – 2012
+• kept the queue workers healthy for internal teams.
+Analyst | Contoso Labs — Remote 2012 – 2013
+• closed the weekly operations report for internal teams.
+Designer | Fabrikam Studio — Remote 2013 – 2014
+• drew the settings screens for internal teams.
+Consultant | Adventure Works — Remote 2014 – 2015
+• mapped the warehouse process for internal teams.
+Developer | Litware — Remote 2015 – 2016
+• added the search index for internal teams.
+Lead | Tailspin Toys — Remote 2016 – 2017
+• mentored two junior developers for internal teams.
+Manager | Alpine Retail — Remote 2017 – 2018
+• ran the holiday release for internal teams.
+Data Engineer | Harbor Analytics — Remote 2018 – 2019
+• built the nightly sales extract for internal teams.
+Engineer | Pioneer Mutual — Remote 2019 – 2020
+• documented the claims workflow for internal teams.
+Senior Engineer | Cedar Systems — Remote 2020 – 2021
+• shipped the billing service for internal teams.
+Staff Engineer | Wide World Importers — Remote 2021 – 2022
+• led the platform migration for internal teams.
+EDUCATION
+B.S. Computer Science, Example State College
+SKILLS
+Python, SQL

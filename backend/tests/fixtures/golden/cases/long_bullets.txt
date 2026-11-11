@@ -1,0 +1,14 @@
+Casey Example
+casey.example@example.com
+EXPERIENCE
+Senior Engineer | ExampleCorp — 2020 – Present
+• shipped the billing service used by internal teams.
+• Kept the queue workers healthy during the holiday peak.
+• Documented the weekly finance close for the operations team.
+• Trained two analysts on the close checklist.
+• Added the search index for product lookup.
+• Drew the settings screens for the admin tool.
+• Built a weekly sales report for store managers.
+• Automated the inventory count for two stores.
+SKILLS
+Python, SQL

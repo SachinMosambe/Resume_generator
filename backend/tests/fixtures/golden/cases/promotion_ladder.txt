@@ -1,0 +1,10 @@
+Casey Example
+casey.example@example.com
+EXPERIENCE
+ExampleCorp
+Engineer I | Jan 2016 - Dec 2018
+• shipped the intake form for new accounts.
+Engineer II | Jan 2019 - Present
+• shipped the billing service used by internal teams.
+EDUCATION
+B.S. Computer Science, Example State College

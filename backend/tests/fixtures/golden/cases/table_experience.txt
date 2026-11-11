@@ -1,0 +1,7 @@
+Casey Example
+casey.example@example.com
+EXPERIENCE
+TABLE
+Company | Title | Dates | Bullet
+Harbor Analytics | Data Engineer | Mar 2019 - Present | Built streaming ETL pipelines for logistics data.
+Litware | Analyst | Jan 2015 - Feb 2019 | Automated weekly finance reports for leadership.

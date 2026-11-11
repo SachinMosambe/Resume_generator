@@ -1,0 +1,12 @@
+Casey Example
+casey.example@example.com
+[SIDEBAR]
+Python
+Spanish
+AWS Certified Data Engineer
+[MAIN]
+SUMMARY
+Data engineer with ten years building analytics platforms for retail.
+EXPERIENCE
+Data Engineer | Harbor Analytics | Mar 2019 – Present
+• Built streaming ETL pipelines for logistics data.

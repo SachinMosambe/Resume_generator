@@ -1,0 +1,9 @@
+Casey Example
+casey.example@example.com
+SUMMARY
+Engineer whose resume is stored as a scan.
+EXPERIENCE
+Senior Engineer | ExampleCorp — 2020 – Present
+• shipped the billing service used by internal teams.
+EDUCATION
+B.S. Computer Science, Example State College

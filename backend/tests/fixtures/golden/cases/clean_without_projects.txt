@@ -1,0 +1,11 @@
+Alex Example
+alex.example@example.com
+SUMMARY
+Engineer who shipped platform work for product teams.
+EXPERIENCE
+Senior Engineer | ExampleCorp — 2020 – Present
+• shipped the billing service used by internal teams.
+EDUCATION
+B.S. Computer Science, Example State College
+SKILLS
+Python, SQL

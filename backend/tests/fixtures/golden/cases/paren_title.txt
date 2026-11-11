@@ -1,0 +1,8 @@
+Jordan Hale
+jordan.hale@example.com
+EXPERIENCE
+Northwind Labs
+(Platform Engineer) 03/19 - Present
+• Kept the billing service reliable for retail clients.
+EDUCATION
+B.S. Computer Science, Example State College

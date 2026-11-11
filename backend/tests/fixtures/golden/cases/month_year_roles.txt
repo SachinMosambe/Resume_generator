@@ -1,0 +1,7 @@
+Casey Example
+casey.example@example.com
+EXPERIENCE
+Analyst | Litware — March 2019 – February 2021
+• Automated weekly finance reports for leadership.
+Data Engineer | Harbor Analytics — March 2021 – Present
+• Built streaming ETL pipelines for logistics data.
