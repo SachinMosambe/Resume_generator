@@ -1701,6 +1701,36 @@
           ]
         }
       ]
+    },
+    {
+      "formats": [
+        "aptino",
+        "capgemini",
+        "suresh"
+      ],
+      "expected_status": "passed",
+      "scored": true,
+      "expects_work_history": true,
+      "id": "role_label_no_dates_blocks",
+      "pattern": "labeled_role_blocks",
+      "source": "cases/role_label_no_dates.txt",
+      "expected_name": "Omar Haddad",
+      "expected_roles": [
+        {
+          "company": "Acme Retail Group",
+          "title": "Senior Analyst",
+          "bullet_substrings": [
+            "weekly margin report"
+          ]
+        },
+        {
+          "company": "Globex Services",
+          "title": "Business Analyst",
+          "bullet_substrings": [
+            "order-tracking portal"
+          ]
+        }
+      ]
     }
   ],
   "gates": {

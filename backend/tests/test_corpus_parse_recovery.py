@@ -391,3 +391,46 @@ def test_letter_spaced_normalizer_leaves_ordinary_spaced_text_alone():
     data = parse_resume_detailed(None, text)
     blob = " ".join(data["experience"][0]["description"])
     assert "A B C rollout" in blob and "P R E S E N T plan" in blob
+
+
+def test_role_company_labels_without_dates_recover_roles():
+    data = parse_resume_detailed(None, _load("role_label_no_dates.txt"))
+    assert len(data["experience"]) == 2
+    first, second = data["experience"]
+    assert first["company"] == "Acme Retail Group"
+    assert first["title"] == "Senior Analyst"
+    # No dates are stated in the source, so none may be invented.
+    assert (first.get("duration") or "") == ""
+    assert (second.get("duration") or "") == ""
+    assert "weekly margin report" in " ".join(first["description"])
+    assert second["company"] == "Globex Services"
+    assert second["title"] == "Business Analyst"
+    assert "order-tracking portal" in " ".join(second["description"])
+    assert not data.get("unassigned_experience_bullets")
+
+
+def test_client_role_labels_without_dates_use_client_as_employer():
+    text = (
+        "Zed Qu\nEXPERIENCE\nClient: Contoso Bank\nRole: Test Lead\n"
+        "• Led the regression suite.\nEDUCATION\nB.S. Example\n"
+    )
+    data = parse_resume_detailed(None, text)
+    assert len(data["experience"]) == 1
+    role = data["experience"][0]
+    assert role["company"] == "Contoso Bank" and role["title"] == "Test Lead"
+    assert (role.get("duration") or "") == ""
+
+
+def test_role_label_without_company_or_dates_needs_following_bullets():
+    text = "Zed Qu\nEXPERIENCE\nRole: Test Lead\nSome plain sentence here.\nEDUCATION\nB.S. Example\n"
+    data = parse_resume_detailed(None, text)
+    assert data["experience"] == []
+
+
+def test_labels_outside_experience_section_are_not_roles():
+    text = (
+        "Zed Qu\nPROJECTS\nClient: Contoso Bank\nRole: Test Lead\n• Led the suite.\n"
+        "EXPERIENCE\nAcme Corp\nEngineer 2020 - Present\n• Built it.\nEDUCATION\nB.S. Example\n"
+    )
+    data = parse_resume_detailed(None, text)
+    assert [r["company"] for r in data["experience"]] == ["Acme Corp"]

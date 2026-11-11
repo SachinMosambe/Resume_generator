@@ -1,0 +1,14 @@
+Omar Haddad
+omar.haddad@example.com
+PROFESSIONAL SUMMARY:
+• Business analyst with a focus on finance operations.
+PROFESSIONAL EXPERIENCE:
+Company: Acme Retail Group
+Role: Senior Analyst
+• Built the weekly margin report for category managers.
+• Reconciled supplier invoices against purchase orders.
+Company: Globex Services
+Role: Business Analyst
+• Documented requirements for the order-tracking portal.
+EDUCATION
+B.S. Business Administration, Example State University

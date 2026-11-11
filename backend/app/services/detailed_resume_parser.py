@@ -1593,11 +1593,28 @@ _BARE_LABEL_LINE = re.compile(
 )
 
 
-def _parse_labeled_role_block(lines: list[str], index: int) -> tuple[dict[str, str], int] | None:
+def _next_content_is_bullet(lines: list[str], index: int) -> bool:
+    """True when the next non-blank line (past a bare 'Responsibilities:' label) is a bullet."""
+    cursor = index
+    while cursor < len(lines):
+        raw = lines[cursor].strip()
+        cursor += 1
+        if not raw or _BARE_LABEL_LINE.match(raw):
+            continue
+        return _is_bullet(raw)
+    return False
+
+
+def _parse_labeled_role_block(
+    lines: list[str], index: int, allow_undated: bool = False
+) -> tuple[dict[str, str], int] | None:
     """A cluster of 'Company/Client/Role/Designation/Duration/Project' label lines.
 
     Returns (job, next_index) or None. Needs dates plus a company or title, and colon-less
     bulleted labels ("● Company Acme") only count when company, title and duration all appear.
+    With ``allow_undated`` (inside a real experience section) explicit "Label:" lines may
+    stand without dates: Role plus Company/Client, or one of them followed by a bullet. The
+    duration is then left empty, never guessed.
     """
     found: dict[str, str] = {}
     colon_free = False
@@ -1652,11 +1669,20 @@ def _parse_labeled_role_block(lines: list[str], index: int) -> tuple[dict[str, s
         if stop and not consumed:
             break
         cursor += 1
-    if "date" not in found or not (found.get("company") or found.get("title") or found.get("client")):
+    has_identity = bool(found.get("company") or found.get("title") or found.get("client"))
+    if "date" not in found:
+        if not (allow_undated and has_identity and not colon_free):
+            return None
+        has_employer = bool(found.get("company") or found.get("client"))
+        if not (
+            (found.get("title") and has_employer) or _next_content_is_bullet(lines, end)
+        ):
+            return None
+    elif not has_identity:
         return None
     if colon_free and not {"company", "title", "date"} <= set(found):
         return None
-    if not found.get("title") and not found.get("company"):
+    if "date" in found and not found.get("title") and not found.get("company"):
         return None
     company = found.get("company", "")
     project_bits = []
@@ -1671,7 +1697,7 @@ def _parse_labeled_role_block(lines: list[str], index: int) -> tuple[dict[str, s
         "title": _clean_text(found.get("title", "")),
         "company": _clean_text(company),
         "location": _clean_text(found.get("location", "")),
-        "duration": _clean_text(found["date"]),
+        "duration": _clean_text(found.get("date", "")),
     }
     if project_bits:
         job["project"] = _clean_text(" | ".join(project_bits))
@@ -2056,7 +2082,7 @@ def _experience_from_lines(lines: list[str], chosen: bool) -> tuple[list[dict[st
         third_line = lines[i + 2].strip() if i + 2 < len(lines) else ""
         client_block = _parse_client_role_block(line, next_line, third_line)
         labeled = (
-            _parse_labeled_role_block(lines, i)
+            _parse_labeled_role_block(lines, i, allow_undated=chosen)
             if not client_block and _LABELED_LINE.match(line)
             else None
         )
