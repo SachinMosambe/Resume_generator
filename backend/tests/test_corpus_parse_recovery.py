@@ -614,3 +614,45 @@ def test_title_label_after_bullets_is_not_promoted():
     role = parse_resume_detailed(None, text)["experience"][0]
     assert role["title"] == ""
     assert "Title: Senior Engineer" in role["description"]
+
+
+def test_dates_first_single_company_line_after_date():
+    data = parse_resume_detailed(None, _load("dates_first_single_company_line.txt"))
+    assert [(r["company"], r["title"], r["duration"]) for r in data["experience"]] == [
+        ("Northwind Traders", "", "Jan 2020 - Present"),
+        ("Contoso Insurance", "", "Mar 2017 - Dec 2019"),
+        ("Fabrikam Systems", "", "Jun 2014 - Feb 2017"),
+    ]
+    assert "weekly reporting dashboards" in " ".join(data["experience"][0]["description"])
+    assert "claims data quality" in " ".join(data["experience"][1]["description"])
+    assert not data.get("unassigned_experience_bullets")
+
+
+def test_dates_first_single_title_line_after_date_is_unchanged():
+    text = (
+        "Zed Qu\nEXPERIENCE\nJan 2020 - Present\nSenior Data Engineer\n"
+        "• Built ingestion pipelines.\nMar 2017 - Dec 2019\nData Engineer\n"
+        "• Maintained batch jobs.\nEDUCATION\nB.S. Example\n"
+    )
+    roles = parse_resume_detailed(None, text)["experience"]
+    assert [(r["company"], r["title"]) for r in roles] == [("", "Senior Data Engineer"), ("", "Data Engineer")]
+
+
+def test_dates_first_single_sentence_line_after_date_is_not_a_company():
+    text = (
+        "Zed Qu\nEXPERIENCE\nJan 2020 - Present\nNorthwind Traders\n• Built ingestion pipelines.\n"
+        "Mar 2017 - Dec 2019\nLed the migration of the legacy billing system to the cloud.\n"
+        "• Maintained batch jobs.\nEDUCATION\nB.S. Example\n"
+    )
+    roles = parse_resume_detailed(None, text)["experience"]
+    assert roles[0]["company"] == "Northwind Traders"
+    assert all("Led the migration" not in (r["company"] or "") for r in roles)
+
+
+def test_company_first_layout_single_line_is_not_reinterpreted_as_dates_first():
+    text = (
+        "Zed Qu\nEXPERIENCE\nNorthwind Traders Jan 2020 - Present\nContoso Insurance\n"
+        "• Built ingestion pipelines.\nEDUCATION\nB.S. Example\n"
+    )
+    roles = parse_resume_detailed(None, text)["experience"]
+    assert roles[0]["company"] == "Northwind Traders"

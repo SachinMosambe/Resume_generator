@@ -1,0 +1,17 @@
+Nadia Okafor
+nadia.okafor@example.com | Austin, TX
+SUMMARY
+Analyst with reporting and data quality experience.
+WORK EXPERIENCE
+Jan 2020 - Present
+Northwind Traders
+• Built weekly reporting dashboards for the finance team.
+• Reduced manual reconciliation effort with scripted checks.
+Mar 2017 - Dec 2019
+Contoso Insurance
+• Maintained claims data quality reports.
+Jun 2014 - Feb 2017
+Fabrikam Systems
+• Resolved customer tickets for the billing portal.
+EDUCATION
+BS Computer Science, Example State University

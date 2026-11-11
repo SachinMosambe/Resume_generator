@@ -1918,6 +1918,40 @@
           ]
         }
       ]
+    },
+    {
+      "formats": [
+        "aptino",
+        "capgemini",
+        "suresh"
+      ],
+      "expected_status": "passed",
+      "scored": true,
+      "expects_work_history": true,
+      "id": "dates_first_single_company_line",
+      "pattern": "dates_first_single_company_line",
+      "source": "cases/dates_first_single_company_line.txt",
+      "expected_name": "Nadia Okafor",
+      "expected_roles": [
+        {
+          "company": "Northwind Traders",
+          "bullet_substrings": [
+            "weekly reporting dashboards"
+          ]
+        },
+        {
+          "company": "Contoso Insurance",
+          "bullet_substrings": [
+            "claims data quality"
+          ]
+        },
+        {
+          "company": "Fabrikam Systems",
+          "bullet_substrings": [
+            "billing portal"
+          ]
+        }
+      ]
     }
   ],
   "gates": {

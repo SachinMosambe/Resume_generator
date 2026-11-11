@@ -1828,6 +1828,19 @@ def _merge_dates_first_headers(lines: list[str]) -> None:
         if b >= len(lines):
             break
         one, two = lines[a].strip(), lines[b].strip()
+        if (
+            _is_header_text(one)
+            and not _is_header_text(two)
+            and (_is_bullet(two) or _is_date_only_line(two))
+            and not _looks_like_location_only(one)
+            and not (_ROLE_WORD.search(one) and not _is_invalid_job_title(one))
+        ):
+            # One non-title line between the date and the bullets (or the next date) is the
+            # employer; the role stays empty rather than being guessed.
+            lines[i] = f"{one} {date}"
+            lines[a] = ""
+            i = a + 1
+            continue
         if not (_is_header_text(one) and _is_header_text(two)):
             i += 1
             continue
