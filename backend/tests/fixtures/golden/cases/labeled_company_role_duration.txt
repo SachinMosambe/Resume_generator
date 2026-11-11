@@ -1,0 +1,21 @@
+Priya Menon
+priya.menon@example.com
+TECHNICAL SKILLS
+Languages: Java, Kotlin
+SYNOPSIS
+Java architect with fifteen years of enterprise delivery.
+WORK EXPERIENCE
+Company: Contoso Consulting, Pune India
+Client: Wells Example Bank (USA)
+Role: Senior Software Architect
+Duration: June'23 to Jan'24
+Responsibilities:
+Designed the payments microservice and led the design reviews.
+Reduced batch run time by tuning the persistence layer.
+Company: Fabrikam Systems, Chennai India
+Role: Software Engineer
+Duration: Mar'19 to May'23
+Responsibilities:
+Built REST services for the claims platform.
+EDUCATION
+MCA, Example University

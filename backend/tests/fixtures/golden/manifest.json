@@ -1446,6 +1446,225 @@
       "expected_bullet_substrings": [
         "monthly books"
       ]
+    },
+    {
+      "formats": [
+        "aptino",
+        "capgemini",
+        "suresh"
+      ],
+      "expected_status": "needs_review",
+      "scored": true,
+      "expects_work_history": true,
+      "id": "dice_profile_work_history_list",
+      "pattern": "dice_work_history_list",
+      "source": "cases/dice_work_history_list.txt",
+      "allow_unassigned_bullets": true,
+      "expected_name": "Taylor Brooks",
+      "expected_roles": [
+        {
+          "company": "Contoso Logistics",
+          "title": "Senior ERP Consultant",
+          "dates_contains": [
+            "2019"
+          ]
+        },
+        {
+          "company": "Fabrikam Gardening",
+          "title": "Applications Manager"
+        }
+      ]
+    },
+    {
+      "formats": [
+        "aptino",
+        "capgemini",
+        "suresh"
+      ],
+      "expected_status": "passed",
+      "scored": true,
+      "expects_work_history": true,
+      "id": "portfolio_client_engagements_heading",
+      "pattern": "portfolio_alt_heading",
+      "source": "cases/portfolio_client_engagements.txt",
+      "expected_name": "Jamie Rivera",
+      "expected_roles": [
+        {
+          "company": "Contoso Media",
+          "title": "Content Strategy Lead",
+          "dates_contains": [
+            "2021"
+          ],
+          "bullet_substrings": [
+            "editorial calendar"
+          ]
+        },
+        {
+          "company": "Fabrikam Learning",
+          "dates_contains": [
+            "2018"
+          ],
+          "bullet_substrings": [
+            "learning-content program"
+          ]
+        }
+      ]
+    },
+    {
+      "formats": [
+        "aptino",
+        "capgemini",
+        "suresh"
+      ],
+      "expected_status": "passed",
+      "scored": true,
+      "expects_work_history": true,
+      "id": "portfolio_content_experience_heading",
+      "pattern": "portfolio_alt_heading",
+      "source": "cases/portfolio_content_experience.txt",
+      "expected_name": "Morgan Lee",
+      "expected_roles": [
+        {
+          "company": "Adatum Studios",
+          "title": "Head of Content Programs",
+          "dates_contains": [
+            "2019"
+          ],
+          "bullet_substrings": [
+            "executive event recap"
+          ]
+        },
+        {
+          "company": "Litware Events",
+          "dates_contains": [
+            "2015"
+          ],
+          "bullet_substrings": [
+            "customer events"
+          ]
+        }
+      ]
+    },
+    {
+      "formats": [
+        "aptino",
+        "capgemini",
+        "suresh"
+      ],
+      "expected_status": "passed",
+      "scored": true,
+      "expects_work_history": true,
+      "id": "dense_pdf_bullet_prefixed_headers",
+      "pattern": "dense_bullet_headers",
+      "source": "cases/dense_bullet_headers.txt",
+      "expected_name": "Sam Ortega",
+      "expected_roles": [
+        {
+          "company": "Globex Retail",
+          "title": "Lead Database Administrator",
+          "dates_contains": [
+            "2018"
+          ],
+          "bullet_substrings": [
+            "maintenance plans"
+          ]
+        },
+        {
+          "company": "Initech Systems",
+          "title": "Database Administrator",
+          "dates_contains": [
+            "2014"
+          ],
+          "bullet_substrings": [
+            "availability groups"
+          ]
+        }
+      ]
+    },
+    {
+      "formats": [
+        "aptino",
+        "capgemini",
+        "suresh"
+      ],
+      "expected_status": "passed",
+      "scored": true,
+      "expects_work_history": true,
+      "id": "labeled_company_role_duration_blocks",
+      "pattern": "labeled_role_blocks",
+      "source": "cases/labeled_company_role_duration.txt",
+      "expected_name": "Priya Menon",
+      "expected_roles": [
+        {
+          "company": "Contoso Consulting",
+          "title": "Senior Software Architect",
+          "bullet_substrings": [
+            "payments microservice"
+          ]
+        },
+        {
+          "company": "Fabrikam Systems",
+          "title": "Software Engineer",
+          "bullet_substrings": [
+            "REST services"
+          ]
+        }
+      ]
+    },
+    {
+      "formats": [
+        "aptino",
+        "capgemini",
+        "suresh"
+      ],
+      "expected_status": "passed",
+      "scored": true,
+      "expects_work_history": true,
+      "id": "labeled_bullet_designation_blocks",
+      "pattern": "labeled_role_blocks",
+      "source": "cases/labeled_bullet_company_designation.txt",
+      "expected_name": "Ravi Kumar",
+      "expected_roles": [
+        {
+          "company": "Photon Example",
+          "title": "Technical Lead"
+        },
+        {
+          "company": "Mundio Example",
+          "title": "Senior Android Developer"
+        }
+      ]
+    },
+    {
+      "formats": [
+        "aptino",
+        "capgemini",
+        "suresh"
+      ],
+      "expected_status": "passed",
+      "scored": true,
+      "expects_work_history": true,
+      "id": "role_line_inline_date_project",
+      "pattern": "labeled_role_blocks",
+      "source": "cases/role_line_date_project.txt",
+      "expected_name": "Dana Whitfield",
+      "expected_roles": [
+        {
+          "title": "Senior Full Stack Engineer",
+          "dates_contains": [
+            "Present"
+          ],
+          "bullet_substrings": [
+            "microservices"
+          ]
+        },
+        {
+          "title": "Software Engineer",
+          "bullet_substrings": [
+            "checkout APIs"
+          ]
+        }
+      ]
     }
   ],
   "gates": {

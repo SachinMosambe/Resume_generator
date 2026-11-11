@@ -1,0 +1,16 @@
+Sam Ortega
+• Austin, TX • sam.ortega@example.com • 555-0100
+• Database administrator with ten years of experience running large SQL estates.
+• Hands-on with backup design, high availability and capacity planning.
+TECHNICAL SKILLS
+Languages: SQL, PowerShell, Python
+PROFESSIONAL EXPERIENCE
+• Globex Retail (Austin, TX) | May 2018 - Present
+• Lead Database Administrator
+• Implemented maintenance plans and assigned work across the database team.
+• Migrated SQL servers from 2012 to 2019 with no downtime.
+• Initech Systems - Dallas, TX | Jun 2014 - Apr 2018
+• Database Administrator
+• Built always-on availability groups for the billing platform.
+EDUCATION
+B.S. Computer Science, Example State College

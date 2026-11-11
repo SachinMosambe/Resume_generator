@@ -1,0 +1,16 @@
+Dana Whitfield
+dana.whitfield@example.com
+PROFESSIONAL SUMMARY:
+• Full stack engineer with ten years of experience.
+PROFESSIONAL EXPERIENCE:
+Role: Senior Full Stack Engineer          Sep’24 - Present
+Project: Example Freight, Lowell, AR
+Responsibilities:
+• Collaborated with cross-functional teams to deliver features.
+• Designed microservices using Spring Boot.
+Role: Software Engineer          Feb’20 - Aug’24
+Project: Example Retail, Austin, TX
+Responsibilities:
+• Built checkout APIs for the storefront.
+EDUCATION
+B.S. Computer Science, Example State College

@@ -1,0 +1,11 @@
+Ravi Kumar
+ravi.kumar@example.com
+Professional Experience
+● Company Photon Example Inc., Texas - USA.
+● Designation Technical Lead.
+● Duration From Jan '22 To Till now.
+● Company Mundio Example Mobile Pvt Ltd., Chennai.
+● Designation Senior Android Developer.
+● Duration From Mar '15 To June '16.
+Education
+B.E. Computer Science, Example University

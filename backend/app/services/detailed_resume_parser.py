@@ -65,6 +65,12 @@ _EXTRA_HEADING_HINTS = {
     # Highlight blocks between the summary and experience.
     "what i bring", "highlights", "key highlights", "career highlights", "selected highlights",
     "strengths", "core strengths", "key strengths", "value proposition", "why me",
+    # Portfolio headings that usually hold job history (see _roles_from_alternate_headings).
+    # Listed here so they end the section above them; when they are not read as roles
+    # they are kept as additional sections like any other unslotted heading.
+    "engagements", "client engagements", "consulting engagements", "selected engagements",
+    "client work", "selected clients", "content experience", "consulting experience",
+    "freelance experience", "freelance work", "industry and company experience",
 }
 
 
@@ -84,10 +90,18 @@ _DATE_SEP = r"(?:[-–—/]|to)"
 _MONTH_YEAR = rf"{_MONTH}\.?\s*\d{{4}}"
 # 5/2025 - present, 7/2022 - 12/2024, 01/2012 - 12/2018. Not a bare month/year.
 _NUM_MY = r"(?:0?[1-9]|1[0-2])/(?:19|20)\d{2}"
+# Jun'23, APRIL’22: an apostrophe year is only a date after a month name, so prose such
+# as "the '19 launch" never matches.
+_MONTH_YY = rf"(?<![A-Za-z]){_MONTH}\.?\s*['’‘`´]\s*\d{{2}}(?!\d)"
+# "February 24 –TillDate": a bare two-digit year needs an open-ended range to count.
+_MONTH_BARE_YY = rf"(?<![A-Za-z]){_MONTH}\.?\s+\d{{2}}(?!\d)"
+_DATE_END = r"(?:Present|Current|(?:Till\s*Date|Till\s*Now|Till\s*Today|To\s*Date|Ongoing)(?![A-Za-z]))"
 _DATE_PATTERN = re.compile(
-    rf"(?:{_MONTH_YEAR}\s*{_DATE_SEP}\s*(?:Present|Current|{_MONTH_YEAR}|\d{{4}})"
-    rf"|{_NUM_MY}\s*{_DATE_SEP}\s*(?:Present|Current|{_NUM_MY}|(?:19|20)\d{{4}})"
-    rf"|\d{{4}}\s*{_DATE_SEP}\s*(?:Present|Current|\d{{4}}))",
+    rf"(?:{_MONTH_YEAR}\s*{_DATE_SEP}\s*(?:{_DATE_END}|{_MONTH_YEAR}|{_MONTH_YY}|\d{{4}})"
+    rf"|{_MONTH_YY}\s*{_DATE_SEP}\s*(?:{_DATE_END}|{_MONTH_YY}|{_MONTH_YEAR}|\d{{4}})"
+    rf"|{_MONTH_BARE_YY}\s*{_DATE_SEP}\s*(?:{_DATE_END})"
+    rf"|{_NUM_MY}\s*{_DATE_SEP}\s*(?:{_DATE_END}|{_NUM_MY}|(?:19|20)\d{{4}})"
+    rf"|\d{{4}}\s*{_DATE_SEP}\s*(?:{_DATE_END}|\d{{4}}))",
     re.IGNORECASE,
 )
 # Form labels that must not close or open a real section.
@@ -727,6 +741,8 @@ def _extract_headline(text: str, name: str) -> str:
             break
         if _summary_noise_line(line):
             continue
+        if _is_bullet(line) and len(line.split()) >= 8:
+            continue  # an intro bullet, not a headline
         # "Senior DBA & Cloud Infrastructure Engineer | High-Availability Systems Expert"
         limit_words = 12 if re.search(r"[|•·]", line) else 8
         if _ROLE_WORD.search(line) and len(line) <= 100 and len(line.split()) <= limit_words:
@@ -1003,13 +1019,27 @@ def _extract_unlabeled_summary(text: str) -> str:
     """
     name = _extract_name(text)
     kept: list[str] = []
+    # Dense PDFs open with intro bullets (before any heading). They are the summary.
+    lead_bullets: list[str] = []
     for raw in (text or "").splitlines():
         line = raw.strip()
         if not line:
             continue
         if _is_section_heading_line(line) or _extra_heading(line):
             break
-        if _DATE_PATTERN.search(line) or _is_bullet(line):
+        if _DATE_PATTERN.search(line):
+            break
+        if _is_bullet(line):
+            clean = _clean_bullet_text(line)
+            if kept or not clean:
+                break
+            if _summary_noise_line(clean) or "•" in clean or "|" in clean:
+                if lead_bullets:
+                    break
+                continue  # contact strip such as "• Austin, TX • name@example.com"
+            if len(clean.split()) >= 8 and not _ACTION_VERB_START.match(clean):
+                lead_bullets.append(clean)
+                continue
             break
         letters = re.sub(r"[^A-Za-z]", "", line)
         if letters and line == line.upper() and 1 <= len(line.split()) <= 6 and len(line) <= 40:
@@ -1029,7 +1059,7 @@ def _extract_unlabeled_summary(text: str) -> str:
             continue
         if kept:
             break
-    summary = "\n".join(kept).strip()
+    summary = "\n".join(kept or lead_bullets).strip()
     if len(summary.split()) < 12:
         return ""
     return summary
@@ -1258,7 +1288,8 @@ def _extract_skills(text: str) -> list[str]:
 _ROLE_WORD = re.compile(
     r"(?i)\b(?:engineer|developer|manager|architect|analyst|consultant|director|designer|scientist|"
     r"specialist|coordinator|administrator|intern|officer|researcher|programmer|lead|instructor|"
-    r"teacher|accountant|technician|associate|executive|head of|vp|president|founder)\b"
+    r"teacher|accountant|technician|associate|executive|head of|vp|president|founder|"
+    r"strategist|advisor|supervisor)\b"
 )
 
 
@@ -1296,8 +1327,19 @@ def _parse_job_header_line(line: str, date_match: re.Match) -> dict[str, str]:
             if project.count("(") > project.count(")"):
                 project += ")"  # the header strip removed the closing paren
     elif after and not _DATE_PATTERN.fullmatch(after) and not _is_invalid_job_title(after):
-        # Trailing title on same line without pipes
-        title = after
+        if (
+            not before
+            and not _ROLE_WORD.search(after)
+            and after[:1].isupper()
+            and "(" not in after
+            and ")" not in after
+            and len(after.split()) <= 8
+        ):
+            # "June 22 – Present  Wiselink Global Inc., MD": dates first, then the employer.
+            company = after
+        else:
+            # Trailing title on same line without pipes
+            title = after
 
     # "Data Engineer, Globex, Mar 2019 - Present" — title first, then company (and location).
     if not title and "," in before:
@@ -1313,6 +1355,17 @@ def _parse_job_header_line(line: str, date_match: re.Match) -> dict[str, str]:
             and not re.search(r"\s[–—]\s", first)
         ):
             title, company = first, rest
+        elif (
+            not _ROLE_WORD.search(first)
+            and _ROLE_WORD.search(rest)
+            and "," not in rest
+            and len(rest.split()) <= 8
+            and len(first) <= 60
+            and not _is_invalid_job_title(rest)
+            and not re.search(r"\s[–—]\s", before)
+        ):
+            # "Fabrikam Learning, Senior Content Strategist": employer first, then the title.
+            title, company = rest, first
 
     # "Senior Software Engineer (iOS) Atlas Mobility" before the date.
     if not title and before and not re.search(r"\s[–—]\s", before):
@@ -1347,6 +1400,18 @@ def _parse_job_header_line(line: str, date_match: re.Match) -> dict[str, str]:
         ):
             title = company_title.group("title").strip()
             company = company_title.group("company").strip()
+
+    # "Globex Retail (Austin, TX)": a parenthesised place after the employer.
+    paren_place = re.match(r"^(?P<company>[^()]{2,80}?)\s*\((?P<place>[A-Z][A-Za-z .'-]+,\s*[A-Z][A-Za-z]{1,}[^()]{0,20})\)$", company)
+    if paren_place and not location and len(paren_place.group("place").split()) <= 5:
+        company = paren_place.group("company").strip()
+        location = paren_place.group("place").strip()
+
+    # "Initech Systems - Dallas, TX": a spaced hyphen before a City, ST place.
+    hyphen_place = re.match(r"^(?P<company>.{2,80}?)\s-\s(?P<place>[A-Z][A-Za-z .'-]+,\s*[A-Z]{2})$", company)
+    if hyphen_place and not location:
+        company = hyphen_place.group("company").strip()
+        location = hyphen_place.group("place").strip()
 
     # "Amazon — Seattle, WA" / "Heart and Profit — Remote": dash separates company and place.
     dash_place = re.match(r"^(?P<company>.+?)\s+[—–]\s+(?P<place>[^—–|]+)$", company)
@@ -1420,25 +1485,457 @@ def _extract_experience(text: str) -> list[dict[str, Any]]:
     return roles
 
 
+# Portfolio / consulting resumes list their jobs under headings that are not "Experience".
+# They are only read as job history when the section really holds dated employers.
+_ALT_EXPERIENCE_HEADINGS = (
+    "engagements", "client engagements", "consulting engagements", "selected engagements",
+    "client work", "selected clients", "content experience", "consulting experience",
+    "freelance experience", "freelance work", "industry and company experience",
+)
+# Projects headings are ambiguous (personal projects are not jobs), so they need more proof.
+_PROJECT_EXPERIENCE_HEADINGS = (
+    "projects", "project experience", "professional projects", "client projects", "key projects",
+)
+
+
+def _roles_from_alternate_headings(text: str) -> tuple[list[dict[str, Any]], str]:
+    """Roles from a nonstandard heading that clearly holds job history, else ([], '')."""
+    for source, headings in (
+        ("alternate", _ALT_EXPERIENCE_HEADINGS),
+        ("projects", _PROJECT_EXPERIENCE_HEADINGS),
+    ):
+        blocks = _section_blocks(text, list(headings))
+        lines: list[str] = []
+        for block in blocks:
+            if any(_DATE_PATTERN.search(line or "") for line in block):
+                lines.extend(block)
+                lines.append("")
+        if not lines:
+            continue
+        roles, _orphans = _experience_from_lines(lines, True)
+        dated = [r for r in roles if r.get("duration") and (r.get("company") or r.get("title"))]
+        if source == "projects":
+            # A project with a date range is not a job: every entry needs an employer, a
+            # job title and dates, or the section stays a Projects section.
+            strict = [
+                r for r in dated
+                if r.get("company") and _ROLE_WORD.search(str(r.get("title") or ""))
+            ]
+            if not strict or len(strict) != len(roles):
+                continue
+            dated = strict
+        if dated and len(dated) == len(roles):
+            return dated, source
+    return [], ""
+
+
+# "Company: X / Role: Y / Duration: Z" blocks (colon optional on bulleted copies).
+_LABELED_LINE = re.compile(
+    r"^[\s\-\*\u2022\u25CF●•▪■>]*(?P<label>company|client|employer|organi[sz]ation|agency|"
+    r"role|designation|position|job\s+title|duration|period|dates?|tenure|project|location)"
+    r"(?:\s*:\s*|\s+)(?P<value>\S.*)$",
+    re.I,
+)
+_LABEL_KIND = {
+    "company": "company", "employer": "company", "organization": "company", "organisation": "company",
+    "agency": "company", "client": "client",
+    "role": "title", "designation": "title", "position": "title", "job title": "title",
+    "duration": "date", "period": "date", "date": "date", "dates": "date", "tenure": "date",
+    "project": "project", "location": "location",
+}
+_LABEL_PIPE_SPLIT = re.compile(
+    r"\s*\|\s*(?=(?:company|client|employer|organi[sz]ation|agency|role|designation|position|"
+    r"job\s+title|duration|period|project|location)\s*:)",
+    re.I,
+)
+_BARE_LABEL_LINE = re.compile(
+    r"(?i)^[\s\-\*\u2022•]*(?:key\s+)?(?:roles?\s*(?:and|&)\s*)?responsibilities\s*:?\s*$"
+)
+
+
+def _parse_labeled_role_block(lines: list[str], index: int) -> tuple[dict[str, str], int] | None:
+    """A cluster of 'Company/Client/Role/Designation/Duration/Project' label lines.
+
+    Returns (job, next_index) or None. Needs dates plus a company or title, and colon-less
+    bulleted labels ("● Company Acme") only count when company, title and duration all appear.
+    """
+    found: dict[str, str] = {}
+    colon_free = False
+    end = index
+    seen_kinds: list[str] = []
+    cursor = index
+    stop = False
+    while cursor < len(lines) and len(seen_kinds) < 8 and not stop:
+        raw = lines[cursor].strip()
+        if not raw:
+            cursor += 1
+            continue
+        # "Company: Acme | Role: Engineer" carries two labels on one line.
+        segments = _LABEL_PIPE_SPLIT.split(raw)
+        consumed = 0
+        for segment in segments:
+            match = _LABELED_LINE.match(segment.strip())
+            if not match:
+                stop = True
+                break
+            label = re.sub(r"\s+", " ", match.group("label").lower())
+            kind = _LABEL_KIND[label]
+            has_colon = ":" in segment[: match.start("value") + (len(segment) - len(segment.lstrip()))]
+            if kind in found:
+                stop = True
+                break
+            if not has_colon and (
+                label in {"client", "project", "location", "period", "date", "dates", "tenure", "position", "role", "agency"}
+                or _ACTION_VERB_START.match(match.group("value"))
+            ):
+                stop = True
+                break
+            value = match.group("value").strip()
+            inline = _DATE_PATTERN.search(value)
+            if kind == "date":
+                if not inline:
+                    stop = True
+                    break
+                found["date"] = inline.group(0).strip()
+            else:
+                if inline and kind in {"title", "company", "client"}:
+                    # "Role: Engineer      Sep’24 - Present": the dates ride on the label line.
+                    found.setdefault("date", inline.group(0).strip())
+                    value = (value[: inline.start()] + " " + value[inline.end() :]).strip(" \t:-–—|,")
+                    value = re.sub(r"\(\s*\)|\[\s*\]", "", value).strip(" \t:-–—|,")
+                found[kind] = value.strip(" .,;")
+            colon_free = colon_free or not has_colon
+            seen_kinds.append(kind)
+            consumed += 1
+        if consumed:
+            end = cursor + 1
+        if stop and not consumed:
+            break
+        cursor += 1
+    if "date" not in found or not (found.get("company") or found.get("title") or found.get("client")):
+        return None
+    if colon_free and not {"company", "title", "date"} <= set(found):
+        return None
+    if not found.get("title") and not found.get("company"):
+        return None
+    company = found.get("company", "")
+    project_bits = []
+    if found.get("client"):
+        if company:
+            project_bits.append(found["client"])
+        else:
+            company = found["client"]
+    if found.get("project"):
+        project_bits.append(found["project"])
+    job = {
+        "title": _clean_text(found.get("title", "")),
+        "company": _clean_text(company),
+        "location": _clean_text(found.get("location", "")),
+        "duration": _clean_text(found["date"]),
+    }
+    if project_bits:
+        job["project"] = _clean_text(" | ".join(project_bits))
+    return job, end
+
+
+def _is_date_only_line(line: str) -> bool:
+    match = _DATE_PATTERN.search(line or "")
+    if not match:
+        return False
+    rest = ((line or "")[: match.start()] + (line or "")[match.end() :]).strip(" \t,|()-–—•●:")
+    return not rest
+
+
+def _is_header_text(text: str) -> bool:
+    """A short company or title line (not a sentence, bullet, heading or label)."""
+    value = (text or "").strip()
+    if not value or _is_bullet(value) or len(value) > 90 or len(value.split()) > 12:
+        return False
+    if value.endswith((".", ";")) or "@" in value or _DATE_PATTERN.search(value):
+        return False
+    if not value[0].isalnum() or _ACTION_VERB_START.match(value):
+        return False
+    if _is_section_heading_line(value) or _extra_heading(value) or _is_cover_label_line(value):
+        return False
+    return not _LABELED_LINE.match(value) and not _BARE_LABEL_LINE.match(value)
+
+
+def _merge_date_only_headers(lines: list[str]) -> None:
+    """Fold 'Company / Title / <date line>' (or 'Company / <date line>') into one header line.
+
+    Lines are rewritten in place so the ordinary dated-header path parses them. Two text
+    lines are merged only when exactly one of them is a job title; otherwise the order is
+    unknowable and nothing is touched.
+    """
+    i = 0
+    while i < len(lines):
+        first = (lines[i] or "").strip()
+        if not _is_header_text(first):
+            i += 1
+            continue
+        nxt = i + 1
+        while nxt < len(lines) and not lines[nxt].strip():
+            nxt += 1
+        if nxt >= len(lines):
+            break
+        second = lines[nxt].strip()
+        if _is_date_only_line(second):
+            date = _DATE_PATTERN.search(second).group(0).strip()
+            if _ROLE_WORD.search(first) and not _is_invalid_job_title(first):
+                # Title, date, then the employer on its own line.
+                after = nxt + 1
+                while after < len(lines) and not lines[after].strip():
+                    after += 1
+                employer = lines[after].strip() if after < len(lines) else ""
+                if employer and _is_header_text(employer) and not _ROLE_WORD.search(employer):
+                    lines[i] = f"{first} | {employer} {date}"
+                    for blank in range(i + 1, after + 1):
+                        lines[blank] = ""
+                    i = after + 1
+                    continue
+                i += 1
+                continue
+            lines[i] = f"{first} {date}"
+            for blank in range(i + 1, nxt + 1):
+                lines[blank] = ""
+            i = nxt + 1
+            continue
+        if not _is_header_text(second):
+            i += 1
+            continue
+        third = nxt + 1
+        while third < len(lines) and not lines[third].strip():
+            third += 1
+        if third >= len(lines) or not _is_date_only_line(lines[third].strip()):
+            i += 1
+            continue
+        date = _DATE_PATTERN.search(lines[third]).group(0).strip()
+        first_title = bool(_ROLE_WORD.search(first)) and not _is_invalid_job_title(first)
+        second_title = bool(_ROLE_WORD.search(second)) and not _is_invalid_job_title(second)
+        if first_title == second_title:
+            i += 1
+            continue
+        title, company = (first, second) if first_title else (second, first)
+        lines[i] = f"{title} | {company} {date}"
+        for blank in range(i + 1, third + 1):
+            lines[blank] = ""
+        i = third + 1
+
+
+def _normalize_bulleted_headers(lines: list[str]) -> None:
+    """Strip bullet markers from job headers in layouts where every line carries one.
+
+    Dense PDFs print '• Globex Retail (Austin, TX) | May 2018 - Present' and
+    '• Lead Database Administrator' as bullets. This only applies when the block has no
+    ordinary (non-bullet) dated header, so a bullet that merely mentions a date range in a
+    real layout is never promoted.
+    """
+    for raw in lines:
+        text = (raw or "").strip()
+        if text and not _is_bullet(text) and _is_job_header_line(text):
+            return
+    headers = [
+        i for i, raw in enumerate(lines)
+        if _is_bullet((raw or "").strip()) and _is_job_header_line(_clean_bullet_text(raw or ""))
+    ]
+    if not headers:
+        return
+    for i in headers:
+        stripped = _clean_bullet_text(lines[i])
+        match = _DATE_PATTERN.search(stripped)
+        lines[i] = stripped
+        if match and not _parse_job_header_line(stripped, match)["title"]:
+            # The title may follow as its own bullet.
+            nxt = i + 1
+            while nxt < len(lines) and not lines[nxt].strip():
+                nxt += 1
+            if nxt < len(lines) and _is_bullet(lines[nxt].strip()):
+                candidate = _clean_bullet_text(lines[nxt])
+                if (
+                    _is_header_text(candidate)
+                    and len(candidate.split()) <= 6
+                    and _ROLE_WORD.search(candidate)
+                    and not _is_invalid_job_title(candidate)
+                ):
+                    lines[nxt] = candidate
+
+
+_LIST_ROLE_WORDS = {
+    "engineer", "developer", "manager", "architect", "analyst", "consultant", "director",
+    "designer", "scientist", "specialist", "coordinator", "administrator", "intern", "officer",
+    "researcher", "programmer", "lead", "instructor", "teacher", "accountant", "technician",
+    "associate", "executive", "president", "vp", "faculty", "tester", "supervisor",
+    "representative", "strategist", "advisor", "planner", "trainer", "owner", "founder",
+}
+_LIST_SPLIT_STOP = {"of", "and", "&", "for", "in", "at", "to", "the", "with", "-", "–", "—", "/", "|", "on"}
+_DICE_DATE_CRUMB = re.compile(r"^[A-Z][a-z]{2}\.?\s+\d{1,2},\s*\d{4}(?:\s*[-–—]\s*(?:Present|Current|[A-Z][a-z]{2}\.?\s+\d{1,2},\s*\d{4}))?$")
+
+
+def _split_title_and_employer(text: str) -> tuple[str, str] | None:
+    """Split 'Senior Programmer Analyst Invision' at its last job-title word, or None.
+
+    Only a clean boundary is accepted: the employer part must exist, be short and not open
+    with a connector ('Of Sales & Marketing Acme' means the boundary is unclear).
+    """
+    words = text.split()
+    last = -1
+    for index, word in enumerate(words):
+        if re.sub(r"[^a-z]", "", word.lower()) in _LIST_ROLE_WORDS:
+            last = index
+    if last < 0:
+        return None
+    end = last + 1
+    # Level suffix belongs to the title ("Engineer II").
+    if end < len(words) and re.fullmatch(r"(?:[IVX]{1,4}|[1-9])", words[end]):
+        end += 1
+    title_words, company_words = words[:end], words[end:]
+    if not company_words or len(company_words) > 7:
+        return None
+    # "Director, Customer Success- ..." is title-then-detail, not title-then-employer.
+    if title_words[-1].endswith((",", "-", "–")) or any(w.endswith("-") for w in company_words):
+        return None
+    # "Consultant Ms Dynamics CRM Syspro Technologies": a one-word title with a long tail
+    # almost always means the title continues into the tail.
+    if len(title_words) == 1 and len(company_words) > 3:
+        return None
+    if company_words[0].lower().strip(".,") in _LIST_SPLIT_STOP or title_words[-1].lower() in _LIST_SPLIT_STOP:
+        return None
+    if not company_words[0][:1].isupper() and not company_words[0][:1].isdigit():
+        return None
+    if not all(w[:1].isupper() or w.lower() in {"of", "and", "&", "the", "for"} or w[:1].isdigit() for w in words):
+        return None
+    return " ".join(title_words), " ".join(company_words).strip(" ,")
+
+
+def _roles_from_work_history_list(lines: list[str]) -> tuple[list[dict[str, Any]], list[str]]:
+    """Dice-style 'Work History': bullets of 'Title Employer' with no dates or body.
+
+    Returns (roles, leftover_bullets). Bullets with no clean title/employer boundary are
+    returned unplaced for review. Nothing here invents an employer, title or bullet.
+    """
+    items: list[str] = []
+    crumbs: dict[int, str] = {}
+    for raw in lines:
+        line = (raw or "").strip()
+        if not line:
+            continue
+        if _is_bullet(line):
+            clean = _clean_bullet_text(line)
+            if clean:
+                items.append(clean)
+            continue
+        if not items:
+            continue
+        if _DICE_DATE_CRUMB.match(line):
+            crumbs[len(items) - 1] = line
+        elif items[-1].endswith(",") or (len(line.split()) <= 2 and line[:1].isupper() and "," in items[-1]):
+            # A PDF wrap of the employer ("Adatum Holdings," / "Llc").
+            items[-1] = f"{items[-1]} {line}".strip()
+        # Anything else ("Total Work Experience: 12 years") is not a list entry.
+    if len(items) < 2:
+        return [], []
+    roles: list[dict[str, Any]] = []
+    leftovers: list[str] = []
+    for index, item in enumerate(items):
+        split = None if len(item.split()) > 14 or _DATE_PATTERN.search(item) else _split_title_and_employer(item)
+        if not split:
+            leftovers.append(item)
+            continue
+        title, company = split
+        roles.append(
+            {
+                "title": _clean_text(title),
+                "company": _clean_text(company),
+                "location": "",
+                "duration": _clean_text(crumbs.get(index, "")),
+                "description": [],
+                "technologies": [],
+            }
+        )
+    # A skills list under the heading splits poorly; require most entries to be clean.
+    if len(roles) < 2 or len(roles) * 2 < len(items):
+        return [], []
+    return roles, leftovers
+
+
 def _extract_experience_detailed(text: str) -> tuple[list[dict[str, Any]], list[str]]:
     """Return (roles, orphan_bullets).
 
     Orphan bullets are bullets inside an Experience section that precede any
     recognised employer/title header. They are only meaningful when no role is found.
     """
-    orphan_bullets: list[str] = []
+    roles, orphans, _source = _extract_experience_with_source(text)
+    return roles, orphans
+
+
+def _extract_experience_with_source(text: str) -> tuple[list[dict[str, Any]], list[str], str]:
+    """Like _extract_experience_detailed, plus where the roles came from.
+
+    The source is "experience" (a classic heading), "alternate" (an engagements/portfolio
+    heading), "projects" (a Projects heading that lists dated employers), "work_history_list"
+    (an undated Dice-style title/employer list) or "document" (no heading at all).
+    """
     blocks = _section_blocks(text, _SECTION_HEADINGS["experience"])
     dated = [block for block in blocks if any(_DATE_PATTERN.search(line or "") for line in block)]
     chosen = dated or [block for block in blocks if any(line.strip() for line in block)]
+    section_lines: list[str] = []
+    for block in chosen:
+        section_lines.extend(block)
+        section_lines.append("")
+
+    orphans: list[str] = []
     if chosen:
-        lines = []
-        for block in chosen:
-            lines.extend(block)
-            lines.append("")
-    else:
-        # Fallback: whole document when no experience heading is present.
-        lines = [ln.strip() for ln in (text or "").splitlines()]
+        roles, orphans = _experience_from_lines(list(section_lines), True)
+        if roles:
+            return roles, orphans, "experience"
+
+    # Work listed under a nonstandard heading (Client Engagements, Content Experience, or a
+    # Projects section made of dated employers) is job history, not a missing section.
+    alt_roles, alt_source = _roles_from_alternate_headings(text)
+
+    if chosen:
+        if alt_roles:
+            return alt_roles, [], alt_source
+        # "Work History" as a bare list of "Title Employer" bullets (Dice profile sheets).
+        list_roles, list_orphans = _roles_from_work_history_list(section_lines)
+        if list_roles:
+            return list_roles, list_orphans, "work_history_list"
+        return [], orphans, "experience"
+
+    # No experience heading: read the whole document, and prefer a nonstandard heading only
+    # when it explains the job history better. A "Projects:" sub-list inside a document whose
+    # employers appear elsewhere must never replace those employers.
+    doc_roles, doc_orphans = _experience_from_lines([ln.strip() for ln in (text or "").splitlines()], False)
+    if alt_roles:
+        if alt_source == "alternate" and _role_quality(alt_roles) >= _role_quality(doc_roles):
+            return alt_roles, [], alt_source
+        if alt_source == "projects":
+            # Same employers found either way: the Projects section is the job history.
+            alt_keys = {_experience_role_key(r.get("company"), r.get("duration")) for r in alt_roles}
+            doc_keys = {_experience_role_key(r.get("company"), r.get("duration")) for r in doc_roles}
+            if doc_keys <= alt_keys:
+                return alt_roles, [], alt_source
+    return doc_roles, doc_orphans, "document"
+
+
+def _role_quality(roles: list[dict[str, Any]]) -> int:
+    """Roles that carry an employer, a title and dates (employer text is not a date)."""
+    return sum(
+        1
+        for r in roles
+        if r.get("company")
+        and r.get("title")
+        and r.get("duration")
+        and not _DATE_PATTERN.search(str(r.get("company")))
+    )
+
+
+def _experience_from_lines(lines: list[str], chosen: bool) -> tuple[list[dict[str, Any]], list[str]]:
+    """Parse role headers and bullets out of already-selected lines."""
+    orphan_bullets: list[str] = []
     experience_headings = {_normalize_heading(alias) for alias in _SECTION_HEADINGS["experience"]}
+    _normalize_bulleted_headers(lines)
+    _merge_date_only_headers(lines)
 
     experiences: list[dict[str, Any]] = []
     current_job: dict[str, Any] | None = None
@@ -1518,6 +2015,19 @@ def _extract_experience_detailed(text: str) -> tuple[list[dict[str, Any]], list[
         next_line = lines[i + 1].strip() if i + 1 < len(lines) else ""
         third_line = lines[i + 2].strip() if i + 2 < len(lines) else ""
         client_block = _parse_client_role_block(line, next_line, third_line)
+        labeled = (
+            _parse_labeled_role_block(lines, i)
+            if not client_block and _LABELED_LINE.match(line)
+            else None
+        )
+        if labeled:
+            parsed_labeled, end_index = labeled
+            _save_current()
+            current_job = {**parsed_labeled, "description": [], "technologies": []}
+            current_bullets = []
+            pending_company = ""
+            i = end_index
+            continue
         if client_block:
             parsed_client, step = client_block
             _save_current()
@@ -1759,6 +2269,9 @@ def _extract_experience_detailed(text: str) -> tuple[list[dict[str, Any]], list[
         # Collect bullets / detail lines for the current job.
         if current_job:
             if _is_section_heading_line(line):
+                i += 1
+                continue
+            if _BARE_LABEL_LINE.match(line):
                 i += 1
                 continue
             norm = _normalize_heading(line)
@@ -2705,7 +3218,17 @@ def parse_resume_detailed(resume_path: str | None, resume_text: str | None = Non
     # Spoken languages are short ("English (Native)"); a long item is a programming-language
     # list or a stray footer and is dropped on its own instead of wiping the whole list.
     languages = [item for item in languages if len(item) <= 40]
-    experience, orphan_bullets = _extract_experience_detailed(resume_text)
+    experience, orphan_bullets, experience_source = _extract_experience_with_source(resume_text)
+    projects = _extract_projects(resume_text)
+    additional_sections = _extract_additional_sections(resume_text)
+    if experience_source == "projects":
+        # The Projects section was the job history; do not render it a second time.
+        projects = []
+    elif experience_source == "alternate":
+        consumed = {_normalize_heading(h) for h in _ALT_EXPERIENCE_HEADINGS}
+        additional_sections = [
+            s for s in additional_sections if _normalize_heading(str(s.get("title") or "")) not in consumed
+        ]
     result = {
         "name": name,
         "email": _extract_email(contact_text),
@@ -2720,13 +3243,13 @@ def parse_resume_detailed(resume_path: str | None, resume_text: str | None = Non
         "skills_by_category": skills_by_category,
         "experience": experience,
         "education": _extract_education(resume_text),
-        "projects": _extract_projects(resume_text),
+        "projects": projects,
         "certifications": _dedupe(
             [*_extract_bullet_list(resume_text, "certifications"), *_education_credentials(resume_text)]
         ),
         "achievements": _extract_bullet_list(resume_text, "achievements"),
         "languages": _dedupe([*inline_languages, *languages]),
-        "additional_sections": _extract_additional_sections(resume_text),
+        "additional_sections": additional_sections,
     }
 
     # Bullet-only layouts: keep source bullets for review instead of dropping them or

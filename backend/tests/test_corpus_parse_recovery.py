@@ -112,3 +112,247 @@ def test_sentence_line_before_bullets_is_not_a_title():
     )
     data = parse_resume_detailed(None, text)
     assert data["experience"] == []
+
+
+# ─── Task 3: additional zero-role layouts ────────────────────────────────
+
+
+def _roles_text(data):
+    return " ".join(
+        f"{r.get('company') or ''} {r.get('title') or ''} {r.get('duration') or ''} "
+        + " ".join(r.get("description") or [])
+        for r in data["experience"]
+    )
+
+
+def test_dice_work_history_list_recovers_title_and_employer():
+    data = parse_resume_detailed(None, _load("dice_work_history_list.txt"))
+    pairs = {(r["title"], r["company"]) for r in data["experience"]}
+    assert ("Senior ERP Consultant", "Contoso Logistics") in pairs
+    assert ("Applications Manager", "Fabrikam Gardening") in pairs
+    # A PDF line wrap ("Holdings,\nLlc") is rejoined.
+    assert ("Business Systems Analyst", "Adatum Holdings, Llc") in pairs
+    first = next(r for r in data["experience"] if r["company"] == "Contoso Logistics")
+    assert "2019" in first["duration"]
+    # Nothing is invented: no bullets, no technologies.
+    assert all(not r.get("description") for r in data["experience"])
+
+
+def test_dice_work_history_list_does_not_guess_ambiguous_split():
+    data = parse_resume_detailed(None, _load("dice_work_history_list.txt"))
+    # "Director Of Sales & Marketing Northwind Plastics" has no safe title/employer split.
+    for role in data["experience"]:
+        assert "Northwind" not in (role.get("title") or "")
+        assert "Director" not in (role.get("company") or "")
+    unassigned = " ".join(data.get("unassigned_experience_bullets") or [])
+    assert "Northwind Plastics" in unassigned
+    assert "ambiguous_role_assignment" in data["parse_meta"]["reasons"]
+
+
+def test_work_history_skill_list_is_not_experience():
+    text = (
+        "Pat Doe\npat@example.com\nWork History\n• Python\n• SQL\n• Kubernetes\nSkills\n• Python\n"
+    )
+    data = parse_resume_detailed(None, text)
+    assert data["experience"] == []
+
+
+def test_portfolio_client_engagements_heading_maps_to_experience():
+    data = parse_resume_detailed(None, _load("portfolio_client_engagements.txt"))
+    assert len(data["experience"]) == 2
+    first, second = data["experience"]
+    assert first["company"] == "Contoso Media"
+    assert first["title"] == "Content Strategy Lead"
+    assert "Present" in first["duration"]
+    assert "editorial calendar" in " ".join(first["description"])
+    assert second["company"] == "Fabrikam Learning"
+    assert "Content Strategist" in second["title"]
+    # The mapped section is not rendered a second time.
+    assert not data.get("projects")
+    assert not any("engagement" in (s.get("title") or "").lower() for s in data["additional_sections"])
+
+
+def test_portfolio_content_experience_heading_with_split_lines():
+    data = parse_resume_detailed(None, _load("portfolio_content_experience.txt"))
+    assert len(data["experience"]) == 2
+    first = data["experience"][0]
+    assert first["company"] == "Adatum Studios"
+    assert first["title"] == "Head of Content Programs"
+    assert "executive event recap" in " ".join(first["description"])
+    assert data["experience"][1]["company"] == "Litware Events"
+    # Skills block above the heading is not swallowed into a role.
+    assert "Storytelling" not in _roles_text(data)
+
+
+def test_projects_heading_without_job_history_stays_projects():
+    data = parse_resume_detailed(None, _load("clean_with_projects.txt"))
+    assert len(data["experience"]) == 1
+    assert data["projects"]
+
+
+def test_projects_heading_with_dated_employers_is_job_history():
+    text = (
+        "Lee Park\nlee@example.com\nSKILLS\nPython\n"
+        "PROJECT EXPERIENCE\nAcme Cloud — Platform Engineer | Jan 2020 - Dec 2022\n"
+        "• Built the deploy pipeline.\n"
+        "Beta Works — Developer | Feb 2017 - Dec 2019\n• Wrote the billing API.\n"
+        "EDUCATION\nB.S. Example State\n"
+    )
+    data = parse_resume_detailed(None, text)
+    assert [r["company"] for r in data["experience"]] == ["Acme Cloud", "Beta Works"]
+    assert not data["projects"]
+
+
+def test_dense_bullet_prefixed_headers_become_roles():
+    data = parse_resume_detailed(None, _load("dense_bullet_headers.txt"))
+    assert len(data["experience"]) == 2
+    first, second = data["experience"]
+    assert first["company"] == "Globex Retail"
+    assert first["title"] == "Lead Database Administrator"
+    assert "Present" in first["duration"]
+    assert "maintenance plans" in " ".join(first["description"])
+    assert second["company"] == "Initech Systems"
+    assert second["location"] == "Dallas, TX"
+    assert first["location"] == "Austin, TX"
+    assert second["title"] == "Database Administrator"
+    # Opening intro bullets (no heading above them) become the summary, not the headline.
+    assert "backup design" in data["summary"] and "ten years" in data["summary"]
+    assert not data["headline"].startswith("•")
+    # The title line is not repeated as a bullet.
+    assert "Database Administrator" not in first["description"]
+    assert "Database Administrator" not in second["description"]
+
+
+def test_bullet_with_year_range_is_not_a_header():
+    text = (
+        "Sam Roe\nEXPERIENCE\nAcme Corp | Engineer | 2019 - Present\n"
+        "• Led the migration from 2017 - 2019 across three teams and many services.\n"
+        "• Built the audit tooling.\nEDUCATION\nB.S. Example\n"
+    )
+    data = parse_resume_detailed(None, text)
+    assert len(data["experience"]) == 1
+    assert len(data["experience"][0]["description"]) == 2
+
+
+def test_company_client_role_duration_labels_with_apostrophe_years():
+    data = parse_resume_detailed(None, _load("labeled_company_role_duration.txt"))
+    assert len(data["experience"]) == 2
+    first, second = data["experience"]
+    assert first["company"].startswith("Contoso Consulting")
+    assert first["title"] == "Senior Software Architect"
+    assert "23" in first["duration"] and "24" in first["duration"]
+    assert "Wells Example Bank" in (first.get("project") or "")
+    assert "payments microservice" in " ".join(first["description"])
+    assert second["company"].startswith("Fabrikam Systems")
+    assert second["title"] == "Software Engineer"
+    assert "REST services" in " ".join(second["description"])
+
+
+def test_bullet_company_designation_duration_without_colons():
+    data = parse_resume_detailed(None, _load("labeled_bullet_company_designation.txt"))
+    assert len(data["experience"]) == 2
+    first, second = data["experience"]
+    assert first["company"].startswith("Photon Example Inc")
+    assert first["title"] == "Technical Lead"
+    assert "Till" in first["duration"] or "Present" in first["duration"]
+    assert second["company"].startswith("Mundio Example")
+    assert second["title"] == "Senior Android Developer"
+
+
+def test_role_line_with_inline_date_and_project_line():
+    data = parse_resume_detailed(None, _load("role_line_date_project.txt"))
+    assert len(data["experience"]) == 2
+    first, second = data["experience"]
+    assert first["title"] == "Senior Full Stack Engineer"
+    assert "24" in first["duration"] and "Present" in first["duration"]
+    assert "Example Freight" in (first.get("project") or "")
+    # Nothing is invented: a project/client line is not promoted to the employer.
+    assert (first.get("company") or "") == ""
+    assert "microservices" in " ".join(first["description"])
+    assert second["title"] == "Software Engineer"
+
+
+def test_apostrophe_and_till_date_ranges_in_conventional_header():
+    text = (
+        "Kim Lau\nEXPERIENCE\nQA ANALYST Peoples Group APRIL’22 – DEC’23\n"
+        "• Automated the loan workflow regression suite.\n"
+        "Test Engineer, Globex Corp Jan'18 – Till Date\n• Wrote the API tests.\n"
+        "EDUCATION\nB.S. Example\n"
+    )
+    data = parse_resume_detailed(None, text)
+    assert len(data["experience"]) == 2
+    assert "22" in data["experience"][0]["duration"]
+    assert "Till" in data["experience"][1]["duration"]
+
+
+def test_prose_apostrophe_year_is_not_a_date_range():
+    text = "Sam Roe\nEXPERIENCE\nAcme Corp\nEngineer 2020 - Present\n• Shipped the '19 launch plan to 40 teams.\nEDUCATION\nB.S. X\n"
+    data = parse_resume_detailed(None, text)
+    assert len(data["experience"]) == 1
+    assert "launch plan" in " ".join(data["experience"][0]["description"])
+
+
+def test_projects_sublist_does_not_replace_employers_found_elsewhere():
+    text = (
+        "Vic Jay\nvic@example.com\nSKILLS\nJava\n"
+        "Acme Cloud, Austin, TX\nSenior Developer Jan 2020 - Present\n• Built the billing service.\n"
+        "Beta Works, Dallas, TX\nDeveloper Feb 2016 - Dec 2019\n• Wrote the claims API.\n"
+        "Projects:\n"
+        "Gamma Retail — Developer | Jan 2012 - Dec 2015\n• Built the storefront.\n"
+        "EDUCATION\nB.S. Example State\n"
+    )
+    data = parse_resume_detailed(None, text)
+    companies = [r["company"] for r in data["experience"]]
+    assert "Acme Cloud" in " ".join(companies) and "Beta Works" in " ".join(companies)
+
+
+def test_date_only_line_after_company_and_title_lines():
+    text = (
+        "Al Bo\nEXPERIENCE\nAcme Corp\nSenior Engineer\n2020 - Present\n• Built the thing.\n"
+        "Beta Inc\nAnalyst\n2017 - 2020\n• Closed the books.\nEDUCATION\nB.S. Example\n"
+    )
+    data = parse_resume_detailed(None, text)
+    pairs = [(r["company"], r["title"], r["duration"]) for r in data["experience"]]
+    assert pairs == [("Acme Corp", "Senior Engineer", "2020 - Present"), ("Beta Inc", "Analyst", "2017 - 2020")]
+
+
+def test_title_date_company_order_with_date_only_line():
+    text = "Al Bo\nEXPERIENCE\nSenior Engineer\n2020 - Present\nAcme Corp\n• Built the thing.\nEDUCATION\nB.S. Example\n"
+    data = parse_resume_detailed(None, text)
+    role = data["experience"][0]
+    assert (role["company"], role["title"]) == ("Acme Corp", "Senior Engineer")
+    assert "Acme Corp" not in role["description"]
+
+
+def test_date_only_line_never_becomes_the_employer():
+    text = "Al Bo\nEXPERIENCE\nAcme Corp\n2020 - Present\n• Built the thing.\nEDUCATION\nB.S. Example\n"
+    data = parse_resume_detailed(None, text)
+    assert data["experience"][0]["company"] == "Acme Corp"
+
+
+def test_pipe_separated_labels_and_bracketed_dates():
+    text = (
+        "Bo Li\nbo@example.com\nEXPERIENCE\n"
+        "Company: Acme Tech | Role: Senior Java Developer\nDuration: May 2023 – Present\n"
+        "• Built the billing service.\n"
+        "Company: Beta Soft (Feb 2020 to Oct 2022)\nRole: Business Analyst [Nov 2019 to Oct 2022]\n"
+        "• Wrote the specs.\nEDUCATION\nB.S. Example\n"
+    )
+    data = parse_resume_detailed(None, text)
+    first, second = data["experience"]
+    assert (first["company"], first["title"]) == ("Acme Tech", "Senior Java Developer")
+    assert "Present" in first["duration"]
+    assert second["company"] == "Beta Soft"
+    assert second["title"] == "Business Analyst"
+
+
+def test_parenthesised_gap_note_does_not_swallow_next_employer():
+    text = (
+        "Hal Sid\nWork Experience\nOctober 2023 - Feb2024 (Personal Time off)\nCanada Life\n"
+        "Business System Analyst (March 2023- September2023)\nPublic Service Health Care Plan\n"
+        "• Analyzed API needs.\nBank Of Montreal, Toronto\nBusiness Analyst (March2021- February 2023)\n"
+        "• Documented requirements.\nEDUCATION\nB.S. Example\n"
+    )
+    data = parse_resume_detailed(None, text)
+    titles = [r["title"] for r in data["experience"]]
+    assert "Business Analyst" in titles and "Business System Analyst" in titles

@@ -47,6 +47,11 @@ def runner(tmp_path_factory):
     ):
         mp.setenv(key, "false")
     mp.delenv("AWS_BEARER_TOKEN_BEDROCK", raising=False)
+    # Settings may already be loaded (LLM repair defaults on) by an earlier test module,
+    # so the env vars above would be ignored; pin the golden-run flags on the object too.
+    from app.core.config import settings
+
+    mp.setattr(settings, "RESUME_LLM_PARSE_FALLBACK", False)
     spec = importlib.util.spec_from_file_location("corpus_quality_eval_under_test", SCRIPT)
     module = importlib.util.module_from_spec(spec)
     sys.modules[spec.name] = module
