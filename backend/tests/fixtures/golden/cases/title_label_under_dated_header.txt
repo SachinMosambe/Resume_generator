@@ -1,0 +1,20 @@
+Marcus Ellery
+marcus.ellery@example.com | Chicago, IL
+SUMMARY
+Engineer focused on data platforms and reporting.
+EXPERIENCE
+Northwind Traders    Jan 2020 - Present
+Seattle, WA
+Title: Senior Data Engineer
+• Built ingestion pipelines for the analytics platform.
+• Reduced nightly batch runtime with incremental loads.
+Contoso Insurance    Mar 2017 - Dec 2019
+Title: Data Engineer
+Project: Claims Reporting
+• Maintained nightly batch jobs for claims reporting.
+Fabrikam Systems
+Job Role: Support Analyst
+Jun 2014 - Feb 2017
+• Resolved customer tickets for the billing portal.
+EDUCATION
+BS Computer Science, Example State University

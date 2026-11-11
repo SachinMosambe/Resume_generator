@@ -574,3 +574,43 @@ def test_work_history_plain_lines_with_prose_stay_unparsed():
         "Education\nB.S. Example\n"
     )
     assert parse_resume_detailed(None, text)["experience"] == []
+
+
+def test_title_label_under_dated_company_header():
+    data = parse_resume_detailed(None, _load("title_label_under_dated_header.txt"))
+    assert len(data["experience"]) == 3
+    first, second, third = data["experience"]
+    assert (first["company"], first["title"], first["duration"]) == (
+        "Northwind Traders", "Senior Data Engineer", "Jan 2020 - Present",
+    )
+    assert first["location"] == "Seattle, WA"
+    assert "ingestion pipelines" in " ".join(first["description"])
+    assert (second["company"], second["title"], second["duration"]) == (
+        "Contoso Insurance", "Data Engineer", "Mar 2017 - Dec 2019",
+    )
+    assert second.get("project") == "Claims Reporting"
+    assert (third["company"], third["title"], third["duration"]) == (
+        "Fabrikam Systems", "Support Analyst", "Jun 2014 - Feb 2017",
+    )
+    assert "billing portal" in " ".join(third["description"])
+    assert not any("Title:" in (r["title"] or "") or "Role:" in (r["title"] or "") for r in data["experience"])
+    assert not data.get("unassigned_experience_bullets")
+
+
+def test_title_label_never_replaces_real_title_or_leaks_into_bullets():
+    text = (
+        "Zed Qu\nEXPERIENCE\nLead Engineer | Northwind Traders | Jan 2020 - Present\n"
+        "Seattle, WA\nTitle: Principal Engineer\n• Shipped the billing rewrite.\nEDUCATION\nB.S. Example\n"
+    )
+    role = parse_resume_detailed(None, text)["experience"][0]
+    assert role["title"] == "Lead Engineer" and role["company"] == "Northwind Traders"
+
+
+def test_title_label_after_bullets_is_not_promoted():
+    text = (
+        "Zed Qu\nEXPERIENCE\nNorthwind Traders    Jan 2020 - Present\n"
+        "• Shipped the billing rewrite.\nTitle: Senior Engineer\nEDUCATION\nB.S. Example\n"
+    )
+    role = parse_resume_detailed(None, text)["experience"][0]
+    assert role["title"] == ""
+    assert "Title: Senior Engineer" in role["description"]

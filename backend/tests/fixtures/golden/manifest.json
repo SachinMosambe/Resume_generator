@@ -1881,6 +1881,43 @@
           "title": "Test Engineer"
         }
       ]
+    },
+    {
+      "formats": [
+        "aptino",
+        "capgemini",
+        "suresh"
+      ],
+      "expected_status": "passed",
+      "scored": true,
+      "expects_work_history": true,
+      "id": "title_label_under_dated_header",
+      "pattern": "title_label_under_dated_company_header",
+      "source": "cases/title_label_under_dated_header.txt",
+      "expected_name": "Marcus Ellery",
+      "expected_roles": [
+        {
+          "company": "Northwind Traders",
+          "title": "Senior Data Engineer",
+          "bullet_substrings": [
+            "ingestion pipelines"
+          ]
+        },
+        {
+          "company": "Contoso Insurance",
+          "title": "Data Engineer",
+          "bullet_substrings": [
+            "nightly batch jobs"
+          ]
+        },
+        {
+          "company": "Fabrikam Systems",
+          "title": "Support Analyst",
+          "bullet_substrings": [
+            "billing portal"
+          ]
+        }
+      ]
     }
   ],
   "gates": {

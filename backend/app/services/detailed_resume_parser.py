@@ -1721,9 +1721,20 @@ def _parse_labeled_role_block(
 
 
 _HEADER_FOLLOW_LABEL = re.compile(
-    r"^[\s\-\*\u2022\u25CF●•▪■>]*(?P<label>role|title|job\s+title|designation|position|project)\s*:\s*(?P<value>\S.*)$",
+    r"^[\s\-\*\u2022\u25CF●•▪■>]*(?P<label>role|title|job\s+title|job\s+role|designation|position|position\s+held|project)\s*:\s*(?P<value>\S.*)$",
     re.I,
 )
+
+
+def _title_label_value(line: str) -> str:
+    """Value of an explicit 'Title: X' / 'Role: X' line ('' for Project labels or no label)."""
+    match = _HEADER_FOLLOW_LABEL.match((line or "").strip())
+    if not match or re.sub(r"\s+", " ", match.group("label").lower()) == "project":
+        return ""
+    value = match.group("value").strip(" .,;")
+    if _DATE_PATTERN.search(value) or _is_invalid_job_title(value):
+        return ""
+    return value
 
 
 def _consume_header_labels(lines: list[str], start: int, parsed: dict[str, Any]) -> None:
@@ -1873,6 +1884,19 @@ def _merge_date_only_headers(lines: list[str]) -> None:
                 lines[blank] = ""
             i = nxt + 1
             continue
+        label_title = _title_label_value(second)
+        if label_title and not _ROLE_WORD.search(first):
+            # "Company / Title: X / <date line>": the explicit label names the role.
+            after = nxt + 1
+            while after < len(lines) and not lines[after].strip():
+                after += 1
+            if after < len(lines) and _is_date_only_line(lines[after].strip()):
+                date = _DATE_PATTERN.search(lines[after]).group(0).strip()
+                lines[i] = f"{label_title} | {first} {date}"
+                for blank in range(i + 1, after + 1):
+                    lines[blank] = ""
+                i = after + 1
+                continue
         if not _is_header_text(second):
             i += 1
             continue
@@ -2330,6 +2354,13 @@ def _experience_from_lines(lines: list[str], chosen: bool) -> tuple[list[dict[st
                     if _DATE_PATTERN.search(candidate) or _is_bullet(candidate):
                         break
                     if re.match(r"(?i)^responsibilities\b", candidate):
+                        break
+                    # "Title: X" after a location crumb: read the label, never keep it in the title.
+                    if _HEADER_FOLLOW_LABEL.match(candidate):
+                        label_title = _title_label_value(candidate)
+                        if label_title:
+                            parsed["title"] = _clean_text(label_title)
+                            lines[look] = ""
                         break
                     # "Jr. Java Engineer | In-House Project | Payment gateway app ...":
                     # title first, the rest names the engagement.
