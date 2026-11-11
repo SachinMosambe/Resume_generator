@@ -5,7 +5,7 @@ import re
 
 
 _EXP_HEAD = re.compile(
-    r"(?im)^(professional\s+)?(experience|work history|employment|job history)\b"
+    r"(?im)^(?:experience|work history|employment history|job history|professional experience)\s*$"
 )
 _JOBISH = re.compile(
     r"(?i)\b(20\d{2}|present)\b|\([^)]{3,60}\)\s*\d{1,2}/\d{2,4}|\b(inc|llc|corp|ltd)\b"

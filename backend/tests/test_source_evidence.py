@@ -28,3 +28,9 @@ def test_dice_and_bullet_sources_flag_work_history():
 
 def test_education_only_has_no_work_history():
     assert detect_employment_evidence(EDU).has_work_history is False
+
+
+def test_employment_type_metadata_has_no_work_history():
+    source = "Employment Type\nFull-time\nEducation\nBS Computer Science 2018\n"
+
+    assert detect_employment_evidence(source).has_work_history is False
