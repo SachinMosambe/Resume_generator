@@ -297,6 +297,60 @@ def test_survival_keeps_verified_duration_location_technologies():
     assert beta["technologies"] == []
 
 
+def test_repair_cannot_replace_verified_duration_or_location_with_other_roles_values():
+    source = """Jane Doe
+EXPERIENCE
+Senior Engineer
+Acme Inc | Remote | 2020 - Present
+• Built the billing pipeline for enterprise clients.
+Developer
+Beta LLC | New York | 2017 - 2019
+• Maintained the legacy reporting service.
+"""
+    parsed = _weak_parse(
+        experience=[
+            {
+                "title": "",
+                "company": "Acme Inc",
+                "location": "Remote",
+                "duration": "2020 - Present",
+                "description": ["Built the billing pipeline for enterprise clients."],
+            },
+            {
+                "title": "",
+                "company": "Beta LLC",
+                "location": "New York",
+                "duration": "2017 - 2019",
+                "description": ["Maintained the legacy reporting service."],
+            },
+        ]
+    )
+    parsed["parse_meta"] = score_parse(parsed, source)
+    repair = {
+        "experience": [
+            {
+                "title": "Senior Engineer",
+                "company": "Acme Inc",
+                "location": "New York",
+                "duration": "2017 - 2019",
+                "description": ["Built the billing pipeline for enterprise clients."],
+            },
+            {
+                "title": "Developer",
+                "company": "Beta LLC",
+                "location": "New York",
+                "duration": "2017 - 2019",
+                "description": ["Maintained the legacy reporting service."],
+            },
+        ]
+    }
+
+    out = maybe_repair_parse(source, parsed, client=_stub(repair))
+
+    assert out["experience"][0]["duration"] == "2020 - Present"
+    assert out["experience"][0]["location"] == "Remote"
+
+
 MENTION_SOURCE = """Jane Doe
 EXPERIENCE
 Senior Engineer

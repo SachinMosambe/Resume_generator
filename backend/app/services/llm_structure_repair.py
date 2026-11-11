@@ -305,8 +305,8 @@ def _merge_roles(roles: list[_RepairRole], old_roles: list[dict]) -> list[dict[s
         base: dict[str, Any] = copy.deepcopy(old) if old else {}
         base["title"] = r.title.strip() or str(base.get("title") or "").strip()
         base["company"] = r.company.strip() or str(base.get("company") or "").strip()
-        base["location"] = r.location.strip() or str(base.get("location") or "").strip()
-        base["duration"] = r.duration.strip() or str(base.get("duration") or "").strip()
+        base["location"] = str(base.get("location") or "").strip() or r.location.strip()
+        base["duration"] = str(base.get("duration") or "").strip() or r.duration.strip()
         base["description"] = [b.strip() for b in r.description if b.strip()]
         technologies = base.get("technologies")
         base["technologies"] = list(technologies) if isinstance(technologies, list) else []
