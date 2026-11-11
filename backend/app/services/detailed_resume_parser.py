@@ -1784,6 +1784,54 @@ def _is_header_text(text: str) -> bool:
     return not _LABELED_LINE.match(value) and not _BARE_LABEL_LINE.match(value)
 
 
+def _next_text_index(lines: list[str], start: int) -> int:
+    """Index of the next non-blank line at or after ``start`` (len(lines) when none)."""
+    while start < len(lines) and not lines[start].strip():
+        start += 1
+    return start
+
+
+def _merge_dates_first_headers(lines: list[str]) -> None:
+    """Fold 'date / Company / Title' (either order) into one header in dates-first layouts.
+
+    The layout counts as dates-first only when the first content line of the section is a
+    date-only line, so a company-first layout (where each date closes its header) is never
+    re-paired. A date merges only with exactly two following header lines of which exactly
+    one is a job title; anything else is left to the ordinary path.
+    """
+    first = _next_text_index(lines, 0)
+    while first < len(lines) and (
+        _is_section_heading_line(lines[first].strip()) or _extra_heading(lines[first].strip())
+    ):
+        first = _next_text_index(lines, first + 1)
+    if first >= len(lines) or not _is_date_only_line(lines[first].strip()):
+        return
+    i = first
+    while i < len(lines):
+        if not _is_date_only_line(lines[i].strip()):
+            i += 1
+            continue
+        date = _DATE_PATTERN.search(lines[i]).group(0).strip()
+        a = _next_text_index(lines, i + 1)
+        b = _next_text_index(lines, a + 1) if a < len(lines) else len(lines)
+        if b >= len(lines):
+            break
+        one, two = lines[a].strip(), lines[b].strip()
+        if not (_is_header_text(one) and _is_header_text(two)):
+            i += 1
+            continue
+        one_title = bool(_ROLE_WORD.search(one)) and not _is_invalid_job_title(one)
+        two_title = bool(_ROLE_WORD.search(two)) and not _is_invalid_job_title(two)
+        if one_title == two_title:
+            i += 1
+            continue
+        title, company = (one, two) if one_title else (two, one)
+        lines[i] = f"{title} | {company} {date}"
+        for blank in range(i + 1, b + 1):
+            lines[blank] = ""
+        i = b + 1
+
+
 def _merge_date_only_headers(lines: list[str]) -> None:
     """Fold 'Company / Title / <date line>' (or 'Company / <date line>') into one header line.
 
@@ -1791,6 +1839,7 @@ def _merge_date_only_headers(lines: list[str]) -> None:
     lines are merged only when exactly one of them is a job title; otherwise the order is
     unknowable and nothing is touched.
     """
+    _merge_dates_first_headers(lines)
     i = 0
     while i < len(lines):
         first = (lines[i] or "").strip()

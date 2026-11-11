@@ -1,0 +1,16 @@
+Dana Whitfield
+dana.whitfield@example.com | Denver, CO
+SUMMARY
+Data engineer with analytics platform experience.
+WORK EXPERIENCE
+Jan 2020 - Present
+Northwind Traders, Seattle
+Senior Data Engineer
+• Built ingestion pipelines for the analytics platform.
+• Reduced nightly batch runtime with incremental loads.
+Mar 2017 - Dec 2019
+Data Engineer
+Contoso Insurance, Dallas
+• Maintained nightly batch jobs for claims reporting.
+EDUCATION
+BS Computer Science, Example State University

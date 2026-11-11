@@ -496,3 +496,42 @@ def test_labels_after_dated_header_never_replace_a_real_title():
     role = data["experience"][0]
     assert role["title"] == "Lead Engineer" and role["company"] == "Acme Corp"
     assert role.get("project") == "Billing Rewrite"
+
+
+def test_dates_first_layout_reads_company_and_title_lines():
+    data = parse_resume_detailed(None, _load("dates_first_company_title.txt"))
+    assert len(data["experience"]) == 2
+    first, second = data["experience"]
+    assert first["company"].startswith("Northwind Traders")
+    assert first["title"] == "Senior Data Engineer"
+    assert first["duration"] == "Jan 2020 - Present"
+    assert "ingestion pipelines" in " ".join(first["description"])
+    assert second["company"].startswith("Contoso Insurance")
+    assert second["title"] == "Data Engineer"
+    assert second["duration"] == "Mar 2017 - Dec 2019"
+    assert "nightly batch jobs" in " ".join(second["description"])
+    assert not data.get("unassigned_experience_bullets")
+
+
+def test_dates_first_layout_without_bullets_does_not_cross_pair_dates():
+    text = (
+        "Zed Qu\nEXPERIENCE\nJan 2020 - Present\nNorthwind Traders\nSenior Data Engineer\n"
+        "Mar 2017 - Dec 2019\nContoso Insurance\nData Engineer\nEDUCATION\nB.S. Example\n"
+    )
+    roles = parse_resume_detailed(None, text)["experience"]
+    assert [(r["company"], r["title"], r["duration"]) for r in roles] == [
+        ("Northwind Traders", "Senior Data Engineer", "Jan 2020 - Present"),
+        ("Contoso Insurance", "Data Engineer", "Mar 2017 - Dec 2019"),
+    ]
+
+
+def test_company_first_layout_is_not_treated_as_dates_first():
+    text = (
+        "Zed Qu\nEXPERIENCE\nNorthwind Traders\nSenior Data Engineer\nJan 2020 - Present\n"
+        "Contoso Insurance\nData Engineer\nMar 2017 - Dec 2019\nEDUCATION\nB.S. Example\n"
+    )
+    roles = parse_resume_detailed(None, text)["experience"]
+    assert [(r["company"], r["title"], r["duration"]) for r in roles] == [
+        ("Northwind Traders", "Senior Data Engineer", "Jan 2020 - Present"),
+        ("Contoso Insurance", "Data Engineer", "Mar 2017 - Dec 2019"),
+    ]

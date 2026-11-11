@@ -1791,6 +1791,36 @@
           ]
         }
       ]
+    },
+    {
+      "formats": [
+        "aptino",
+        "capgemini",
+        "suresh"
+      ],
+      "expected_status": "passed",
+      "scored": true,
+      "expects_work_history": true,
+      "id": "dates_first_company_title",
+      "pattern": "dates_first_company_title",
+      "source": "cases/dates_first_company_title.txt",
+      "expected_name": "Dana Whitfield",
+      "expected_roles": [
+        {
+          "company": "Northwind Traders",
+          "title": "Senior Data Engineer",
+          "bullet_substrings": [
+            "ingestion pipelines"
+          ]
+        },
+        {
+          "company": "Contoso Insurance",
+          "title": "Data Engineer",
+          "bullet_substrings": [
+            "nightly batch jobs"
+          ]
+        }
+      ]
     }
   ],
   "gates": {
