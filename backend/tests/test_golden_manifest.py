@@ -33,6 +33,7 @@ GATE_KEYS = {
     "style_assert_pct_min",
     "failed_pct_max",
 }
+STUB_BUILDERS = {"scanned_pdf", "mixed_pdf", "table_docx", "legacy_doc"}
 
 
 def _load():
@@ -66,3 +67,10 @@ def test_golden_manifest_covers_pattern_families_and_sources():
         assert (root / fixture["source"]).is_file(), fixture["id"]
         if fixture.get("scored"):
             assert isinstance(fixture["expects_work_history"], bool)
+
+
+def test_stubbed_binary_fixtures_are_not_scored():
+    _path, data = _load()
+    for fixture in data["fixtures"]:
+        if fixture.get("builder") in STUB_BUILDERS:
+            assert fixture.get("scored") is False, fixture["id"]

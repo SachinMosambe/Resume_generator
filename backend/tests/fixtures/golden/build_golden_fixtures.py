@@ -20,6 +20,7 @@ STUB_REASON = {
     "table_docx": "Wave C: write the case rows into a DOCX table.",
     "legacy_doc": "Wave C: emit a .doc from the case text when LibreOffice is available.",
 }
+# Scored gates must ignore fixtures using these builders until materialization works.
 
 
 def load_manifest() -> dict:
