@@ -421,6 +421,53 @@ def document_from_store(
     return document
 
 
+UNASSIGNED_ROLE_TITLE = "Role details need review"
+
+
+def attach_unassigned_experience(
+    document: dict[str, Any],
+    store: dict[str, Any],
+    format_metadata: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    """Render source bullets the parser could not assign to an employer.
+
+    They go under a review-oriented placeholder role (empty company, no dates) at the end of
+    the Experience section so they survive in every renderer and reach the recruiter; the
+    integrity check flags the document as needing review. Idempotent.
+    """
+    bullets = _as_str_list(store.get("unassigned_experience_bullets"))
+    if not bullets:
+        return document
+    sections = document.setdefault("sections", [])
+    placeholder = {
+        "company": "",
+        "title": UNASSIGNED_ROLE_TITLE,
+        "duration": "",
+        "location": "",
+        "description": bullets,
+        "technologies": [],
+    }
+    for section in sections:
+        if not isinstance(section, dict) or _canonical(section.get("title") or section.get("type")) != "experience":
+            continue
+        content = [r for r in (section.get("content") or []) if isinstance(r, dict)]
+        if any(r.get("title") == UNASSIGNED_ROLE_TITLE for r in content):
+            return document
+        section["content"] = [*content, placeholder]
+        return document
+    labels = (format_metadata or {}).get("section_labels")
+    labels = labels if isinstance(labels, dict) else {}
+    title = _safe_section_title(labels.get("experience"), "Professional Experience")
+    new_section = {"type": "experience", "title": title, "content": [placeholder]}
+    after = {"projects", "achievements", "languages"}
+    index = next(
+        (i for i, s in enumerate(sections) if isinstance(s, dict) and _canonical(s.get("title") or s.get("type")) in after),
+        len(sections),
+    )
+    sections.insert(index, new_section)
+    return document
+
+
 def _canonical_extra(title: str) -> str:
     low = re.sub(r"[^a-z ]+", "", str(title or "").lower()).strip()
     return "references" if low in {"references", "referees"} else low

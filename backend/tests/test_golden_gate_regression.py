@@ -240,3 +240,31 @@ def test_numeric_level_suffix_stays_in_the_title():
         ("Engineer I", "ExampleCorp"),
         ("Engineer II", "ExampleCorp"),
     ]
+
+
+def test_ambiguous_needs_review_fixture_rejects_clean_pass(runner):
+    manifest = json.loads(MANIFEST.read_text(encoding="utf-8"))
+    fixture = next(f for f in manifest["fixtures"] if f["id"] == "ambiguous_overlapping_dates")
+    assert fixture["expected_status"] == "needs_review"
+    base = {"expectation_failures": [], "style_failures": None}
+    parse = {"roles": 2, "bad_name": False, "annotated_titled_roles": 2, "untitled_source_titled_roles": []}
+
+    def gates_for(status):
+        result = {"id": fixture["id"], "runs": {"aptino": {**base, "status": status}}, "parse": parse}
+        return {g["gate"]: g for g in runner.compute_golden_gates(manifest, [result], {fixture["id"]: fixture})}
+
+    assert gates_for("passed")["passed_pct"]["met"] is False
+    assert gates_for("needs_review")["passed_pct"]["met"] is True
+
+
+def test_every_ambiguous_manifest_fixture_expects_needs_review(runner):
+    manifest = json.loads(MANIFEST.read_text(encoding="utf-8"))
+    assert runner.ambiguous_status_problems(manifest) == []
+    bad = {"fixtures": [{"id": "ambiguous_x", "pattern": "ambiguous", "scored": True, "expected_status": "passed"}]}
+    assert runner.ambiguous_status_problems(bad) == ["ambiguous_x"]
+
+
+def test_expected_name_missing_from_output_is_an_expectation_failure(runner):
+    fixture = {"expected_name": "Casey Example"}
+    assert runner.golden_expectation_failures(fixture, "Someone Else") == ["name:Casey Example"]
+    assert runner.golden_expectation_failures(fixture, "Casey Example") == []

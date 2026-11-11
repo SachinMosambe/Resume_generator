@@ -295,3 +295,54 @@ def test_api_review_headers_legacy_strings_and_additive_details(fixtures, tmp_pa
     assert all(set(w) == {"severity", "code", "message"} for w in details)
     assert legacy == [w["message"] for w in details]
     assert "x-review-warning-details" in resp.headers.get("access-control-expose-headers", "").lower()
+
+
+def _meta(*reasons, history=True):
+    return {"reasons": list(reasons), "employment_evidence": {"has_work_history": history}}
+
+
+def test_identity_ambiguous_blocks_when_name_is_not_source_backed():
+    store = {**STORE, "header": {"name": "Candidate"}}
+    report = check_output_integrity(
+        store, _docx("Candidate", *FULL[1:]), parse_meta=_meta("identity_ambiguous"), source_text="Skills\nReact Native"
+    )
+    assert report.status == "needs_review"
+    assert any(w["code"] == "identity_ambiguous" and w["severity"] == "blocking" for w in report.warnings)
+
+
+def test_identity_ambiguous_ignored_when_name_confirmed_by_source():
+    report = check_output_integrity(
+        STORE, _docx(*FULL), parse_meta=_meta("identity_ambiguous"), source_text="Jordan Rivera\nExperience"
+    )
+    assert not any(w["code"] == "identity_ambiguous" for w in report.warnings)
+
+
+def test_unresolved_titles_block_only_with_employment_evidence():
+    store = {**STORE, "experience": [{**STORE["experience"][0], "title": ""}]}
+    lines = [x for x in FULL if x != "Staff Engineer"]
+    blocked = check_output_integrity(store, _docx(*lines), parse_meta=_meta("source_backed_titles_unresolved"))
+    assert any(w["code"] == "source_backed_titles_unresolved" and w["severity"] == "blocking" for w in blocked.warnings)
+    quiet = check_output_integrity(
+        store, _docx(*lines), parse_meta=_meta("source_backed_titles_unresolved", history=False)
+    )
+    assert not any(w["code"] == "source_backed_titles_unresolved" for w in quiet.warnings)
+
+
+def test_garbled_role_and_overlap_reasons_block_without_leaking_content():
+    report = check_output_integrity(
+        STORE, _docx(*FULL), parse_meta=_meta("role_identity_garbled", "overlapping_role_dates")
+    )
+    codes = {w["code"] for w in report.warnings if w["severity"] == "blocking"}
+    assert {"role_identity_garbled", "overlapping_role_dates"} <= codes
+    assert report.status == "needs_review"
+    assert all("Acme" not in m and "Jordan" not in m for m in _msgs(report))
+
+
+def test_unassigned_bullets_with_roles_need_review_and_must_be_rendered():
+    store = {**STORE, "unassigned_experience_bullets": ["Trained two analysts on the close checklist."]}
+    shown = check_output_integrity(store, _docx(*FULL, "Trained two analysts on the close checklist."))
+    assert shown.status == "needs_review"
+    assert any(w["code"] == "experience_bullets_unassigned" for w in shown.warnings)
+    assert not any(w["code"] == "unassigned_bullets_missing" for w in shown.warnings)
+    hidden = check_output_integrity(store, _docx(*FULL))
+    assert any(w["code"] == "unassigned_bullets_missing" for w in hidden.warnings)

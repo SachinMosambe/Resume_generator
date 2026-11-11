@@ -2734,8 +2734,19 @@ def parse_resume_detailed(resume_path: str | None, resume_text: str | None = Non
     from app.services.parse_confidence import score_parse
     from app.services.source_evidence import detect_employment_evidence
 
-    if not result["experience"] and orphan_bullets and detect_employment_evidence(resume_text).has_work_history:
-        result["unassigned_experience_bullets"] = _dedupe(orphan_bullets)
+    if orphan_bullets and detect_employment_evidence(resume_text).has_work_history:
+        # Also kept when other roles parsed: a header the parser could not read must not
+        # silently drop its bullets. Bullets already placed under a role are not repeated.
+        placed = {
+            re.sub(r"[^a-z0-9]+", " ", str(b).lower()).strip()
+            for role in result["experience"]
+            for b in (role.get("description") or [])
+        }
+        leftover = [
+            b for b in _dedupe(orphan_bullets) if re.sub(r"[^a-z0-9]+", " ", str(b).lower()).strip() not in placed
+        ]
+        if leftover:
+            result["unassigned_experience_bullets"] = leftover
     result["parse_meta"] = score_parse(result, resume_text)
 
     logger.info(

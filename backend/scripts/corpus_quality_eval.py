@@ -552,10 +552,24 @@ def to_markdown(summary: dict, rows: list[dict], format_names: list[str]) -> str
 # ---------------------------------------------------------------------------
 
 GOLDEN_DIR = ROOT / "tests" / "fixtures" / "golden"
-# A fixture whose manifest status is ``needs_review`` is deliberately ambiguous: flagging it
-# is the desired outcome and a clean pass is acceptable only if every expected fact is intact
-# (the expectation check below enforces that). ``failed`` / ``error`` is never acceptable.
-GOLDEN_STATUS_OK = {"passed": {"passed"}, "needs_review": {"needs_review", "passed"}}
+# A fixture whose manifest status is ``needs_review`` is deliberately ambiguous: the pipeline
+# must flag it. A clean ``passed`` is never accepted for it, even if every expected fact is
+# intact. ``failed`` / ``error`` is never acceptable either.
+GOLDEN_STATUS_OK = {"passed": {"passed"}, "needs_review": {"needs_review"}}
+# Fixture ids / patterns that signal deliberate ambiguity and must be manifest ``needs_review``.
+AMBIGUOUS_PATTERNS = ("ambiguous", "empty_title")
+
+
+def ambiguous_status_problems(manifest: dict) -> list[str]:
+    """Manifest fixtures that look ambiguous but do not require ``needs_review``."""
+    problems = []
+    for f in manifest.get("fixtures", []):
+        label = f"{f.get('id', '')} {f.get('pattern', '')}"
+        if f.get("expected_status") == "quarantine" or not f.get("scored"):
+            continue
+        if any(p in label for p in AMBIGUOUS_PATTERNS) and f.get("expected_status") != "needs_review":
+            problems.append(f["id"])
+    return problems
 
 
 def _golden_module(name: str):
@@ -621,6 +635,8 @@ def golden_expectation_failures(fixture: dict, out_txt: str, preserved: list[str
     """
     hay = norm(out_txt)
     missing: list[str] = []
+    if fixture.get("expected_name") and not _contains(hay, fixture["expected_name"]):
+        missing.append(f"name:{fixture['expected_name']}")
     for role in fixture.get("expected_roles") or []:
         company = role.get("company") or ""
         if company and not _contains(hay, company):
@@ -759,7 +775,7 @@ def compute_golden_gates(manifest: dict, results: list[dict], fixtures_by_id: di
     def run_ok(fid: str, run: dict) -> bool:
         fixture = fixtures_by_id[fid]
         expected = fixture.get("expected_status", "passed")
-        accepted = {expected} if fixture.get("allow_unassigned_bullets") else GOLDEN_STATUS_OK.get(expected, {expected})
+        accepted = GOLDEN_STATUS_OK.get(expected, {expected})
         return run["status"] in accepted and not run["expectation_failures"]
 
     # passed_pct / failed_pct: every scored valid input x format stays in the denominator.
@@ -860,6 +876,10 @@ def run_golden(args) -> int:
         print("ERROR: RESUME_LLM_PARSE_FALLBACK must be false for golden runs", file=sys.stderr)
         return 2
     manifest = json.loads((GOLDEN_DIR / "manifest.json").read_text(encoding="utf-8"))
+    lax = ambiguous_status_problems(manifest)
+    if lax:
+        print(f"ERROR: ambiguous fixtures must expect needs_review: {lax}", file=sys.stderr)
+        return 2
     only = {x.strip() for x in (args.fixtures or "").split(",") if x.strip()}
     scored = [
         f for f in manifest["fixtures"]

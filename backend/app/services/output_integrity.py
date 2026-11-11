@@ -25,6 +25,7 @@ from docx.text.paragraph import Paragraph
 
 from app.services.docx_layout import clean_education_title_dates
 from app.services.pdf_ocr import format_page_refs
+from app.services.structured_resume_store import UNASSIGNED_ROLE_TITLE
 
 # Below this share of a core field found in the output, the document is marked failed.
 _FAIL_RATIO = 0.5
@@ -260,6 +261,63 @@ def _experience_gap(store: dict, parse_meta: dict, roles: list[dict], hay: str) 
     return not (unassigned and all(n in hay for n in unassigned))
 
 
+_BAD_NAMES = {"", "candidate", "react native", "unknown"}
+
+
+def _name_is_unconfirmed(name: Any, source_text: str) -> bool:
+    """Name missing, a placeholder/tech token, or not present in the source resume."""
+    norm = _norm(name)
+    if norm in _BAD_NAMES:
+        return True
+    return bool(source_text) and f" {norm} " not in f" {_norm(source_text)} "
+
+
+def _parse_reason_findings(
+    store: dict, meta: dict, roles: list[dict], source_text: str
+) -> list[dict[str, str]]:
+    """Recruiter-safe findings for ``parse_meta.reasons`` (codes and counts only)."""
+    reasons = set(meta.get("reasons") or [])
+    out: list[dict[str, str]] = []
+    if "identity_ambiguous" in reasons and _name_is_unconfirmed((store.get("header") or {}).get("name"), source_text):
+        out.append(
+            _finding(
+                BLOCKING,
+                "identity_ambiguous",
+                "The candidate name could not be confirmed from the source resume; "
+                "verify the name before sending.",
+            )
+        )
+    has_history = bool((meta.get("employment_evidence") or {}).get("has_work_history"))
+    if "source_backed_titles_unresolved" in reasons and has_history:
+        untitled = sum(1 for r in roles if not str(r.get("title") or "").strip())
+        out.append(
+            _finding(
+                BLOCKING,
+                "source_backed_titles_unresolved",
+                f"{untitled} of {len(roles)} experience role(s) have no job title; "
+                "check the source for the missing titles.",
+            )
+        )
+    if "role_identity_garbled" in reasons:
+        out.append(
+            _finding(
+                BLOCKING,
+                "role_identity_garbled",
+                "An experience header was read incorrectly (employer looks like a date or repeats the title); "
+                "compare roles with the source.",
+            )
+        )
+    if "overlapping_role_dates" in reasons:
+        out.append(
+            _finding(
+                BLOCKING,
+                "overlapping_role_dates",
+                "Employment dates overlap across employers; confirm the dates against the source.",
+            )
+        )
+    return out
+
+
 def check_output_integrity(
     store: dict,
     docx_bytes: bytes,
@@ -321,10 +379,24 @@ def check_output_integrity(
             _finding(
                 BLOCKING,
                 "experience_roles_unassigned",
-                "Work history bullets were kept but could not be assigned to employers; "
-                "the Experience section needs manual review.",
+                "Work history bullets could not be assigned to employers; they appear under "
+                f"'{UNASSIGNED_ROLE_TITLE}' in the Experience section and need manual review.",
             )
         )
+    elif roles and store.get("unassigned_experience_bullets"):
+        _check(
+            "unassigned_bullets", store.get("unassigned_experience_bullets") or [], hay, checks, warnings,
+            "unassigned experience bullets",
+        )
+        warnings.append(
+            _finding(
+                BLOCKING,
+                "experience_bullets_unassigned",
+                f"Some experience bullets could not be assigned to an employer; they appear under "
+                f"'{UNASSIGNED_ROLE_TITLE}' and need manual review.",
+            )
+        )
+    warnings.extend(_parse_reason_findings(store, meta, roles, source_text))
 
     edu = [e for e in store.get("education") or [] if isinstance(e, dict)]
     edu_fields = [_education_needle(e.get(k), hay) for e in edu for k in ("degree", "institution", "school", "year")]

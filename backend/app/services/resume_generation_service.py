@@ -40,6 +40,7 @@ from app.services.output_integrity import IntegrityReport, check_output_integrit
 from app.services.pdf_parser import extract_text_from_document
 from app.services.structured_resume_store import (
     apply_store_to_candidate_data,
+    attach_unassigned_experience,
     build_structured_resume,
     document_from_store,
     is_large_resume,
@@ -167,6 +168,9 @@ class ResumeGenerationService:
         # Never copy sample candidate body text from the template.
         format_metadata = normalize_format_metadata(dict(client_format.format_metadata or {}))
         client_format.format_metadata = format_metadata
+
+        # Bullets with no readable employer stay visible under a review placeholder role.
+        document = attach_unassigned_experience(document, store, format_metadata)
 
         # Dual gate: format structure + completeness before render (fail closed).
         format_findings = validate_format_document(document, format_metadata, kb=None)
