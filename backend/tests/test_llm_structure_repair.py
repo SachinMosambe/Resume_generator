@@ -250,3 +250,104 @@ def test_generation_service_calls_repair_once_when_flag_on(monkeypatch):
     except Exception:
         pass
     assert len(calls) == 1
+
+
+def test_rejects_invented_range_from_other_roles_years():
+    # "2017" belongs to Beta LLC and "Present" to Acme Inc; "2017 - Present" never appears together.
+    bad = _good_repair()
+    bad["experience"][1]["duration"] = "2017 - Present"
+    parsed = _weak_parse()
+    out = maybe_repair_parse(SOURCE, parsed, client=_stub(bad))
+    assert out["experience"] == [] and out["parse_meta"]["llm_repaired"] is False
+
+
+def test_accepts_contiguous_duration_with_different_punctuation():
+    good = _good_repair()
+    good["experience"][0]["duration"] = "2020 – Present"
+    out = maybe_repair_parse(SOURCE, _weak_parse(), client=_stub(good))
+    assert out["parse_meta"]["llm_repaired"] is True
+
+
+def test_survival_keeps_verified_duration_location_technologies():
+    parsed = _weak_parse(
+        experience=[
+            {
+                "title": "",
+                "company": "Acme Inc",
+                "location": "Remote",
+                "duration": "2020 - Present",
+                "technologies": ["Python", "AWS"],
+                "description": ["Built the billing pipeline for enterprise clients."],
+            },
+            {"title": "", "company": "Beta LLC", "duration": "2017 - 2019", "description": []},
+        ]
+    )
+    assert is_repair_eligible(SOURCE, parsed)
+    repair = _good_repair()  # omits location / technologies; "Remote" is not even in the source
+    repair["experience"][0]["duration"] = ""
+    repair["experience"][1]["duration"] = ""
+    out = maybe_repair_parse(SOURCE, parsed, client=_stub(repair))
+    assert out["parse_meta"]["llm_repaired"] is True
+    acme, beta = out["experience"]
+    assert acme["title"] == "Senior Engineer"
+    assert acme["duration"] == "2020 - Present"
+    assert acme["location"] == "Remote"
+    assert acme["technologies"] == ["Python", "AWS"]
+    assert beta["duration"] == "2017 - 2019"
+    assert beta["technologies"] == []
+
+
+MENTION_SOURCE = """Jane Doe
+EXPERIENCE
+Senior Engineer
+Acme Inc 2020 - Present
+• Migrated services away from Beta LLC infrastructure.
+• Reduced deploy time by 40 percent.
+Developer
+Beta LLC 2017 - 2019
+• Maintained the legacy reporting service.
+EDUCATION
+B.S. Computer Science
+"""
+
+
+def _mention_repair():
+    return {
+        "experience": [
+            {
+                "title": "Senior Engineer",
+                "company": "Acme Inc",
+                "duration": "2020 - Present",
+                "description": [
+                    "Migrated services away from Beta LLC infrastructure.",
+                    "Reduced deploy time by 40 percent.",
+                ],
+            },
+            {
+                "title": "Developer",
+                "company": "Beta LLC",
+                "duration": "2017 - 2019",
+                "description": ["Maintained the legacy reporting service."],
+            },
+        ]
+    }
+
+
+def test_company_mentioned_in_other_roles_bullet_does_not_split_block():
+    parsed = {"name": "Jane Doe", "experience": [], "education": [{"degree": "B.S."}]}
+    parsed["parse_meta"] = score_parse(parsed, MENTION_SOURCE)
+    out = maybe_repair_parse(MENTION_SOURCE, parsed, client=_stub(_mention_repair()))
+    assert out["parse_meta"]["llm_repaired"] is True
+    assert out["experience"][0]["description"][1] == "Reduced deploy time by 40 percent."
+
+
+def test_rejects_bullet_under_employer_only_mentioned_in_another_bullet():
+    bad = _mention_repair()
+    # Acme's second bullet sits after the "Beta LLC" mention inside Acme's own bullet;
+    # it must not be treated as Beta LLC's block.
+    moved = bad["experience"][0]["description"].pop()
+    bad["experience"][1]["description"].append(moved)
+    parsed = {"name": "Jane Doe", "experience": [], "education": [{"degree": "B.S."}]}
+    parsed["parse_meta"] = score_parse(parsed, MENTION_SOURCE)
+    out = maybe_repair_parse(MENTION_SOURCE, parsed, client=_stub(bad))
+    assert out["experience"] == [] and out["parse_meta"]["llm_repaired"] is False

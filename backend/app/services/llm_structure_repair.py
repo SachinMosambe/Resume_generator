@@ -104,14 +104,76 @@ def _words(text: Any) -> list[str]:
     return re.findall(r"[0-9a-z]+", str(text or "").casefold())
 
 
-def _duration_in_source(duration: str, source_norm: str, source_words: set[str]) -> bool:
+def _duration_in_source(duration: str, source_word_list: list[str]) -> bool:
+    """A duration must appear as one contiguous run of tokens (punctuation/spacing agnostic).
+
+    Tokens scattered across different roles ("2017" from one job, "Present" from another)
+    do not make a source-backed range.
+    """
     if not duration.strip():
         return True
-    if _norm(duration) in source_norm:
-        return True
     words = _words(duration)
-    # Dates may be reformatted ("01/2020" -> "Jan 2020"); every token must still exist in source.
-    return bool(words) and all(w in source_words for w in words)
+    if not words:
+        return False
+    n = len(words)
+    return any(
+        source_word_list[i : i + n] == words for i in range(len(source_word_list) - n + 1)
+    )
+
+
+_BULLET_LINE_RE = re.compile(r"^\s*[•\u2022\u25cf\u25aa\u25e6\u2023\u00b7\-\*\u2013\u2014\u25a0]\s*")
+_DATE_HINT_RE = re.compile(
+    r"\b(?:19|20)\d{2}\b|\b(?:present|current|now|jan|feb|mar|apr|may|jun|jul|aug|sep|sept|oct|nov|dec)[a-z]*\b",
+    re.IGNORECASE,
+)
+
+
+def _index_source(text: str) -> tuple[str, list[int]]:
+    """Return (``_norm(text)``, raw offset of every normalized character)."""
+    chars: list[str] = []
+    offsets: list[int] = []
+    for i, c in enumerate(text):
+        for ch in c.casefold():
+            if ch.isascii() and ch.isalnum():
+                chars.append(ch)
+                offsets.append(i)
+    return "".join(chars), offsets
+
+
+def _is_header_occurrence(raw: str, raw_idx: int) -> bool:
+    """True when the occurrence at ``raw_idx`` looks like a job header, not a mention.
+
+    A header line is not a bullet and either starts with the name or has a date on
+    the same / adjacent line.
+    """
+    line_start = raw.rfind("\n", 0, raw_idx) + 1
+    line_end = raw.find("\n", raw_idx)
+    if line_end < 0:
+        line_end = len(raw)
+    line = raw[line_start:line_end]
+    if _BULLET_LINE_RE.match(line):
+        return False
+    if not raw[line_start:raw_idx].strip():
+        return True
+    if _DATE_HINT_RE.search(line):
+        return True
+    prev_start = raw.rfind("\n", 0, max(line_start - 1, 0)) + 1
+    prev_line = raw[prev_start : max(line_start - 1, 0)] if line_start > 0 else ""
+    next_end = raw.find("\n", line_end + 1)
+    next_line = raw[line_end + 1 : next_end if next_end >= 0 else len(raw)]
+    return bool(_DATE_HINT_RE.search(prev_line) or _DATE_HINT_RE.search(next_line))
+
+
+def _header_positions(
+    raw: str, source_norm: str, offsets: list[int], key: str
+) -> list[int]:
+    """Normalized positions of ``key`` that sit in a job-header context.
+
+    Falls back to every occurrence when none looks like a header (plain layouts).
+    """
+    all_hits = _positions(source_norm, key)
+    headers = [p for p in all_hits if _is_header_occurrence(raw, offsets[p])]
+    return headers or all_hits
 
 
 # ---------------------------------------------------------------------------
@@ -152,8 +214,8 @@ def _validate_repair(
     if not roles:
         return None, "empty_repair"
 
-    source_norm = _norm(source_text)
-    source_words = set(_words(source_text))
+    source_norm, offsets = _index_source(source_text)
+    source_word_list = _words(source_text)
 
     anchors: list[tuple[int, int]] = []  # (position, role index)
     role_positions: list[list[int]] = []
@@ -168,10 +230,12 @@ def _validate_repair(
             key = _norm(value)
             if len(key) < _MIN_FACT_CHARS or key not in source_norm:
                 return None, f"{label}_not_in_source"
-        if not _duration_in_source(role.duration, source_norm, source_words):
+        if not _duration_in_source(role.duration, source_word_list):
             return None, "duration_not_in_source"
         anchor_key = _norm(company or title)
-        positions = _positions(source_norm, anchor_key)
+        # Prefer job-header occurrences so an employer mentioned inside another role's
+        # bullet neither starts a block nor truncates the real one.
+        positions = _header_positions(source_text, source_norm, offsets, anchor_key)
         if not positions:
             return None, "anchor_not_in_source"
         role_positions.append(positions)
@@ -222,18 +286,32 @@ def _validate_repair(
             if _norm(bullet) and _norm(bullet) not in pool:
                 return None, "existing_bullet_dropped"
 
-    normalized = [
-        {
-            "title": r.title.strip(),
-            "company": r.company.strip(),
-            "location": r.location.strip(),
-            "duration": r.duration.strip(),
-            "description": [b.strip() for b in r.description if b.strip()],
-            "technologies": [],
-        }
-        for r in roles
-    ]
-    return normalized, ""
+    return _merge_roles(roles, _roles(parsed)), ""
+
+
+def _merge_roles(roles: list[_RepairRole], old_roles: list[dict]) -> list[dict[str, Any]]:
+    """Repair adds/fixes structure; verified deterministic fields are never dropped."""
+    unused = list(old_roles)
+    merged: list[dict[str, Any]] = []
+    for r in roles:
+        key = _norm(r.company or r.title)
+        title_key = _norm(r.title)
+        candidates = [o for o in unused if (_norm(o.get("company")) or _norm(o.get("title"))) == key]
+        old = next((o for o in candidates if title_key and _norm(o.get("title")) == title_key), None)
+        if old is None:
+            old = next((o for o in candidates if not _norm(o.get("title"))), None)
+        if old is not None:
+            unused.remove(old)
+        base: dict[str, Any] = copy.deepcopy(old) if old else {}
+        base["title"] = r.title.strip() or str(base.get("title") or "").strip()
+        base["company"] = r.company.strip() or str(base.get("company") or "").strip()
+        base["location"] = r.location.strip() or str(base.get("location") or "").strip()
+        base["duration"] = r.duration.strip() or str(base.get("duration") or "").strip()
+        base["description"] = [b.strip() for b in r.description if b.strip()]
+        technologies = base.get("technologies")
+        base["technologies"] = list(technologies) if isinstance(technologies, list) else []
+        merged.append(base)
+    return merged
 
 
 # ---------------------------------------------------------------------------
