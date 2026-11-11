@@ -331,6 +331,14 @@ class ResumeGenerationService:
                 )
             except Exception as e:
                 logger.error("detailed_parse_failed", candidate_id=str(candidate.id), error=str(e))
+            # Optional, off by default: one source-checked LLM structure repair per generation.
+            if detailed_data and getattr(settings, "RESUME_LLM_PARSE_FALLBACK", False):
+                try:
+                    from app.services.llm_structure_repair import maybe_repair_parse
+
+                    detailed_data = maybe_repair_parse(resume_text, detailed_data)
+                except Exception as e:
+                    logger.warning("llm_structure_repair_failed", error_type=type(e).__name__)
         else:
             logger.warning("no_resume_text_available", candidate_id=str(candidate.id))
         
@@ -503,6 +511,9 @@ class ResumeGenerationService:
             "publications": merge_field("publications", ["publications", "papers", "research"]),
             "interests": merge_field("interests", ["interests", "hobbies"]),
             "additional_sections": detailed_data.get("additional_sections") or [],
+            # Review-only carriers (never rendered as a job); lets llm_repaired reach the store.
+            "parse_meta": detailed_data.get("parse_meta") or {},
+            "unassigned_experience_bullets": detailed_data.get("unassigned_experience_bullets") or [],
             # Canonical section-wise JSON passed to LLM for consistent mapping.
             "structured_resume_json": {
                 "summary": (

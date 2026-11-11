@@ -31,6 +31,10 @@ class Settings(BaseSettings):
     APP_BUILD_ID: str = "dev"
     # When false (default), skip slow full-document LLM polish loops.
     RESUME_LLM_POLISH: bool = False
+    # Optional one-shot, source-checked LLM structure repair when the deterministic parse is
+    # weak. Default OFF (golden/scored CI stays deterministic). Rejected output is discarded.
+    RESUME_LLM_PARSE_FALLBACK: bool = False
+    RESUME_LLM_PARSE_TIMEOUT_SECONDS: float = 45.0
 
     # Multi-agent pipeline (extract -> plan -> write -> critique -> refine).
     # Runs inside the same service; enable per-deploy to compare against classic.
