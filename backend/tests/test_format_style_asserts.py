@@ -100,7 +100,7 @@ def client_formats() -> dict[str, ClientFormat]:
     extractor = FormatExtractionService()
     for key, path in TEMPLATES.items():
         if not path.exists():
-            pytest.skip(f"client format template missing: {path}")
+            continue
         meta = normalize_format_metadata(extractor.extract(path.name, path.read_bytes()))
         formats[key] = ClientFormat(
             client_id=key,
@@ -131,6 +131,8 @@ def generated(client_formats):
 
     def get(fixture_id: str, fmt: str) -> bytes:
         key = (fixture_id, fmt)
+        if fmt not in client_formats:
+            pytest.skip(f"client format template missing: {TEMPLATES[fmt]}")
         if key not in cache:
             fixture = next(f for f in STYLE_FIXTURES if f["id"] == fixture_id)
             cache[key] = _generate(fixture, client_formats[fmt])
