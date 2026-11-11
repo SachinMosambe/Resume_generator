@@ -1731,6 +1731,36 @@
           ]
         }
       ]
+    },
+    {
+      "formats": [
+        "aptino",
+        "capgemini",
+        "suresh"
+      ],
+      "expected_status": "passed",
+      "scored": true,
+      "expects_work_history": true,
+      "id": "portfolio_clients_role_labels",
+      "pattern": "portfolio_alt_heading",
+      "source": "cases/portfolio_engagements.txt",
+      "expected_name": "Mara Lindqvist",
+      "expected_roles": [
+        {
+          "company": "Contoso Media",
+          "title": "Content Strategy Lead",
+          "bullet_substrings": [
+            "editorial calendar"
+          ]
+        },
+        {
+          "company": "Fabrikam Learning",
+          "title": "Senior Content Strategist",
+          "bullet_substrings": [
+            "learning-content program"
+          ]
+        }
+      ]
     }
   ],
   "gates": {

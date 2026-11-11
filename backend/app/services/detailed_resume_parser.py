@@ -69,7 +69,7 @@ _EXTRA_HEADING_HINTS = {
     # Listed here so they end the section above them; when they are not read as roles
     # they are kept as additional sections like any other unslotted heading.
     "engagements", "client engagements", "consulting engagements", "selected engagements",
-    "client work", "selected clients", "content experience", "consulting experience",
+    "client work", "selected clients", "clients", "content experience", "consulting experience",
     "freelance experience", "freelance work", "industry and company experience",
 }
 
@@ -1529,13 +1529,16 @@ def _extract_experience(text: str) -> list[dict[str, Any]]:
 # They are only read as job history when the section really holds dated employers.
 _ALT_EXPERIENCE_HEADINGS = (
     "engagements", "client engagements", "consulting engagements", "selected engagements",
-    "client work", "selected clients", "content experience", "consulting experience",
+    "client work", "selected clients", "clients", "content experience", "consulting experience",
     "freelance experience", "freelance work", "industry and company experience",
 )
 # Projects headings are ambiguous (personal projects are not jobs), so they need more proof.
 _PROJECT_EXPERIENCE_HEADINGS = (
     "projects", "project experience", "professional projects", "client projects", "key projects",
 )
+
+
+_ROLE_LABEL_LINE = re.compile(r"(?i)^\s*(?:role|designation|position|job\s+title)\s*:\s*\S")
 
 
 def _roles_from_alternate_headings(text: str) -> tuple[list[dict[str, Any]], str]:
@@ -1547,13 +1550,26 @@ def _roles_from_alternate_headings(text: str) -> tuple[list[dict[str, Any]], str
         blocks = _section_blocks(text, list(headings))
         lines: list[str] = []
         for block in blocks:
-            if any(_DATE_PATTERN.search(line or "") for line in block):
+            # Engagements may be undated when each client carries an explicit "Role:" label.
+            role_labelled = source == "alternate" and any(_ROLE_LABEL_LINE.match(line or "") for line in block)
+            if role_labelled or any(_DATE_PATTERN.search(line or "") for line in block):
                 lines.extend(block)
                 lines.append("")
         if not lines:
             continue
         roles, _orphans = _experience_from_lines(lines, True)
         dated = [r for r in roles if r.get("duration") and (r.get("company") or r.get("title"))]
+        if (
+            source == "alternate"
+            and roles
+            and len(dated) != len(roles)
+            and any(_ROLE_LABEL_LINE.match(line or "") for line in lines)
+        ):
+            # Every entry needs an employer/client and a labelled title; none is guessed.
+            labelled = [r for r in roles if r.get("company") and r.get("title")]
+            if len(labelled) == len(roles):
+                return labelled, source
+            continue
         if source == "projects":
             # A project with a date range is not a job: every entry needs an employer, a
             # job title and dates, or the section stays a Projects section.
@@ -2081,6 +2097,24 @@ def _experience_from_lines(lines: list[str], chosen: bool) -> tuple[list[dict[st
         next_line = lines[i + 1].strip() if i + 1 < len(lines) else ""
         third_line = lines[i + 2].strip() if i + 2 < len(lines) else ""
         client_block = _parse_client_role_block(line, next_line, third_line)
+        if (
+            chosen
+            and not client_block
+            and not _LABELED_LINE.match(line)
+            and _ROLE_LABEL_LINE.match(next_line)
+            and _is_header_text(line)
+        ):
+            # "Contoso Media" directly above "Role: Lead": the explicit Role label makes the
+            # line an employer/client, so read the pair as "Company: ... / Role: ...".
+            synthetic = _parse_labeled_role_block(["Company: " + line, *lines[i + 1 :]], 0, allow_undated=True)
+            if synthetic:
+                parsed_labeled, end_index = synthetic
+                _save_current()
+                current_job = {**parsed_labeled, "description": [], "technologies": []}
+                current_bullets = []
+                pending_company = ""
+                i += end_index
+                continue
         labeled = (
             _parse_labeled_role_block(lines, i, allow_undated=chosen)
             if not client_block and _LABELED_LINE.match(line)

@@ -427,6 +427,41 @@ def test_role_label_without_company_or_dates_needs_following_bullets():
     assert data["experience"] == []
 
 
+def test_portfolio_clients_heading_with_client_and_role_label_without_dates():
+    data = parse_resume_detailed(None, _load("portfolio_engagements.txt"))
+    assert len(data["experience"]) == 2
+    first, second = data["experience"]
+    assert first["company"] == "Contoso Media"
+    assert first["title"] == "Content Strategy Lead"
+    assert (first.get("duration") or "") == ""
+    assert "editorial calendar" in " ".join(first["description"])
+    assert second["company"] == "Fabrikam Learning"
+    assert second["title"] == "Senior Content Strategist"
+    assert "learning-content program" in " ".join(second["description"])
+    # Skills above the heading are not swallowed, and the mapped section is not repeated.
+    assert "Editorial Planning" not in _roles_text(data)
+    assert not any("client" in (s.get("title") or "").lower() for s in data["additional_sections"])
+
+
+def test_engagements_heading_without_role_labels_stays_additional_section():
+    text = (
+        "Mara L\nmara@example.com\nENGAGEMENTS\nContoso Media\n• Wrote the editorial calendar.\n"
+        "Fabrikam Learning\n• Launched a program.\nEDUCATION\nB.A. Example\n"
+    )
+    data = parse_resume_detailed(None, text)
+    assert data["experience"] == []
+
+
+def test_engagements_client_without_role_label_does_not_become_role():
+    text = (
+        "Mara L\nmara@example.com\nENGAGEMENTS\nContoso Media\nRole: Strategy Lead\n• Wrote the calendar.\n"
+        "Fabrikam Learning\n• Launched a program.\nEDUCATION\nB.A. Example\n"
+    )
+    data = parse_resume_detailed(None, text)
+    # One entry has no Role evidence, so the heading is not trusted as job history.
+    assert all(r["company"] != "Fabrikam Learning" for r in data["experience"])
+
+
 def test_labels_outside_experience_section_are_not_roles():
     text = (
         "Zed Qu\nPROJECTS\nClient: Contoso Bank\nRole: Test Lead\n• Led the suite.\n"
