@@ -25,10 +25,33 @@ type TemplateMode = "aptino_default" | "client_format" | "saved_format";
 
 type ReviewStatus = "passed" | "needs_review" | "failed";
 
+type ReviewWarning = {
+  severity: "blocking" | "info";
+  code: string;
+  message: string;
+};
+
 type Review = {
   status: ReviewStatus;
-  warnings: string[];
+  warnings: ReviewWarning[];
 };
+
+// Header warnings may be legacy strings or {severity, code, message} objects.
+function normalizeWarning(raw: unknown, status: ReviewStatus): ReviewWarning | null {
+  if (typeof raw === "string") {
+    return { severity: status === "passed" ? "info" : "blocking", code: "legacy", message: raw };
+  }
+  if (raw && typeof raw === "object") {
+    const w = raw as Record<string, unknown>;
+    if (typeof w.message !== "string") return null;
+    return {
+      severity: w.severity === "info" ? "info" : "blocking",
+      code: typeof w.code === "string" ? w.code : "unknown",
+      message: w.message,
+    };
+  }
+  return null;
+}
 
 const REVIEW_STYLES: Record<ReviewStatus, { box: string; title: string; body: string }> = {
   passed: {
@@ -51,10 +74,14 @@ const REVIEW_STYLES: Record<ReviewStatus, { box: string; title: string; body: st
 function parseReview(response: Response): Review | null {
   const status = response.headers.get("X-Review-Status") as ReviewStatus | null;
   if (!status || !(status in REVIEW_STYLES)) return null;
-  let warnings: string[] = [];
+  let warnings: ReviewWarning[] = [];
   try {
     const parsed = JSON.parse(decodeURIComponent(response.headers.get("X-Review-Warnings") || "[]"));
-    if (Array.isArray(parsed)) warnings = parsed.map(String);
+    if (Array.isArray(parsed)) {
+      warnings = parsed
+        .map((w) => normalizeWarning(w, status))
+        .filter((w): w is ReviewWarning => w !== null);
+    }
   } catch {
     /* ignore malformed header */
   }
@@ -63,14 +90,25 @@ function parseReview(response: Response): Review | null {
 
 function ReviewPanel({ review }: { review: Review }) {
   const style = REVIEW_STYLES[review.status];
+  const blocking = review.warnings.filter((w) => w.severity === "blocking");
+  const info = review.warnings.filter((w) => w.severity === "info");
   return (
     <section role="status" className={`mt-6 rounded-2xl border p-5 ${style.box}`}>
       <p className="text-sm font-semibold text-gray-900">{style.title}</p>
       <p className="mt-1 text-sm text-gray-700">{style.body}</p>
-      {review.warnings.length > 0 && (
-        <ul className="mt-3 list-disc space-y-1 pl-5 text-sm text-gray-700">
-          {review.warnings.map((w) => (
-            <li key={w}>{w}</li>
+      {blocking.length > 0 && (
+        <ul className="mt-3 list-disc space-y-1 pl-5 text-sm text-gray-800">
+          {blocking.map((w, i) => (
+            <li key={`${w.code}-${i}`} className="font-medium">
+              {w.message}
+            </li>
+          ))}
+        </ul>
+      )}
+      {info.length > 0 && (
+        <ul className="mt-3 list-disc space-y-1 pl-5 text-xs text-gray-500">
+          {info.map((w, i) => (
+            <li key={`${w.code}-${i}`}>Note: {w.message}</li>
           ))}
         </ul>
       )}

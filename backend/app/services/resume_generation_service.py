@@ -118,6 +118,7 @@ class ResumeGenerationService:
                 suppressed_sections=list(document.get("suppressed_sections") or []),
                 extraction_meta=(candidate.extracted_data or {}).get("extraction_meta"),
                 source_text=raw,
+                parse_meta=store.get("parse_meta") or (candidate.extracted_data or {}).get("parse_meta") or {},
             )
         except Exception as exc:
             logger.warning("integrity_check_failed", error_type=type(exc).__name__)
