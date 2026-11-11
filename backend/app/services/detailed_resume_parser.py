@@ -722,8 +722,48 @@ def _join_break_hyphens(text: str) -> str:
     return re.sub(r"([A-Za-z]{2,})-([a-z]{3,})", repl, source)
 
 
+def _spaced(word: str) -> str:
+    return " ".join(re.escape(ch) for ch in word)
+
+
+# Stylised PDFs letter-space dates ("A U G U S T 2 0 2 3 - P R E S E N T"). Only a complete
+# month/year range (or year range) written that way is collapsed, so ordinary prose such as
+# "the A B C rollout" is never touched.
+_LS_MONTH_WORDS = (
+    "january february march april june july august september october november december "
+    "sept jan feb mar apr may jun jul aug sep oct nov dec"
+).split()
+_LS_MONTH = "(?:" + "|".join(_spaced(w) for w in sorted(_LS_MONTH_WORDS, key=len, reverse=True)) + ")"
+_LS_YEAR = r"(?:1 9|2 0) \d \d"
+_LS_END = "(?:" + "|".join(_spaced(w) for w in ("present", "current")) + ")"
+_LS_SEP = r"[-–—]"
+_LETTER_SPACED_RANGE = re.compile(
+    rf"(?<![A-Za-z0-9])(?:(?P<m1>{_LS_MONTH})\s+)?(?P<y1>{_LS_YEAR})\s*{_LS_SEP}\s*"
+    rf"(?:(?P<end>{_LS_END})|(?:(?P<m2>{_LS_MONTH})\s+)?(?P<y2>{_LS_YEAR}))"
+    rf"(?![A-Za-z0-9])",
+    re.IGNORECASE,
+)
+
+
+def _collapse_letter_spaced_dates(text: str) -> str:
+    def part(value: str | None) -> str:
+        return (value or "").replace(" ", "")
+
+    def repl(match: re.Match) -> str:
+        left = " ".join(p for p in (part(match.group("m1")), part(match.group("y1"))) if p)
+        if match.group("end"):
+            right = part(match.group("end"))
+        else:
+            right = " ".join(p for p in (part(match.group("m2")), part(match.group("y2"))) if p)
+        return f"{left} - {right}"
+
+    return _LETTER_SPACED_RANGE.sub(repl, text or "")
+
+
 def _prepare_resume_text(text: str) -> str:
-    return _strip_profile_cover(_join_break_hyphens(_attach_orphan_bullets(text)))
+    return _strip_profile_cover(
+        _join_break_hyphens(_attach_orphan_bullets(_collapse_letter_spaced_dates(text)))
+    )
 
 
 def _extract_headline(text: str, name: str) -> str:

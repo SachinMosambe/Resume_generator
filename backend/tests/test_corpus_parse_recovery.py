@@ -356,3 +356,38 @@ def test_parenthesised_gap_note_does_not_swallow_next_employer():
     data = parse_resume_detailed(None, text)
     titles = [r["title"] for r in data["experience"]]
     assert "Business Analyst" in titles and "Business System Analyst" in titles
+
+
+# --- Safe zero-role edge wave ---
+
+
+def test_letter_spaced_dates_become_recoverable_durations():
+    data = parse_resume_detailed(None, _load("letter_spaced_dates.txt"))
+    assert len(data["experience"]) == 2
+    first, second = data["experience"]
+    assert first["company"] == "Northwind Analytics"
+    assert first["title"] == "Senior Data Analyst"
+    assert "2023" in first["duration"] and "PRESENT" in first["duration"].upper()
+    assert "weekly revenue dashboard" in " ".join(first["description"])
+    assert second["company"] == "Globex Insights"
+    assert "2020" in second["duration"] and "2023" in second["duration"]
+
+
+def test_letter_spaced_dates_single_space_word_gaps():
+    text = (
+        "Al Bo\nEXPERIENCE\nAcme Corp\nEngineer A U G U S T 2 0 2 3 - P R E S E N T\n"
+        "• Built the thing.\nEDUCATION\nB.S. Example\n"
+    )
+    data = parse_resume_detailed(None, text)
+    assert len(data["experience"]) == 1
+    assert "2023" in data["experience"][0]["duration"]
+
+
+def test_letter_spaced_normalizer_leaves_ordinary_spaced_text_alone():
+    text = (
+        "Al Bo\nEXPERIENCE\nAcme Corp\nEngineer 2020 - Present\n"
+        "• Documented the A B C rollout and the P R E S E N T plan.\nEDUCATION\nB.S. Example\n"
+    )
+    data = parse_resume_detailed(None, text)
+    blob = " ".join(data["experience"][0]["description"])
+    assert "A B C rollout" in blob and "P R E S E N T plan" in blob

@@ -132,6 +132,9 @@ _SKIP_SOURCE_LINE = re.compile(
 )
 _SOURCE_DATE = re.compile(
     r"(?i)\b(?:jan|feb|mar|apr|may|jun|jul|aug|sep|oct|nov|dec)[a-z]*\.?\s*\d{4}|\b\d{1,2}/\d{4}\b|\b(?:19|20)\d{2}\s*[-–—]"
+    # Letter-spaced dates ("A U G U S T 2 0 2 3") are collapsed by the parser, so the
+    # source line cannot match the rendered date verbatim.
+    r"|\b(?:[a-z]\s){2,}[a-z]\s+\d\s\d\s\d\s\d\b|\b[12]\s0\s\d\s\d\s*[-–—]"
 )
 # Metrics whose digits must survive verbatim: percentages and currency amounts.
 _METRIC = re.compile(r"\$\s?\d[\d,]*(?:\.\d+)?\s?[kmb]?\b|\b\d[\d,]*(?:\.\d+)?\s?%", re.IGNORECASE)

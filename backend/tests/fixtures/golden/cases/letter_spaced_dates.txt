@@ -1,0 +1,12 @@
+Nadia Ferreira
+nadia.ferreira@example.com
+PROFESSIONAL SUMMARY:
+• Data analyst focused on reporting accuracy and stakeholder clarity.
+PROFESSIONAL EXPERIENCE:
+Senior Data Analyst, Northwind Analytics    A U G U S T  2 0 2 3  -  P R E S E N T
+• Built the weekly revenue dashboard for regional managers.
+• Reconciled billing exports against the finance ledger.
+Data Analyst, Globex Insights    J A N  2 0 2 0  -  J U L Y  2 0 2 3
+• Automated the monthly churn report.
+EDUCATION
+B.S. Statistics, Example State University

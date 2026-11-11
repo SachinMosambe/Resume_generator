@@ -1665,6 +1665,42 @@
           ]
         }
       ]
+    },
+    {
+      "formats": [
+        "aptino",
+        "capgemini",
+        "suresh"
+      ],
+      "expected_status": "passed",
+      "scored": true,
+      "expects_work_history": true,
+      "id": "letter_spaced_dates_roles",
+      "pattern": "letter_spaced_dates",
+      "source": "cases/letter_spaced_dates.txt",
+      "expected_name": "Nadia Ferreira",
+      "expected_roles": [
+        {
+          "company": "Northwind Analytics",
+          "title": "Senior Data Analyst",
+          "dates_contains": [
+            "2023"
+          ],
+          "bullet_substrings": [
+            "weekly revenue dashboard"
+          ]
+        },
+        {
+          "company": "Globex Insights",
+          "title": "Data Analyst",
+          "dates_contains": [
+            "2020"
+          ],
+          "bullet_substrings": [
+            "monthly churn report"
+          ]
+        }
+      ]
     }
   ],
   "gates": {
