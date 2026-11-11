@@ -1,0 +1,12 @@
+Robin Castellano
+robin.castellano@example.com | Phoenix, AZ
+Summary
+QA analyst with a focus on release testing.
+Work History
+Senior QA Analyst Northwind Traders
+QA Analyst Contoso Insurance
+Test Engineer Fabrikam Systems
+Education
+Bachelors | Example State University
+Skills
+Selenium, SQL

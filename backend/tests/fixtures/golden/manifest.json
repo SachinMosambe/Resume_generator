@@ -1821,6 +1821,66 @@
           ]
         }
       ]
+    },
+    {
+      "formats": [
+        "aptino",
+        "capgemini",
+        "suresh"
+      ],
+      "expected_status": "passed",
+      "scored": true,
+      "expects_work_history": true,
+      "id": "dice_work_history_separators",
+      "pattern": "dice_work_history_list_separators",
+      "source": "cases/dice_work_history_separators.txt",
+      "expected_name": "Sam Ortiz",
+      "expected_roles": [
+        {
+          "company": "Northwind Traders",
+          "title": "Senior Java Developer"
+        },
+        {
+          "company": "Contoso Insurance",
+          "title": "Java Developer"
+        },
+        {
+          "company": "Fabrikam Systems",
+          "title": "Software Engineer"
+        },
+        {
+          "company": "Adatum Holdings",
+          "title": "Technical Lead"
+        }
+      ]
+    },
+    {
+      "formats": [
+        "aptino",
+        "capgemini",
+        "suresh"
+      ],
+      "expected_status": "passed",
+      "scored": true,
+      "expects_work_history": true,
+      "id": "work_history_plain_list",
+      "pattern": "work_history_plain_title_employer_list",
+      "source": "cases/work_history_plain_list.txt",
+      "expected_name": "Robin Castellano",
+      "expected_roles": [
+        {
+          "company": "Northwind Traders",
+          "title": "Senior QA Analyst"
+        },
+        {
+          "company": "Contoso Insurance",
+          "title": "QA Analyst"
+        },
+        {
+          "company": "Fabrikam Systems",
+          "title": "Test Engineer"
+        }
+      ]
     }
   ],
   "gates": {

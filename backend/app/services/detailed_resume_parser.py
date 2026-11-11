@@ -1944,6 +1944,47 @@ _LIST_SPLIT_STOP = {"of", "and", "&", "for", "in", "at", "to", "the", "with", "-
 _DICE_DATE_CRUMB = re.compile(r"^[A-Z][a-z]{2}\.?\s+\d{1,2},\s*\d{4}(?:\s*[-–—]\s*(?:Present|Current|[A-Z][a-z]{2}\.?\s+\d{1,2},\s*\d{4}))?$")
 
 
+_LIST_EXPLICIT_SEPARATOR = re.compile(r"\s+(?:[-\u2013\u2014|@]|at)\s+", re.I)
+
+
+def _has_list_role_word(text: str) -> bool:
+    return any(re.sub(r"[^a-z]", "", w.lower()) in _LIST_ROLE_WORDS for w in text.split())
+
+
+def _is_list_title(text: str) -> bool:
+    """A short capitalised phrase ending in a job-title word (optionally a level suffix)."""
+    words = text.split()
+    if not 1 <= len(words) <= 6 or not all(w[:1].isupper() for w in words):
+        return False
+    tail = words[-1]
+    if re.fullmatch(r"(?:[IVX]{1,4}|[1-9])", tail) and len(words) > 1:
+        tail = words[-2]
+    return re.sub(r"[^a-z]", "", tail.lower()) in _LIST_ROLE_WORDS
+
+
+def _split_on_explicit_separator(text: str) -> tuple[str, str] | None:
+    """'Title - Employer', 'Title at Employer' or 'Employer | Title', or None.
+
+    Exactly one side may carry a job-title word; when both or neither do, the order is
+    unknowable and nothing is guessed.
+    """
+    parts = _LIST_EXPLICIT_SEPARATOR.split(text, maxsplit=1)
+    if len(parts) != 2:
+        return None
+    left, right = (p.strip(" ,;") for p in parts)
+    if not left or not right or len(right.split()) > 7 or len(left.split()) > 7:
+        return None
+    connectors = {"of", "and", "&", "the", "for"}
+    if not all(w[:1].isupper() or w[:1].isdigit() or w.lower() in connectors for w in f"{left} {right}".split()):
+        return None
+    left_role, right_role = _has_list_role_word(left), _has_list_role_word(right)
+    if left_role and not right_role and _is_list_title(left):
+        return left, right
+    if right_role and not left_role and _is_list_title(right):
+        return right, left
+    return None
+
+
 def _split_title_and_employer(text: str) -> tuple[str, str] | None:
     """Split 'Senior Programmer Analyst Invision' at its last job-title word, or None.
 
@@ -1988,6 +2029,7 @@ def _roles_from_work_history_list(lines: list[str]) -> tuple[list[dict[str, Any]
     """
     items: list[str] = []
     crumbs: dict[int, str] = {}
+    plain: list[str] = []
     for raw in lines:
         line = (raw or "").strip()
         if not line:
@@ -1997,6 +2039,8 @@ def _roles_from_work_history_list(lines: list[str]) -> tuple[list[dict[str, Any]
             if clean:
                 items.append(clean)
             continue
+        if not _DICE_DATE_CRUMB.match(line):
+            plain.append(line)
         if not items:
             continue
         if _DICE_DATE_CRUMB.match(line):
@@ -2005,12 +2049,21 @@ def _roles_from_work_history_list(lines: list[str]) -> tuple[list[dict[str, Any]
             # A PDF wrap of the employer ("Adatum Holdings," / "Llc").
             items[-1] = f"{items[-1]} {line}".strip()
         # Anything else ("Total Work Experience: 12 years") is not a list entry.
+    # No bullets at all: the section may be plain 'Title Employer' lines. Without bullet
+    # markers every line must split cleanly, or the section is not read as a list.
+    strict = False
+    if not items:
+        items, strict = plain, True
     if len(items) < 2:
         return [], []
     roles: list[dict[str, Any]] = []
     leftovers: list[str] = []
     for index, item in enumerate(items):
-        split = None if len(item.split()) > 14 or _DATE_PATTERN.search(item) else _split_title_and_employer(item)
+        split = (
+            None
+            if len(item.split()) > 14 or _DATE_PATTERN.search(item)
+            else (_split_on_explicit_separator(item) or _split_title_and_employer(item))
+        )
         if not split:
             leftovers.append(item)
             continue
@@ -2026,7 +2079,7 @@ def _roles_from_work_history_list(lines: list[str]) -> tuple[list[dict[str, Any]
             }
         )
     # A skills list under the heading splits poorly; require most entries to be clean.
-    if len(roles) < 2 or len(roles) * 2 < len(items):
+    if len(roles) < 2 or len(roles) * 2 < len(items) or (strict and leftovers):
         return [], []
     return roles, leftovers
 

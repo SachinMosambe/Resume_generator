@@ -535,3 +535,42 @@ def test_company_first_layout_is_not_treated_as_dates_first():
         ("Northwind Traders", "Senior Data Engineer", "Jan 2020 - Present"),
         ("Contoso Insurance", "Data Engineer", "Mar 2017 - Dec 2019"),
     ]
+
+
+def test_dice_work_history_list_with_separators():
+    data = parse_resume_detailed(None, _load("dice_work_history_separators.txt"))
+    pairs = [(r["company"], r["title"]) for r in data["experience"]]
+    assert pairs == [
+        ("Northwind Traders", "Senior Java Developer"),
+        ("Contoso Insurance", "Java Developer"),
+        ("Fabrikam Systems", "Software Engineer"),
+        ("Adatum Holdings", "Technical Lead"),
+    ]
+    # No dates or bullets are stated in the source, so none may be invented.
+    assert all(not r.get("duration") and not r.get("description") for r in data["experience"])
+
+
+def test_work_history_plain_title_employer_lines():
+    data = parse_resume_detailed(None, _load("work_history_plain_list.txt"))
+    assert [(r["company"], r["title"]) for r in data["experience"]] == [
+        ("Northwind Traders", "Senior QA Analyst"),
+        ("Contoso Insurance", "QA Analyst"),
+        ("Fabrikam Systems", "Test Engineer"),
+    ]
+
+
+def test_work_history_separator_with_roles_on_both_sides_is_not_split():
+    text = (
+        "Zed Qu\nWork History\n• Lead Engineer - Senior Consultant\n"
+        "• Project Manager - Program Director\nEducation\nB.S. Example\n"
+    )
+    assert parse_resume_detailed(None, text)["experience"] == []
+
+
+def test_work_history_plain_lines_with_prose_stay_unparsed():
+    text = (
+        "Zed Qu\nWork History\nSenior QA Analyst Northwind Traders\n"
+        "Responsible for the quality of every release across the portfolio.\n"
+        "Education\nB.S. Example\n"
+    )
+    assert parse_resume_detailed(None, text)["experience"] == []

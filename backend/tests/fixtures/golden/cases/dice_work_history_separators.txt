@@ -1,0 +1,17 @@
+Sam Ortiz
+• Denver, CO, US
+Contact Information
+• sam.ortiz@example.com
+• 15550100456
+Summary
+Java developer with ten years of insurance platform experience.
+Work History
+• Senior Java Developer - Northwind Traders
+• Java Developer at Contoso Insurance
+• Fabrikam Systems | Software Engineer
+• Adatum Holdings - Technical Lead
+Education
+• Bachelors | Example State University
+Skills
+• java
+• spring
