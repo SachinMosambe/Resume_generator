@@ -86,3 +86,29 @@ def test_bullet_only_flags_review_reason():
     assert data["experience"] == []
     assert len(data["unassigned_experience_bullets"]) == 3
     assert "ambiguous_role_assignment" in data["parse_meta"]["reasons"]
+
+
+def test_title_only_experience_role_recovered():
+    data = parse_resume_detailed(None, _load("title_only.txt"))
+    assert len(data["experience"]) >= 1
+    role = data["experience"][0]
+    assert role["title"] == "Product Designer"
+    # No employer is stated in the source, so none may be invented.
+    assert (role.get("company") or "") == ""
+    assert "settings screens" in " ".join(role["description"])
+    assert not data.get("unassigned_experience_bullets")
+
+
+def test_title_only_requires_following_bullet():
+    text = "Casey Example\nEXPERIENCE\nProduct Designer\nSome free text without bullets here.\nEDUCATION\nB.A. Design\n"
+    data = parse_resume_detailed(None, text)
+    assert data["experience"] == []
+
+
+def test_sentence_line_before_bullets_is_not_a_title():
+    text = (
+        "Riley Quinn\nEXPERIENCE\nManaged a team of analysts and led the close process.\n"
+        "• Documented the weekly finance close.\nSKILLS\nExcel\n"
+    )
+    data = parse_resume_detailed(None, text)
+    assert data["experience"] == []

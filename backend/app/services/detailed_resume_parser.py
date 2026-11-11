@@ -1394,6 +1394,25 @@ _PAREN_TITLE = re.compile(
 )
 
 
+def _is_title_only_header(line: str, lines: list[str], index: int) -> bool:
+    """True for a short job-title line (no dates/company) whose next non-blank line is a bullet."""
+    text = str(line or "").strip()
+    if not text or _is_bullet(text) or len(text) > 60 or len(text.split()) > 6:
+        return False
+    if text.endswith((".", ":", ";", ",")) or "@" in text or any(ch.isdigit() for ch in text):
+        return False
+    if not text[0].isupper() or _ACTION_VERB_START.match(text):
+        return False
+    if _DATE_PATTERN.search(text) or _is_section_heading_line(text) or _is_caps_section_label(text):
+        return False
+    if _is_invalid_job_title(text) or not _ROLE_WORD.search(text):
+        return False
+    nxt = index + 1
+    while nxt < len(lines) and not lines[nxt].strip():
+        nxt += 1
+    return nxt < len(lines) and _is_bullet(lines[nxt].strip())
+
+
 def _extract_experience(text: str) -> list[dict[str, Any]]:
     roles, _orphans = _extract_experience_detailed(text)
     return roles
@@ -1718,6 +1737,21 @@ def _extract_experience_detailed(text: str) -> tuple[list[dict[str, Any]], list[
                 if clean_seed:
                     current_bullets.append(clean_seed)
             i += 2
+            continue
+
+        # Title-only role: an explicit job-title line directly above bullets, with no
+        # employer or dates. The employer stays empty (never invented).
+        if chosen and not current_job and _is_title_only_header(line, lines, i):
+            current_job = {
+                "title": _clean_text(line),
+                "company": "",
+                "location": "",
+                "duration": "",
+                "description": [],
+                "technologies": [],
+            }
+            current_bullets = []
+            i += 1
             continue
 
         # Collect bullets / detail lines for the current job.
