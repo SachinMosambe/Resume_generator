@@ -39,3 +39,27 @@ jobs:
       - run: pip install -r requirements.txt
       - run: python -m compileall app
       - run: python -c "from app.main import app; print(app.title)"
+
+  golden:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: backend
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+          cache-dependency-path: backend/requirements.txt
+      - run: sudo apt-get update && sudo apt-get install -y tesseract-ocr libreoffice-writer
+      - run: pip install -r requirements.txt
+      # Fixtures only (tests/fixtures/golden); the private corpus is never needed.
+      # Capgemini style is checked against an anonymized synthetic template.
+      - run: python scripts/corpus_quality_eval.py --golden --formats aptino,capgemini,suresh
+        env:
+          RESUME_LLM_CONDENSE: "false"
+          RESUME_AGENT_PIPELINE: "false"
+          RESUME_LLM_POLISH: "false"
+          RESUME_LLM_PARSE_FALLBACK: "false"
+          RESUME_OCR_ENABLED: "true"

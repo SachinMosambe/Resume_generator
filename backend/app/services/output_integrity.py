@@ -136,6 +136,9 @@ _SOURCE_DATE = re.compile(
 _METRIC = re.compile(r"\$\s?\d[\d,]*(?:\.\d+)?\s?[kmb]?\b|\b\d[\d,]*(?:\.\d+)?\s?%", re.IGNORECASE)
 
 
+_BULLET_LINE = re.compile("^\\s*[\u2022\u25cf\u25e6\u25aa\u25a0\\-\\*]\\s*\\S")
+
+
 def _contains(padded: str, needle: str) -> bool:
     return bool(needle) and f" {needle} " in padded
 
@@ -174,7 +177,9 @@ def _classify_source_lines(
         found = sum(1 for g in grams if f" {g} " in padded)
         if found < min_share * len(grams):
             line_padded = f" {norm_line} "
-            carries_fact = bool(metrics) or any(
+            # A bullet-marked line is resume content by construction, even when the parser
+            # never read it into a role (so no parsed fact points at it).
+            carries_fact = bool(metrics) or bool(_BULLET_LINE.match(raw)) or any(
                 _contains(line_padded, f) or (len(f.split()) >= _MIN_ROLE_BULLET_WORDS and _contains(f" {f} ", norm_line))
                 for f in facts
             )
@@ -335,10 +340,13 @@ def check_output_integrity(
     ):
         _check(key, store.get(key) or [], hay, checks, warnings, label)
 
-    suppressed = set(suppressed_sections or [])
+    suppressed = list(dict.fromkeys(suppressed_sections or []))
+    # Suppressed titles are heading-cased by the store builder ("References"), while the
+    # source title may be all-caps ("REFERENCES"); compare normalized.
+    suppressed_keys = {_norm(t) for t in suppressed}
     extras = [
         s for s in store.get("additional_sections") or []
-        if isinstance(s, dict) and s.get("title") not in suppressed
+        if isinstance(s, dict) and _norm(s.get("title")) not in suppressed_keys
     ]
     _check("additional_sections", [l for s in extras for l in s.get("lines") or []], hay, checks, warnings,
            "lines from other sections")

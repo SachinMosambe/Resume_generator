@@ -84,7 +84,7 @@
         "capgemini",
         "suresh"
       ],
-      "expected_status": "passed",
+      "expected_status": "needs_review",
       "id": "bullet_only_experience",
       "pattern": "bullet_only",
       "source": "cases/bullet_only.txt",
@@ -996,7 +996,7 @@
         "capgemini",
         "suresh"
       ],
-      "expected_status": "passed",
+      "expected_status": "needs_review",
       "id": "bullet_only_with_date_lines",
       "pattern": "bullet_only",
       "source": "cases/bullet_only_dated.txt",

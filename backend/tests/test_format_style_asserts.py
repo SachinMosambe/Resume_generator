@@ -7,13 +7,11 @@ style deviation here is a rendering problem rather than a parsing one.
 import io
 import json
 import logging
-import re
 from pathlib import Path
 
 import pytest
 import structlog
 from docx import Document
-from docx.enum.text import WD_ALIGN_PARAGRAPH
 
 from app.models.candidate import Candidate
 from app.models.client_format import ClientFormat
@@ -26,51 +24,26 @@ import app.services.resume_generation_service as rgs
 
 structlog.configure(wrapper_class=structlog.make_filtering_bound_logger(logging.CRITICAL))
 
-GOLDEN = Path(__file__).parent / "fixtures" / "golden"
+from tests.fixtures.golden.style_checks import (  # noqa: E402
+    GOLDEN,
+    assert_content_same,
+    assert_font_family,
+    assert_labels,
+    assert_name_align,
+    assert_section_order,
+    expected_sections,
+    heading_positions,
+    norm as _norm,
+    paragraphs as _paragraphs,
+    section_text,
+    source_text,
+)
+from tests.fixtures.golden.synthetic_formats import build_synthetic_capgemini_docx  # noqa: E402
+
 FORMAT_DIR = Path(__file__).resolve().parents[2] / "test" / "format"
 TEMPLATES = {
     "capgemini": FORMAT_DIR / "Capgemini-Format.docx",
     "suresh": FORMAT_DIR / "Suresh Duvvada.docx",
-}
-
-# What each client format must produce, independent of the candidate.
-EXPECTED = {
-    "capgemini": {
-        "name_align": WD_ALIGN_PARAGRAPH.RIGHT,
-        "font_family": "Avenir 45",
-        "order": ["summary", "skills", "experience", "projects", "education"],
-        "labels": {
-            "summary": "Professional Summary",
-            "skills": "Skills Profile",
-            "experience": "Professional Experience",
-            "projects": "Summary of Projects",
-            "education": "Education",
-        },
-    },
-    "suresh": {
-        "name_align": WD_ALIGN_PARAGRAPH.CENTER,
-        "font_family": "Arial",
-        "order": ["summary", "skills", "education", "experience", "projects"],
-        "labels": {
-            "summary": "Professional Summary",
-            "skills": "Skill Set Overview",
-            "education": "Educational Details",
-            "experience": "Work Experience",
-            "projects": "Projects",
-        },
-    },
-    "aptino": {
-        "name_align": WD_ALIGN_PARAGRAPH.LEFT,
-        "font_family": "Arial",
-        "order": ["summary", "skills", "education", "experience", "projects"],
-        "labels": {
-            "summary": "Professional Summary",
-            "skills": "Skill Set Overview",
-            "education": "Educational Details",
-            "experience": "Work Experience",
-            "projects": "Projects",
-        },
-    },
 }
 
 
@@ -95,10 +68,15 @@ def _offline_pipeline(tmp_path_factory):
 
 
 @pytest.fixture(scope="module")
-def client_formats() -> dict[str, ClientFormat]:
+def client_formats(tmp_path_factory) -> dict[str, ClientFormat]:
     formats = {"aptino": build_aptino_client_format("Aptino")}
     extractor = FormatExtractionService()
     for key, path in TEMPLATES.items():
+        if not path.exists() and key == "capgemini":
+            # The real Capgemini template holds a real candidate's resume and is never
+            # committed; fall back to the anonymized synthetic style contract.
+            path = tmp_path_factory.mktemp("synthetic_formats") / "Capgemini-Format.docx"
+            path.write_bytes(build_synthetic_capgemini_docx())
         if not path.exists():
             continue
         meta = normalize_format_metadata(extractor.extract(path.name, path.read_bytes()))
@@ -111,12 +89,8 @@ def client_formats() -> dict[str, ClientFormat]:
     return formats
 
 
-def _source_text(fixture: dict) -> str:
-    return (GOLDEN / fixture["source"]).read_text(encoding="utf-8")
-
-
 def _generate(fixture: dict, client_format: ClientFormat) -> bytes:
-    text = _source_text(fixture)
+    text = source_text(fixture)
     candidate = Candidate(
         name="Candidate",
         resume_path="fixture.txt",
@@ -140,84 +114,6 @@ def generated(client_formats):
 
     return get
 
-
-# ---------------------------------------------------------------- assert helpers
-
-
-def _paragraphs(data: bytes) -> list:
-    return [p for p in Document(io.BytesIO(data)).paragraphs if p.text.strip()]
-
-
-def _norm(text: str) -> str:
-    return re.sub(r"[^a-z0-9]+", " ", str(text or "").lower()).strip()
-
-
-def heading_positions(data: bytes, fmt: str) -> dict[str, int]:
-    """Paragraph index of each section heading, found by the format's own label."""
-    paras = _paragraphs(data)
-    found: dict[str, int] = {}
-    for section, label in EXPECTED[fmt]["labels"].items():
-        for idx, para in enumerate(paras):
-            if _norm(para.text) == _norm(label):
-                found[section] = idx
-                break
-    return found
-
-
-def section_text(data: bytes, fmt: str, section: str) -> str:
-    """Text between a section heading and the next heading of any section."""
-    paras = _paragraphs(data)
-    positions = heading_positions(data, fmt)
-    start = positions[section]
-    later = [pos for pos in positions.values() if pos > start]
-    end = min(later) if later else len(paras)
-    return "\n".join(p.text for p in paras[start + 1 : end])
-
-
-def assert_name_align(data: bytes, fmt: str, expected_name: str) -> None:
-    first = _paragraphs(data)[0]
-    assert first.text.strip() == expected_name
-    assert first.alignment == EXPECTED[fmt]["name_align"], (fmt, first.alignment)
-
-
-def assert_font_family(data: bytes, fmt: str) -> None:
-    wanted = EXPECTED[fmt]["font_family"]
-    named = [run.font.name for p in _paragraphs(data) for run in p.runs if run.text.strip() and run.font.name]
-    assert named, "no explicit run fonts found"
-    assert set(named) == {wanted}, (fmt, set(named))
-
-
-def assert_section_order(data: bytes, fmt: str, present: set[str], optional: set[str] = frozenset()) -> None:
-    positions = heading_positions(data, fmt)
-    assert present <= set(positions) <= present | optional, (fmt, sorted(positions), sorted(present))
-    ordered = [s for s in EXPECTED[fmt]["order"] if s in positions]
-    assert sorted(positions, key=positions.get) == ordered
-
-
-def assert_labels(data: bytes, fmt: str, present: set[str], optional: set[str] = frozenset()) -> None:
-    body = {_norm(p.text) for p in _paragraphs(data)}
-    for section in present:
-        assert _norm(EXPECTED[fmt]["labels"][section]) in body, (fmt, section)
-    for section, label in EXPECTED[fmt]["labels"].items():
-        if section not in present | optional:
-            assert _norm(label) not in body, f"{fmt}: unexpected empty heading {label!r}"
-
-
-def expected_sections(fixture: dict) -> set[str]:
-    """Sections the source actually backs, read from its own headings (never invented)."""
-    headings = {
-        "summary": r"summary|profile|objective",
-        "skills": r"skills?|technical skills",
-        "education": r"education",
-        "experience": r"(?:work |professional )?experience",
-        "projects": r"projects?",
-    }
-    lines = [ln.strip() for ln in _source_text(fixture).splitlines()]
-    return {
-        section
-        for section, pattern in headings.items()
-        if any(re.fullmatch(pattern, ln, re.I) for ln in lines)
-    }
 
 # ------------------------------------------------------------------------ tests
 
@@ -264,17 +160,7 @@ def test_content_same_expectations_all_formats(generated, fixture_id, fmt):
     """Same source facts land under the format's own experience heading, in every format."""
     fixture = next(f for f in STYLE_FIXTURES if f["id"] == fixture_id)
     data = generated(fixture_id, fmt)
-    experience = _norm(section_text(data, fmt, "experience"))
-    assert fixture["expected_roles"], fixture_id
-    for role in fixture["expected_roles"]:
-        assert _norm(role["company"]) in experience, (fmt, role["company"])
-        assert _norm(role["title"]) in experience, (fmt, role["title"])
-        for token in role.get("dates_contains", []):
-            assert _norm(token) in experience, (fmt, token)
-        for bullet in role.get("bullet_substrings", []):
-            assert _norm(bullet) in experience, (fmt, bullet)
-    if "education" in expected_sections(fixture):
-        assert "example state college" in _norm(section_text(data, fmt, "education"))
+    assert_content_same(data, fmt, fixture)
 
 
 @pytest.mark.parametrize("fmt", ["capgemini", "suresh", "aptino"])

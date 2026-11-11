@@ -1319,7 +1319,9 @@ def _parse_job_header_line(line: str, date_match: re.Match) -> dict[str, str]:
         role_then_company = re.match(
             r"^(?P<title>.{0,90}?\b(?:Engineer|Developer|Manager|Architect|Analyst|Consultant|"
             r"Director|Designer|Scientist|Specialist|Coordinator|Administrator|Intern|Officer|"
-            r"Researcher|Programmer|Lead)\b(?:\s*\([^)]{1,40}\))?)\s+(?P<company>[A-Z0-9].{1,90})$",
+            # Optional level suffix ("Engineer II", "Analyst 3") belongs to the title.
+            r"Researcher|Programmer|Lead)\b(?:\s+(?:[IVX]{1,4}|[1-9])\b)?(?:\s*\([^)]{1,40}\))?)"
+            r"\s+(?P<company>(?![IVX]{1,4}$|[1-9]$)[A-Z0-9].{1,90})$",
             before,
         )
         if role_then_company and not _is_invalid_job_title(role_then_company.group("title")):

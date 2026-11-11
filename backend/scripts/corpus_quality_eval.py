@@ -4,6 +4,11 @@ Usage (from backend/):
   python scripts/corpus_quality_eval.py
   python scripts/corpus_quality_eval.py --limit 120
   python scripts/corpus_quality_eval.py --limit 40 --formats aptino,capgemini
+  python scripts/corpus_quality_eval.py --golden --formats aptino,capgemini,suresh
+
+``--golden`` is the CI quality gate: it uses only the anonymized fixtures under
+``tests/fixtures/golden`` (never the private corpus), prints numerator / denominator /
+failing IDs per gate, and exits nonzero if any gate misses its manifest threshold.
 
 Outputs JSON + Markdown under backend/eval_reports/.
 """
@@ -11,6 +16,7 @@ from __future__ import annotations
 
 import argparse
 import hashlib
+import importlib.util
 import io
 import json
 import logging
@@ -28,6 +34,9 @@ os.environ["RESUME_LLM_CONDENSE"] = "false"
 os.environ["RESUME_AGENT_PIPELINE"] = "false"
 os.environ["RESUME_LLM_POLISH"] = "false"
 os.environ["UPLOAD_DIR"] = str(_TMP / "uploads")
+if "--golden" in sys.argv:
+    # Golden gates measure deterministic parsing only: no LLM repair, ever.
+    os.environ["RESUME_LLM_PARSE_FALLBACK"] = "false"
 os.environ.pop("AWS_BEARER_TOKEN_BEDROCK", None)
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -538,12 +547,367 @@ def to_markdown(summary: dict, rows: list[dict], format_names: list[str]) -> str
     return "\n".join(lines)
 
 
-def main() -> None:
+# ---------------------------------------------------------------------------
+# Golden CI gate (--golden): anonymized fixtures only, never the private corpus.
+# ---------------------------------------------------------------------------
+
+GOLDEN_DIR = ROOT / "tests" / "fixtures" / "golden"
+# A fixture whose manifest status is ``needs_review`` is deliberately ambiguous: flagging it
+# is the desired outcome and a clean pass is acceptable only if every expected fact is intact
+# (the expectation check below enforces that). ``failed`` / ``error`` is never acceptable.
+GOLDEN_STATUS_OK = {"passed": {"passed"}, "needs_review": {"needs_review", "passed"}}
+
+
+def _golden_module(name: str):
+    """Load a helper module from tests/fixtures/golden by path (no pytest needed)."""
+    spec = importlib.util.spec_from_file_location(f"golden_{name}", GOLDEN_DIR / f"{name}.py")
+    module = importlib.util.module_from_spec(spec)
+    sys.modules[spec.name] = module
+    spec.loader.exec_module(module)  # type: ignore[union-attr]
+    return module
+
+
+def load_golden_formats(wanted: set[str]) -> tuple[dict[str, ClientFormat], list[str]]:
+    """Client formats for the golden run.
+
+    Capgemini is always the anonymized synthetic template (the real one holds a real
+    candidate's resume and is not committed). Suresh / Juhi come from the committed
+    ``test/format`` files. A requested format that cannot be loaded is a hard error
+    (returned in the second element), never a silent skip.
+    """
+    formats: dict[str, ClientFormat] = {}
+    problems: list[str] = []
+    extractor = FormatExtractionService()
+
+    def add(key: str, path: Path) -> None:
+        meta = normalize_format_metadata(extractor.extract(path.name, path.read_bytes()))
+        formats[key] = ClientFormat(
+            client_id=key.title(),
+            format_template_path=f"upload://{path.name}",
+            format_metadata=meta,
+            template_bytes_path=str(path),
+        )
+
+    if "aptino" in wanted:
+        formats["aptino"] = build_aptino_client_format("Aptino")
+    if "capgemini" in wanted:
+        synthetic = _golden_module("synthetic_formats")
+        path = _TMP / "synthetic_formats" / "Capgemini-Format.docx"
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_bytes(synthetic.build_synthetic_capgemini_docx())
+        add("capgemini", path)
+    for key, filename in (("suresh", "Suresh Duvvada.docx"), ("juhi", "Juhi Patil - Aptino format.docx")):
+        if key not in wanted:
+            continue
+        path = FORMAT_DIR / filename
+        if path.exists():
+            add(key, path)
+        else:
+            problems.append(f"format '{key}' requested but template missing: {path}")
+    for key in sorted(wanted - set(formats) - {"capgemini", "aptino", "suresh", "juhi"}):
+        problems.append(f"unknown format '{key}'")
+    return formats, problems
+
+
+def _contains(haystack: str, needle: str) -> bool:
+    return norm(needle) in haystack
+
+
+def golden_expectation_failures(fixture: dict, out_txt: str, preserved: list[str] | None = None) -> list[str]:
+    """Material content the manifest says must survive into the rendered resume.
+
+    ``preserved`` is parser-kept text that is deliberately not rendered as a job (unassigned
+    bullets). It only counts for fixtures that declare ``allow_unassigned_bullets``.
+    """
+    hay = norm(out_txt)
+    if fixture.get("allow_unassigned_bullets") and preserved:
+        hay = f"{hay} {norm(' '.join(preserved))}"
+    missing: list[str] = []
+    for role in fixture.get("expected_roles") or []:
+        company = role.get("company") or ""
+        if company and not _contains(hay, company):
+            missing.append(f"company:{company}")
+        if role.get("title") and not _contains(hay, role["title"]):
+            missing.append(f"title:{role['title']}")
+        for token in role.get("dates_contains") or []:
+            if not _contains(hay, token):
+                missing.append(f"date:{token}")
+        for bullet in role.get("bullet_substrings") or []:
+            if not _contains(hay, bullet):
+                missing.append(f"bullet:{bullet}")
+    for key, label in (
+        ("expected_bullet_substrings", "bullet"),
+        ("expected_education_substrings", "education"),
+        ("expected_summary_substrings", "summary"),
+        ("expected_skill_substrings", "skill"),
+        ("expected_certification_substrings", "certification"),
+    ):
+        for needle in fixture.get(key) or []:
+            if not _contains(hay, needle):
+                missing.append(f"{label}:{needle}")
+    return missing
+
+
+def _find_parsed_role(parsed_roles: list[dict], company: str) -> dict | None:
+    want = norm(company)
+    for role in parsed_roles:
+        got = norm(role.get("company") or "")
+        if want and got and (want in got or got in want):
+            return role
+    return None
+
+
+def golden_parse_facts(fixture: dict, text: str) -> dict:
+    """Format-independent parse observations for the fixture-level gates."""
+    parsed = parse_resume_detailed(None, text)
+    roles = parsed.get("experience") or []
+    annotated = [r for r in fixture.get("expected_roles") or [] if str(r.get("title") or "").strip()]
+    untitled = []
+    for role in annotated:
+        match = _find_parsed_role(roles, role.get("company") or "")
+        if match is not None and not str(match.get("title") or "").strip():
+            untitled.append(role.get("company") or "?")
+    name = str(parsed.get("name") or "").strip()
+    expected_name = fixture.get("expected_name")
+    bad_name = None
+    if expected_name:
+        bad_name = norm(name) != norm(expected_name)
+    rejected = [norm(n) for n in fixture.get("rejected_names") or []]
+    if rejected and norm(name) in rejected:
+        bad_name = True
+    return {
+        "roles": len(roles),
+        "unassigned_bullets": [str(b) for b in (parsed.get("unassigned_experience_bullets") or [])],
+        "name": name,
+        "bad_name": bad_name,
+        "annotated_titled_roles": len(annotated),
+        "untitled_source_titled_roles": untitled,
+    }
+
+
+def run_golden_fixture(fixture: dict, formats: dict[str, ClientFormat], style_checks) -> dict:
+    """Extract -> intake -> parse -> generate for one fixture across the requested formats."""
+    from app.services.intake_gate import assess_resume_intake
+
+    out: dict = {"id": fixture["id"], "runs": {}, "parse": None, "intake_error": None}
+    text = (GOLDEN_DIR / fixture["source"]).read_text(encoding="utf-8")
+    assessment = assess_resume_intake(text)
+    if not assessment.is_resume:
+        out["intake_error"] = f"unexpected_quarantine:{assessment.reason_code}"
+    try:
+        out["parse"] = golden_parse_facts(fixture, text)
+    except Exception as exc:  # noqa: BLE001
+        out["parse_error"] = f"{type(exc).__name__}: {str(exc)[:120]}"
+
+    cand = Candidate(
+        name="Candidate",
+        resume_path=f"{fixture['id']}.txt",
+        extracted_data={"raw_text": text, "resume_text": text, "extraction_meta": {}},
+    )
+    for fname in fixture.get("formats") or list(formats):
+        if fname not in formats:
+            continue
+        run: dict = {"status": "error", "error": None, "expectation_failures": [], "style_failures": None}
+        if out["intake_error"]:
+            run["error"] = out["intake_error"]
+            out["runs"][fname] = run
+            continue
+        service = ResumeGenerationService()
+        try:
+            data = service.generate(cand, formats[fname])
+            report = getattr(service, "last_report", None)
+            run["status"] = getattr(report, "status", "ok") if report else "ok"
+            run["review_reasons"] = [
+                f"{w.get('code', 'legacy')}:{w.get('severity', '?')}" if isinstance(w, dict) else str(w)[:60]
+                for w in list(getattr(report, "warnings", []) or [])[:6]
+            ]
+            preserved = (out["parse"] or {}).get("unassigned_bullets") or []
+            run["expectation_failures"] = golden_expectation_failures(fixture, docx_text(data), preserved)
+            if fixture.get("style_subset"):
+                run["style_failures"] = style_checks.check_style(data, fname, fixture)
+        except Exception as exc:  # noqa: BLE001 - unexpected execution errors stay in the denominator
+            run["status"] = "error"
+            run["error"] = f"{type(exc).__name__}: {str(exc)[:160]}"
+        out["runs"][fname] = run
+    return out
+
+
+def _gate(name: str, kind: str, threshold: float, num: int, den: int, failing: list[str], note: str = "") -> dict:
+    pct = round(100 * num / den, 1) if den else None
+    if den == 0:
+        met = None  # not enforceable: no scored inputs for this gate
+    elif kind == "min":
+        met = pct >= threshold
+    else:
+        met = pct <= threshold
+    return {
+        "gate": name,
+        "rule": f"{'>=' if kind == 'min' else '<='} {threshold:g}%",
+        "numerator": num,
+        "denominator": den,
+        "pct": pct,
+        "met": met,
+        "failing_ids": sorted(failing),
+        "note": note,
+    }
+
+
+def compute_golden_gates(manifest: dict, results: list[dict], fixtures_by_id: dict[str, dict]) -> list[dict]:
+    """Aggregate per-fixture results into the manifest gates (numerator/denominator/failing IDs)."""
+    th = manifest["gates"]
+    runs = [(r["id"], fmt, run) for r in results for fmt, run in r["runs"].items()]
+    parsed = [(r["id"], r["parse"]) for r in results if r.get("parse")]
+
+    def run_ok(fid: str, run: dict) -> bool:
+        expected = fixtures_by_id[fid].get("expected_status", "passed")
+        return run["status"] in GOLDEN_STATUS_OK.get(expected, {expected}) and not run["expectation_failures"]
+
+    # passed_pct / failed_pct: every scored valid input x format stays in the denominator.
+    bad_runs = [f"{fid}@{fmt}" for fid, fmt, run in runs if not run_ok(fid, run)]
+    failed_runs = [f"{fid}@{fmt}" for fid, fmt, run in runs if run["status"] in {"failed", "error"}]
+    total = len(runs)
+
+    # Role-bearing = source-labeled employers: fixtures that expect work history AND annotate
+    # roles. Bullet-only / headerless fixtures have no source roles to find.
+    role_bearing = [
+        (fid, p) for fid, p in parsed
+        if fixtures_by_id[fid].get("expects_work_history") and fixtures_by_id[fid].get("expected_roles")
+    ]
+    zero_role = [fid for fid, p in role_bearing if p["roles"] == 0]
+
+    annotated = sum(p["annotated_titled_roles"] for _fid, p in parsed)
+    untitled = [f"{fid}:{c}" for fid, p in parsed for c in p["untitled_source_titled_roles"]]
+
+    named = [(fid, p) for fid, p in parsed if p["bad_name"] is not None]
+    bad_name = [fid for fid, p in named if p["bad_name"]]
+
+    scanned = [r for r in results if fixtures_by_id[r["id"]].get("intake") == "ocr"]
+    scanned_bad = [f"{r['id']}@{fmt}" for r in scanned for fmt, run in r["runs"].items() if not run_ok(r["id"], run)]
+    scanned_total = sum(len(r["runs"]) for r in scanned)
+    docs = [r for r in results if fixtures_by_id[r["id"]].get("builder") == "legacy_doc"]
+    docs_bad = [f"{r['id']}@{fmt}" for r in docs for fmt, run in r["runs"].items() if not run_ok(r["id"], run)]
+    docs_total = sum(len(r["runs"]) for r in docs)
+
+    style_runs = [(fid, fmt, run) for fid, fmt, run in runs if run["style_failures"] is not None]
+    style_bad = [f"{fid}@{fmt}" for fid, fmt, run in style_runs if run["style_failures"]]
+
+    # Zero tolerance, independent of any aggregate rate: expected content missing from a run
+    # that was NOT flagged for review is a silent material omission.
+    silent = [f"{fid}@{fmt}" for fid, fmt, run in runs if run["status"] == "passed" and run["expectation_failures"]]
+
+    unscored_note = "no scored fixtures (stub binary builders stay scored:false until materialize works)"
+    return [
+        _gate("passed_pct", "min", th["passed_pct_min"], total - len(bad_runs), total, bad_runs,
+              "status meets manifest expected_status and every expected role/bullet/etc. is in the output"),
+        _gate("zero_role_pct", "max", th["zero_role_pct_max"], len(zero_role), len(role_bearing), zero_role,
+              "parsed 0 roles on fixtures that expect work history"),
+        _gate("empty_title_pct", "max", th["empty_title_pct_max"], len(untitled), annotated, untitled,
+              "source-titled roles parsed with an empty title"),
+        _gate("bad_name_pct", "max", th["bad_name_pct_max"], len(bad_name), len(named), bad_name,
+              "parsed name differs from expected / equals a rejected tech-token name"),
+        _gate("scanned_recovery_pct", "min", th["scanned_recovery_pct_min"], scanned_total - len(scanned_bad),
+              scanned_total, scanned_bad, "" if scanned_total else unscored_note),
+        _gate("doc_conversion_pct", "min", th["doc_conversion_pct_min"], docs_total - len(docs_bad),
+              docs_total, docs_bad, "" if docs_total else unscored_note),
+        _gate("style_assert_pct", "min", th["style_assert_pct_min"], len(style_runs) - len(style_bad),
+              len(style_runs), style_bad, "name alignment, font family, section order/labels, content on style_subset"),
+        _gate("failed_pct", "max", th["failed_pct_max"], len(failed_runs), total, failed_runs,
+              "integrity status failed or unexpected intake/execution error"),
+        _gate("silent_omission_pct", "max", 0, len(silent), total, silent,
+              "zero tolerance: expected content missing although status is passed (not flagged for review)"),
+    ]
+
+
+def golden_exit_code(gates: list[dict], n_runs: int) -> int:
+    if n_runs == 0:
+        return 1  # nothing was measured: never pass vacuously
+    return 0 if all(g["met"] is not False for g in gates) else 1
+
+
+def format_golden_report(gates: list[dict], results: list[dict], formats: list[str], fixtures_by_id: dict) -> str:
+    lines = [
+        f"GOLDEN GATES  fixtures={len(results)}  runs={sum(len(r['runs']) for r in results)}  formats={','.join(formats)}",
+        f"{'gate':<22}{'rule':<10}{'num/den':<10}{'pct':<8}result",
+    ]
+    for g in gates:
+        result = "n/a (not enforced)" if g["met"] is None else ("PASS" if g["met"] else "FAIL")
+        pct = "-" if g["pct"] is None else f"{g['pct']}%"
+        lines.append(f"{g['gate']:<22}{g['rule']:<10}{g['numerator']}/{g['denominator']:<7}{pct:<8}{result}")
+        if g["note"] and g["met"] is None:
+            lines.append(f"    note: {g['note']}")
+        if g["failing_ids"]:
+            lines.append(f"    failing IDs: {', '.join(g['failing_ids'])}")
+    detail = []
+    for r in results:
+        for fmt, run in r["runs"].items():
+            bits = list(run["expectation_failures"]) + list(run["style_failures"] or [])
+            if run.get("error"):
+                bits.append(f"error={run['error']}")
+            expected = fixtures_by_id[r["id"]].get("expected_status", "passed")
+            if bits or run["status"] != expected:
+                reasons = ",".join(run.get("review_reasons") or [])
+                detail.append(f"  {r['id']}@{fmt}: status={run['status']} (expected {expected}) {'; '.join(bits)} [{reasons}]")
+    if detail:
+        lines.append("Per-run detail (deviations only):")
+        lines.extend(detail)
+    return "\n".join(lines)
+
+
+def run_golden(args) -> int:
+    from app.core.config import settings
+
+    if settings.RESUME_LLM_PARSE_FALLBACK:
+        print("ERROR: RESUME_LLM_PARSE_FALLBACK must be false for golden runs", file=sys.stderr)
+        return 2
+    manifest = json.loads((GOLDEN_DIR / "manifest.json").read_text(encoding="utf-8"))
+    only = {x.strip() for x in (args.fixtures or "").split(",") if x.strip()}
+    scored = [
+        f for f in manifest["fixtures"]
+        if f.get("scored") and f.get("expected_status", "passed") != "quarantine" and (not only or f["id"] in only)
+    ]
+    unknown = only - {f["id"] for f in manifest["fixtures"]}
+    if unknown:
+        print(f"ERROR: unknown fixture ids: {sorted(unknown)}", file=sys.stderr)
+        return 2
+    wanted = {x.strip().lower() for x in args.formats.split(",") if x.strip()}
+    formats, problems = load_golden_formats(wanted)
+    if problems or not formats:
+        for p in problems or ["no formats loaded"]:
+            print(f"ERROR: {p}", file=sys.stderr)
+        return 2
+
+    style_checks = _golden_module("style_checks")
+    fixtures_by_id = {f["id"]: f for f in manifest["fixtures"]}
+    print(f"Golden: {len(scored)} scored fixtures x {list(formats)} (skipped unscored stubs: "
+          f"{sum(1 for f in manifest['fixtures'] if not f.get('scored'))})")
+    results = []
+    for fixture in scored:
+        results.append(run_golden_fixture(fixture, formats, style_checks))
+
+    gates = compute_golden_gates(manifest, results, fixtures_by_id)
+    print(format_golden_report(gates, results, list(formats), fixtures_by_id))
+    code = golden_exit_code(gates, sum(len(r["runs"]) for r in results))
+    out_dir = Path(args.out)
+    out_dir.mkdir(parents=True, exist_ok=True)
+    (out_dir / "golden_latest.json").write_text(
+        json.dumps({"formats": list(formats), "gates": gates, "results": results, "exit_code": code}, indent=2, default=str),
+        encoding="utf-8",
+    )
+    print(f"GOLDEN {'PASS' if code == 0 else 'FAIL'} (exit {code})")
+    return code
+
+
+def main(argv: list[str] | None = None) -> int:
     ap = argparse.ArgumentParser()
     ap.add_argument("--limit", type=int, default=80)
     ap.add_argument("--formats", default="aptino,capgemini,suresh")
     ap.add_argument("--out", default=str(OUT_DIR))
-    args = ap.parse_args()
+    ap.add_argument("--golden", action="store_true", help="run the CI golden quality gates (fixtures only)")
+    ap.add_argument("--fixtures", default="", help="with --golden: comma-separated fixture ids to restrict to")
+    args = ap.parse_args(argv)
+
+    if args.golden:
+        return run_golden(args)
 
     wanted = {x.strip().lower() for x in args.formats.split(",") if x.strip()}
     formats = load_formats(wanted)
@@ -621,7 +985,8 @@ def main() -> None:
     print("\nWrote", json_path)
     print("Wrote", md_path)
     print(json.dumps({"summary_formats": summary["formats"], "themes": themes}, indent=2, default=str))
+    return 0
 
 
 if __name__ == "__main__":
-    main()
+    sys.exit(main())
