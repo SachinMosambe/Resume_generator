@@ -36,6 +36,10 @@ class Settings(BaseSettings):
     # Accuracy-first: eligible weak parses may call Bedrock once (source-checked). Golden CI forces off.
     RESUME_LLM_PARSE_FALLBACK: bool = True
     RESUME_LLM_PARSE_TIMEOUT_SECONDS: float = 45.0
+    # Post-integrity Bedrock recovery is enabled only when a Bedrock token is configured.
+    RESUME_INTEGRITY_RECOVERY: bool = True
+    RESUME_INTEGRITY_RECOVERY_MAX_CALLS: int = 4
+    RESUME_INTEGRITY_RECOVERY_TIMEOUT_SECONDS: float = 45.0
 
     # Multi-agent pipeline (extract -> plan -> write -> critique -> refine).
     # Runs inside the same service; enable per-deploy to compare against classic.
