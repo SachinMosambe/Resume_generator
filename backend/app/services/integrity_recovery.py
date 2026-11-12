@@ -146,14 +146,14 @@ def recover_store(
         "llm_calls": 0,
         "error": "",
         "missing_in": 0,
-        "missing_out_estimate": 0,
+        "missing_out_estimate": None,
     }
     started = time.perf_counter()
+    budget: _Budget | None = None
     try:
         baseline_text = output_text or _store_text(store)
         missing = list_missing_hard_source_lines(source_text, baseline_text, store)
         meta["missing_in"] = len(missing)
-        meta["missing_out_estimate"] = len(missing)
         hints = _line_numbers(lle.source_lines(source_text), missing) or None
 
         max_calls = max(1, int(getattr(settings, "RESUME_INTEGRITY_RECOVERY_MAX_CALLS", 4)))
@@ -168,21 +168,31 @@ def recover_store(
                 result = future.result(timeout=timeout)
             except FutureTimeout:
                 meta["error"] = "timeout"
+                meta["llm_calls"] = budget.calls
                 return store, meta
         finally:
             pool.shutdown(wait=False)
         meta["llm_calls"] = budget.calls
         meta["llm_roles"] = len(result.roles)
 
+        # Partial or failed extractions are never accepted.
         if result.error:
             meta["error"] = result.error
+            return store, meta
         if not result.roles:
-            meta["error"] = meta["error"] or "no_roles"
+            meta["error"] = "no_roles"
             return store, meta
 
         existing = [r for r in store.get("experience") or [] if isinstance(r, dict)]
         if lle._is_lumped(existing, result, 1.0):
             meta["error"] = "lumped"
+            return store, meta
+
+        # Never drop a role the store already had: every prior company must survive.
+        recovered_companies = {lle._key(r.get("company")) for r in result.roles if isinstance(r, dict)}
+        prior_companies = {lle._key(r.get("company")) for r in existing} - {""}
+        if prior_companies - recovered_companies:
+            meta["error"] = "dropped_company"
             return store, meta
 
         candidate = dict(store)
@@ -195,14 +205,22 @@ def recover_store(
         before = len(list_missing_hard_source_lines(source_text, _store_text(store), store))
         after = len(list_missing_hard_source_lines(source_text, _store_text(candidate), candidate))
         meta["missing_out_estimate"] = after
-        if after >= before:
-            meta["error"] = meta["error"] or "no_improvement"
+        # Wrong-role / zero-role cases are not measurable by store-text line coverage;
+        # accept the grounded candidate and let the caller's post-render
+        # ``prefer_recovered`` decide. The source-lines-only path needs a real drop.
+        text_unmeasurable = has_wrong_role(report) or (
+            not existing and detect_employment_evidence(source_text).has_work_history
+        )
+        if not text_unmeasurable and after >= before:
+            meta["error"] = "no_improvement"
             return store, meta
 
         meta["used"] = True
         return candidate, meta
     except Exception as exc:  # noqa: BLE001 - recovery must never break generation
         meta["error"] = type(exc).__name__
+        if budget is not None:
+            meta["llm_calls"] = budget.calls
         return store, meta
     finally:
         meta["elapsed_ms"] = int((time.perf_counter() - started) * 1000)

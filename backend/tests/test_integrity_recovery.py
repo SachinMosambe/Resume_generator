@@ -199,3 +199,61 @@ def test_recover_store_aborts_when_result_is_lumped():
     assert new_store is store
     assert meta["used"] is False
     assert meta["error"] == "lumped"
+
+
+def test_recover_store_wrong_role_path_accepts_without_text_estimate_drop():
+    # The store text already contains every source line, so the hard-line estimate cannot
+    # drop; a wrong-role finding must still let the grounded candidate through.
+    existing = {
+        "experience": [{"title": "Engineer", "company": "Acme Corp", "duration": "2020-2022",
+                        "description": ["Shipped the onboarding checklist for new analysts in 2021."]}],
+    }
+    store = {**existing, "raw_text": SOURCE}
+    report = _blocking(code="bullet_wrong_role", hard=0)
+    new_store, meta = ir.recover_store(
+        SOURCE, store, report, "Casey Example", client=_client({"roles": [_role("Acme Corp")]})
+    )
+
+    assert meta["used"] is True
+    assert new_store is not store
+    assert [r["company"] for r in new_store["experience"]] == ["Acme Corp"]
+    assert store["experience"][0]["company"] == "Acme Corp"  # input not mutated
+
+
+def test_recover_store_aborts_on_errored_extraction(monkeypatch):
+    partial = ir.lle.ExtractResult(roles=[{"company": "Acme Corp", "title": "Engineer", "description": ["x"]}],
+                                   error="roles:TimeoutError")
+    monkeypatch.setattr(ir.lle, "extract_experience", lambda *a, **k: partial)
+    store = _store()
+    new_store, meta = ir.recover_store(
+        SOURCE, store, _blocking(hard=2), "Casey Example", client=_client({"roles": []})
+    )
+
+    assert new_store is store
+    assert meta["used"] is False
+    assert meta["error"] == "roles:TimeoutError"
+
+
+def test_recover_store_aborts_when_replacement_drops_existing_company():
+    store = {
+        "experience": [{"title": "Analyst", "company": "Globex", "duration": "2018-2020", "description": ["b"]}],
+        "raw_text": SOURCE,
+    }
+    new_store, meta = ir.recover_store(
+        SOURCE, store, _blocking(hard=2), "Casey Example", client=_client({"roles": [_role("Acme Corp")]})
+    )
+
+    assert new_store is store
+    assert meta["used"] is False
+    assert meta["error"] == "dropped_company"
+    assert [r["company"] for r in new_store["experience"]] == ["Globex"]
+
+
+def test_recover_store_timeout_reports_budget_calls_and_no_estimate():
+    def broken(system_prompt, user_prompt):
+        raise TimeoutError("bedrock down")
+
+    _, meta = ir.recover_store(SOURCE, _store(), _blocking(hard=2), "Casey Example", client=broken)
+
+    assert meta["used"] is False
+    assert meta["missing_out_estimate"] is None
