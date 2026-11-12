@@ -147,15 +147,15 @@ def _contains(padded: str, needle: str) -> bool:
     return bool(needle) and f" {needle} " in padded
 
 
-def _classify_source_lines(
+def _source_line_classifications(
     source_text: str,
     hay: str,
     facts: list[str],
     *,
     min_words: int = 6,
     min_share: float = 0.3,
-) -> dict[str, int]:
-    """Classify substantial source lines that are mostly absent from the output.
+) -> list[tuple[str, str]]:
+    """Return raw substantial source lines paired with their integrity classification.
 
     The field checks compare parsed data with the document, so a line the parser never
     read cannot fail them. This compares the source text itself. Lines expected to change
@@ -167,7 +167,7 @@ def _classify_source_lines(
     * ``changed``: line is present but a percentage/currency figure from it is not.
     """
     padded = f" {hay} "
-    hard = soft = changed = 0
+    classified: list[tuple[str, str]] = []
     for raw in (source_text or "").splitlines():
         line = raw.strip()
         if not line or _SKIP_SOURCE_LINE.search(line) or _SOURCE_DATE.search(line):
@@ -187,13 +187,57 @@ def _classify_source_lines(
                 _contains(line_padded, f) or (len(f.split()) >= _MIN_ROLE_BULLET_WORDS and _contains(f" {f} ", norm_line))
                 for f in facts
             )
-            if carries_fact:
-                hard += 1
-            else:
-                soft += 1
+            classified.append((line, "hard" if carries_fact else "soft"))
         elif any(not _contains(padded, m) for m in metrics):
-            changed += 1
-    return {"hard": hard, "soft": soft, "changed": changed}
+            classified.append((line, "changed"))
+    return classified
+
+
+def _classify_source_lines(
+    source_text: str,
+    hay: str,
+    facts: list[str],
+    *,
+    min_words: int = 6,
+    min_share: float = 0.3,
+) -> dict[str, int]:
+    """Count substantial source lines by integrity classification."""
+    counts = {"hard": 0, "soft": 0, "changed": 0}
+    for _, classification in _source_line_classifications(
+        source_text, hay, facts, min_words=min_words, min_share=min_share
+    ):
+        counts[classification] += 1
+    return counts
+
+
+def _source_line_facts(store: dict[str, Any]) -> list[str]:
+    roles = [r for r in store.get("experience") or [] if isinstance(r, dict)]
+    bullets = [b for r in roles for b in (r.get("description") or []) if isinstance(b, str)]
+    return list(
+        dict.fromkeys(
+            n
+            for n in (
+                *(_norm(r.get("company")) for r in roles),
+                *(_norm(r.get("title")) for r in roles),
+                *(_norm(b) for b in bullets),
+            )
+            if len(n) >= 4
+        )
+    )
+
+
+def list_missing_hard_source_lines(
+    source_text: str, output_text: str, store: dict[str, Any]
+) -> list[str]:
+    """Return raw source lines that count as integrity hard misses (fact-bearing, absent)."""
+    missing = (
+        line
+        for line, classification in _source_line_classifications(
+            source_text, _norm(output_text), _source_line_facts(store)
+        )
+        if classification == "hard"
+    )
+    return list(dict.fromkeys(missing))
 
 
 def _source_lines_missing(source_text: str, hay: str, *, min_words: int = 6, min_share: float = 0.3) -> int:
@@ -495,17 +539,7 @@ def check_output_integrity(
         )
 
     if source_text:
-        facts = list(
-            dict.fromkeys(
-                n
-                for n in (
-                    *(_norm(r.get("company")) for r in roles),
-                    *(_norm(r.get("title")) for r in roles),
-                    *(_norm(b) for b in bullets),
-                )
-                if len(n) >= 4
-            )
-        )
+        facts = _source_line_facts(store)
         res = _classify_source_lines(source_text, hay, facts)
         hard, soft, changed = res["hard"], res["soft"], res["changed"]
         checks["source_lines"] = {

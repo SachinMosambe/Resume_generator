@@ -155,6 +155,36 @@ def test_source_line_with_required_fact_missing_needs_review():
     assert all("ledger" not in m.lower() for m in _msgs(report))
 
 
+def test_list_missing_hard_source_lines_finds_absent_bullet():
+    source = (
+        "Casey Example\n"
+        "Experience\n"
+        "Acme Corp — Engineer — 2020-2022\n"
+        "• Shipped the onboarding checklist for new analysts in 2021.\n"
+        "• Closed the monthly books for a small team in 2022.\n"
+    )
+    # Output has name + employer but drops the onboarding bullet line content
+    output = "Casey Example\nAcme Corp\nEngineer\nClosed the monthly books for a small team in 2022.\n"
+    store = {
+        "name": "Casey Example",
+        "experience": [
+            {
+                "company": "Acme Corp",
+                "title": "Engineer",
+                "duration": "2020-2022",
+                "description": [
+                    "Shipped the onboarding checklist for new analysts in 2021.",
+                    "Closed the monthly books for a small team in 2022.",
+                ],
+            }
+        ],
+    }
+    from app.services.output_integrity import list_missing_hard_source_lines
+
+    missing = list_missing_hard_source_lines(source, output, store)
+    assert any("onboarding checklist" in m.lower() for m in missing)
+
+
 def test_changed_factual_number_needs_review():
     source = "\n".join([*FULL, "Reduced payment settlement latency by 35% across the entire merchant platform estate"])
     out = [*FULL, "Reduced payment settlement latency by 53% across the entire merchant platform estate"]
