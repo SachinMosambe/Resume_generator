@@ -36,6 +36,7 @@ from app.services.aptino_template import (
 )
 from app.services.s3_service import download_to_local_path, sanitize_filename, upload_bytes_to_key
 from app.services.detailed_resume_parser import parse_resume_detailed
+from app.services import integrity_recovery
 from app.services.output_integrity import IntegrityReport, check_output_integrity
 from app.services.pdf_parser import extract_text_from_document
 from app.services.structured_resume_store import (
@@ -130,6 +131,71 @@ class ResumeGenerationService:
             checks={k: f"{v['found']}/{v['expected']}" for k, v in report.checks.items()},
         )
         return report
+
+    def _maybe_integrity_recover(
+        self,
+        candidate: Candidate,
+        client_format: ClientFormat,
+        store: dict[str, Any],
+        detailed_data: dict[str, Any],
+        document: dict[str, Any],
+        format_metadata: dict[str, Any],
+        header_logos: list[dict[str, Any]],
+        footer_logos: list[dict[str, Any]],
+        docx_bytes: bytes,
+        report: IntegrityReport | None,
+    ) -> tuple[bytes, IntegrityReport | None, dict[str, Any], dict[str, Any]]:
+        """One grounded recovery pass; returns the preferred ``(docx, report, store, document)``.
+
+        Never raises: any failure keeps the first draft and is recorded in
+        ``parse_meta.integrity_recovery``.
+        """
+        meta: dict[str, Any] = {"used": False}
+        try:
+            source_text = (candidate.extracted_data or {}).get("raw_text") or ""
+            if report is not None and integrity_recovery.should_recover(report, store, source_text):
+                from app.services.output_integrity import _docx_text
+
+                new_store, meta = integrity_recovery.recover_store(
+                    source_text, store, report, _docx_text(docx_bytes)
+                )
+                meta = dict(meta)
+                if meta.get("used"):
+                    new_doc = self._generate_professional_document(
+                        apply_store_to_candidate_data(detailed_data, new_store), format_metadata
+                    )
+                    new_doc = attach_unassigned_experience(new_doc, new_store, format_metadata)
+                    for key in ("company_footer_lines", "company_header_lines",
+                                "client_header_text", "client_footer_text"):
+                        if key in document:
+                            new_doc[key] = document[key]
+                    findings = self._soften_missing_section_findings(
+                        validate_format_document(new_doc, format_metadata, kb=None), new_store, new_doc
+                    )
+                    if has_critical_findings(findings):
+                        meta["preferred"] = False
+                        meta["error"] = "format_validation"
+                    else:
+                        new_docx = self._render_with_format_strategy(
+                            new_doc, format_metadata, header_logos, footer_logos, client_format=client_format
+                        )
+                        new_report = self._integrity_report(
+                            new_store, new_docx, new_doc, format_metadata, client_format, candidate
+                        )
+                        meta["preferred"] = bool(
+                            new_report is not None and integrity_recovery.prefer_recovered(report, new_report)
+                        )
+                        if meta["preferred"]:
+                            store, docx_bytes, report, document = new_store, new_docx, new_report, new_doc
+                            candidate.extracted_data = {
+                                **(candidate.extracted_data or {}),
+                                "structured_resume": store,
+                            }
+        except Exception as exc:  # noqa: BLE001 - recovery must never fail generation
+            logger.warning("integrity_recovery_failed", error_type=type(exc).__name__)
+            meta = {**meta, "preferred": False, "error": type(exc).__name__}
+        store["parse_meta"] = {**(store.get("parse_meta") or {}), "integrity_recovery": meta}
+        return docx_bytes, report, store, document
 
     def generate(self, candidate: Candidate, client_format: ClientFormat) -> bytes:
         self.last_report = None
@@ -268,7 +334,12 @@ class ResumeGenerationService:
             )
             raise ResumeGenerationError(f"Failed to render DOCX: {e}") from e
 
-        self.last_report = self._integrity_report(store, docx_bytes, document, format_metadata, client_format, candidate)
+        report = self._integrity_report(store, docx_bytes, document, format_metadata, client_format, candidate)
+        docx_bytes, report, store, document = self._maybe_integrity_recover(
+            candidate, client_format, store, detailed_data, document, format_metadata,
+            header_logos, footer_logos, docx_bytes, report,
+        )
+        self.last_report = report
 
         safe_client = sanitize_filename(getattr(client_format, "client_id", None) or "client")
         object_key = f"resumes/{candidate.recruiter_id}/generated/{candidate.id}_{safe_client}.docx"

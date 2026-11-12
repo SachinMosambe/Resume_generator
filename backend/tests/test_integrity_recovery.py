@@ -257,3 +257,157 @@ def test_recover_store_timeout_reports_budget_calls_and_no_estimate():
 
     assert meta["used"] is False
     assert meta["missing_out_estimate"] is None
+
+
+# ---------------------------------------------------------------------------
+# Wiring into ResumeGenerationService
+# ---------------------------------------------------------------------------
+
+import io
+from types import SimpleNamespace
+
+from docx import Document
+
+from app.services.resume_generation_service import ResumeGenerationService
+
+
+def _docx(text: str) -> bytes:
+    buf = io.BytesIO()
+    doc = Document()
+    doc.add_paragraph(text)
+    doc.save(buf)
+    return buf.getvalue()
+
+
+def _ok_report(hard=0):
+    return IntegrityReport(status="passed", checks={"source_lines": {"ok": hard == 0, "hard": hard}}, warnings=[])
+
+
+class _Wiring:
+    """Service with the heavy collaborators stubbed; records what was called."""
+
+    def __init__(self, monkeypatch, *, first_hard=3, second_hard=0, recovered=True, enabled=True):
+        self.svc = ResumeGenerationService()
+        self.recover_calls = []
+        self.render_calls = 0
+        self.reports = [_ok_report(second_hard)]
+        self.new_store = {"experience": [{"company": "Acme Corp"}], "raw_text": SOURCE, "parse_meta": {}}
+        self.old_store = {"experience": [], "raw_text": SOURCE, "parse_meta": {}}
+        self.first_report = _ok_report(first_hard)
+        if enabled:
+            _enable(monkeypatch)
+        else:
+            monkeypatch.setattr(settings, "RESUME_INTEGRITY_RECOVERY", False)
+
+        def fake_recover(source_text, store, report, output_text="", *, client=None):
+            self.recover_calls.append((source_text, output_text))
+            if recovered:
+                return self.new_store, {"used": True, "llm_calls": 2, "error": ""}
+            return store, {"used": False, "llm_calls": 1, "error": "no_roles"}
+
+        def fake_render(document, *a, **k):
+            self.render_calls += 1
+            return _docx("recovered output")
+
+        monkeypatch.setattr(ir, "recover_store", fake_recover)
+        monkeypatch.setattr(self.svc, "_render_with_format_strategy", fake_render)
+        monkeypatch.setattr(
+            self.svc, "_generate_professional_document",
+            lambda data, meta: {"sections": [{"title": "Experience"}], "marker": "new"},
+        )
+        monkeypatch.setattr(self.svc, "_integrity_report", lambda *a, **k: self.reports[0])
+        monkeypatch.setattr(
+            "app.services.resume_generation_service.validate_format_document", lambda *a, **k: []
+        )
+        self.candidate = SimpleNamespace(
+            id="c1", extracted_data={"raw_text": SOURCE, "structured_resume": self.old_store}
+        )
+        self.client_format = SimpleNamespace(id="f1", format_metadata={})
+
+    def run(self):
+        original_docx = _docx("original output")
+        self.original_docx = original_docx
+        self.original_doc = {"sections": [], "marker": "old", "company_footer_lines": ["Footer"]}
+        return self.svc._maybe_integrity_recover(
+            self.candidate, self.client_format, self.old_store, {"experience": []},
+            self.original_doc, {}, [], [], original_docx, self.first_report,
+        )
+
+
+def test_maybe_integrity_recover_prefers_better_recovered_draft(monkeypatch):
+    w = _Wiring(monkeypatch, first_hard=3, second_hard=0)
+    docx_bytes, report, store, document = w.run()
+
+    assert len(w.recover_calls) == 1
+    assert "original output" in w.recover_calls[0][1]  # DOCX text passed as output_text
+    assert w.render_calls == 1
+    assert report is w.reports[0]
+    assert docx_bytes != w.original_docx
+    assert store["experience"] == [{"company": "Acme Corp"}]
+    assert document["marker"] == "new"
+    assert document["company_footer_lines"] == ["Footer"]  # branding carried over
+    assert w.candidate.extracted_data["structured_resume"] is store
+    meta = store["parse_meta"]["integrity_recovery"]
+    assert meta["used"] is True and meta["preferred"] is True
+
+
+def test_maybe_integrity_recover_keeps_original_when_recovery_not_better(monkeypatch):
+    w = _Wiring(monkeypatch, first_hard=3, second_hard=3)
+    docx_bytes, report, store, document = w.run()
+
+    assert w.render_calls == 1
+    assert report is w.first_report
+    assert docx_bytes == w.original_docx
+    assert store is w.old_store
+    assert document is w.original_doc
+    meta = store["parse_meta"]["integrity_recovery"]
+    assert meta["used"] is True and meta["preferred"] is False
+
+
+def test_maybe_integrity_recover_skips_render_when_recovery_unused(monkeypatch):
+    w = _Wiring(monkeypatch, recovered=False)
+    docx_bytes, report, store, _ = w.run()
+
+    assert w.render_calls == 0
+    assert docx_bytes == w.original_docx
+    assert report is w.first_report
+    assert store["parse_meta"]["integrity_recovery"]["used"] is False
+    assert store["parse_meta"]["integrity_recovery"]["error"] == "no_roles"
+
+
+def test_maybe_integrity_recover_noop_when_not_needed_or_disabled(monkeypatch):
+    w = _Wiring(monkeypatch, first_hard=0)
+    w.old_store["experience"] = [{"company": "Acme Corp"}]  # roles present: nothing to recover
+    _, report, store, _ = w.run()
+    assert w.recover_calls == [] and w.render_calls == 0
+    assert report is w.first_report
+    assert store["parse_meta"]["integrity_recovery"] == {"used": False}
+
+    w = _Wiring(monkeypatch, first_hard=3, enabled=False)
+    w.run()
+    assert w.recover_calls == [] and w.render_calls == 0
+
+
+def test_maybe_integrity_recover_never_raises_when_rerender_fails(monkeypatch):
+    w = _Wiring(monkeypatch)
+
+    def boom(*a, **k):
+        raise RuntimeError("render exploded")
+
+    monkeypatch.setattr(w.svc, "_render_with_format_strategy", boom)
+    docx_bytes, report, store, document = w.run()
+
+    assert docx_bytes == w.original_docx
+    assert report is w.first_report
+    assert document is w.original_doc
+    meta = store["parse_meta"]["integrity_recovery"]
+    assert meta["preferred"] is False
+    assert meta["error"] == "RuntimeError"
+
+
+def test_maybe_integrity_recover_skips_when_report_missing(monkeypatch):
+    w = _Wiring(monkeypatch)
+    w.first_report = None
+    _, report, _, _ = w.run()
+    assert report is None
+    assert w.recover_calls == []
