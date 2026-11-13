@@ -1,8 +1,7 @@
 import json
 import logging
 import asyncio
-import os
-from typing import Any, AsyncIterator
+from typing import Any
 from concurrent.futures import ThreadPoolExecutor
 
 import botocore.exceptions
@@ -12,8 +11,6 @@ from app.services.interview_llm.token_tracker import estimate_cost, token_tracke
 
 try:
     import boto3
-    from botocore.auth import SigV4Auth
-    from botocore.awsrequest import AWSRequest
     import botocore.parsers
 except ImportError:
     raise ImportError("boto3 is required for Bedrock integration. Install it with: pip install boto3")
@@ -70,23 +67,10 @@ class BedrockInterviewClient:
 
     def _configure_bearer_token_auth(self) -> None:
         """Configure bearer token authentication for Bedrock API calls."""
-        original_make_request = self.client._make_api_call
-
-        def make_request_with_bearer_token(operation_name, api_params):
-            # Intercept and add bearer token to the request
-            try:
-                result = original_make_request(operation_name, api_params)
-                return result
-            except Exception as exc:
-                # If auth fails, try with bearer token in headers
-                if "UnauthorizedException" in str(exc) or "AuthorizationException" in str(exc):
-                    logger.debug("Retrying with bearer token authentication")
-                raise
-
         # Add bearer token to the session headers
         if hasattr(self.client, "_session"):
             session = self.client._session
-            session.user_agent_extra = f"bearer-token-auth"
+            session.user_agent_extra = "bearer-token-auth"
 
         # Set up custom event handler for adding bearer token
         def add_bearer_token(request, **kwargs):
@@ -374,68 +358,4 @@ class BedrockInterviewClient:
             if msg.get("role") == "system":
                 return msg.get("content", "")
         return ""
-
-    @traceable(name="Bedrock Stream Completion", run_type="llm")
-    async def stream_completion(
-        self,
-        model: str,
-        messages: list[dict[str, str]],
-        *,
-        temperature: float = 0.4,
-        max_tokens: int = 2048,
-    ) -> AsyncIterator[str]:
-        """Stream completion from Bedrock model."""
-        if not self.settings.AWS_BEARER_TOKEN_BEDROCK:
-            raise BedrockError("AWS_BEARER_TOKEN_BEDROCK is not configured.")
-
-        try:
-            # Prepare the prompt
-            prompt = self._prepare_bedrock_messages(messages)
-
-            # Prepare request body for Bedrock streaming
-            body = json.dumps({
-                "messages": [{"role": "user", "content": prompt}],
-                "max_tokens": max_tokens,
-                "temperature": temperature,
-                "system": self._extract_system_prompt(messages),
-            })
-
-            # Run streaming in executor
-            loop = asyncio.get_event_loop()
-            async for chunk in await asyncio.wait_for(
-                loop.run_in_executor(
-                    self._executor,
-                    self._stream_bedrock,
-                    model,
-                    body,
-                ),
-                timeout=120.0,
-            ):
-                yield chunk
-
-        except asyncio.TimeoutError:
-            raise BedrockError("Stream request timeout")
-
-    def _stream_bedrock(self, model: str, body: str) -> AsyncIterator[str]:
-        """Synchronous wrapper for Bedrock streaming API call."""
-        try:
-            response = self.client.invoke_model_with_response_stream(
-                modelId=model,
-                body=body,
-                contentType="application/json",
-            )
-
-            event_stream = response.get("body")
-            for event in event_stream:
-                if "chunk" in event:
-                    chunk = json.loads(event["chunk"]["bytes"].decode("utf-8"))
-                    if "content" in chunk:
-                        content = chunk["content"]
-                        if isinstance(content, list) and len(content) > 0:
-                            yield content[0].get("text", "")
-                    elif "output" in chunk:
-                        yield chunk["output"]
-
-        except Exception as exc:
-            raise BedrockError(f"Stream failed: {exc}") from exc
 

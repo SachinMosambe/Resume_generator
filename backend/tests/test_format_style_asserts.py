@@ -61,7 +61,6 @@ def _offline_pipeline(tmp_path_factory):
     mp = pytest.MonkeyPatch()
     mp.setenv("RESUME_LLM_CONDENSE", "false")
     mp.setenv("RESUME_AGENT_PIPELINE", "false")
-    mp.setenv("RESUME_LLM_POLISH", "false")
     mp.setattr(rgs, "upload_bytes_to_key", lambda **kwargs: None)
     yield
     mp.undo()

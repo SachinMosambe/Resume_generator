@@ -20,6 +20,21 @@ cd "$APP_DIR"
 source .venv/bin/activate
 pip install -r requirements.txt
 
+# Prefer SSM-backed env when the parameter exists (CI/CD path).
+if [[ ! -f .env ]] || [[ "${RESUME_FORCE_ENV_SYNC:-}" == "1" ]]; then
+  if command -v aws >/dev/null 2>&1; then
+    echo "==> Syncing .env from SSM Parameter Store"
+    bash "$(dirname "$0")/ensure-env-from-ssm.sh" || {
+      echo "WARN: SSM env sync failed; continuing with existing .env if present" >&2
+    }
+  fi
+fi
+
+if [[ ! -f .env ]]; then
+  echo "ERROR: missing ${APP_DIR}/.env — create it or put dotenv at /resume-generator/prod/env in SSM" >&2
+  exit 1
+fi
+
 # Stamp health so you can verify the live build.
 if grep -q '^APP_BUILD_ID=' .env 2>/dev/null; then
   sed -i "s/^APP_BUILD_ID=.*/APP_BUILD_ID=${BUILD_ID}/" .env

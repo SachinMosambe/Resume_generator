@@ -77,58 +77,6 @@ def resolve_target_pages(pages_full: float, configured: float = 5.0) -> float:
     return round(min(6.0, max(configured, scaled)), 2)
 
 
-def light_trim_store(store: dict[str, Any]) -> dict[str, Any]:
-    """
-    Keep nearly all content for long careers.
-
-    Only soft-shortens mega-paragraph bullets; never drops roles/projects/bullets.
-    """
-    fitted = copy.deepcopy(store)
-    fitted["summary"] = _fit_summary(str(fitted.get("summary") or ""), max_chars=2200)
-    experience = []
-    for role in fitted.get("experience") or []:
-        if not isinstance(role, dict):
-            continue
-        clone = dict(role)
-        clone["description"] = [
-            _shorten_bullet_keep_core(str(b), max_chars=340)
-            for b in (role.get("description") or [])
-            if str(b).strip()
-        ]
-        experience.append(clone)
-    fitted["experience"] = experience
-    projects = []
-    for proj in fitted.get("projects") or []:
-        if not isinstance(proj, dict):
-            continue
-        clone = dict(proj)
-        clone["description"] = [
-            _shorten_bullet_keep_core(str(b), max_chars=300)
-            for b in (proj.get("description") or [])
-            if str(b).strip()
-        ]
-        projects.append(clone)
-    fitted["projects"] = projects
-    fitted["stats"] = {
-        **(fitted.get("stats") or {}),
-        "experience_count": len(experience),
-        "experience_bullets": sum(len(r.get("description") or []) for r in experience),
-        "projects_count": len(projects),
-        "light_trimmed": True,
-    }
-    fitted["fit"] = {
-        "applied": False,
-        "mode": "light_trim",
-        "pages_before": round(estimate_pages(store), 2),
-        "pages_after": round(estimate_pages(fitted), 2),
-        "roles_kept": len(experience),
-        "bullets_kept": fitted["stats"]["experience_bullets"],
-        "projects_kept": len(projects),
-    }
-    logger.info("resume_light_trim_applied", **fitted["fit"])
-    return fitted
-
-
 def moderate_summarize_store(store: dict[str, Any]) -> dict[str, Any]:
     """
     Better client summary for long careers — not aggressive.

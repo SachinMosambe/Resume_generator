@@ -41,8 +41,8 @@ def runner(tmp_path_factory):
     for key in (
         "RESUME_LLM_CONDENSE",
         "RESUME_AGENT_PIPELINE",
-        "RESUME_LLM_POLISH",
         "RESUME_LLM_PARSE_FALLBACK",
+        "RESUME_LLM_LINE_EXTRACT",
         "UPLOAD_DIR",
     ):
         mp.setenv(key, "false")
@@ -52,6 +52,7 @@ def runner(tmp_path_factory):
     from app.core.config import settings
 
     mp.setattr(settings, "RESUME_LLM_PARSE_FALLBACK", False)
+    mp.setattr(settings, "RESUME_LLM_LINE_EXTRACT", False)
     spec = importlib.util.spec_from_file_location("corpus_quality_eval_under_test", SCRIPT)
     module = importlib.util.module_from_spec(spec)
     sys.modules[spec.name] = module

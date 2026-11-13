@@ -10,7 +10,6 @@ ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 
 os.environ.setdefault("RESUME_LLM_CONDENSE", "false")
-os.environ.setdefault("RESUME_LLM_POLISH", "false")
 os.environ.setdefault("RESUME_AGENT_PIPELINE", "false")
 
 import app.services.resume_generation_service as rgs

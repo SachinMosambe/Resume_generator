@@ -7,7 +7,6 @@ import uuid
 from pathlib import Path
 
 os.environ.setdefault("RESUME_LLM_CONDENSE", "false")
-os.environ.setdefault("RESUME_LLM_POLISH", "false")
 os.environ.setdefault("RESUME_AGENT_PIPELINE", "false")
 
 ROOT = Path(__file__).resolve().parents[1]

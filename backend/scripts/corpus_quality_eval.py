@@ -32,11 +32,11 @@ from pathlib import Path
 _TMP = Path(tempfile.mkdtemp(prefix="corpus_eval_"))
 os.environ["RESUME_LLM_CONDENSE"] = "false"
 os.environ["RESUME_AGENT_PIPELINE"] = "false"
-os.environ["RESUME_LLM_POLISH"] = "false"
 os.environ["UPLOAD_DIR"] = str(_TMP / "uploads")
 if "--golden" in sys.argv:
     # Golden gates measure deterministic parsing only: no LLM repair, ever.
     os.environ["RESUME_LLM_PARSE_FALLBACK"] = "false"
+    os.environ["RESUME_LLM_LINE_EXTRACT"] = "false"
 os.environ.pop("AWS_BEARER_TOKEN_BEDROCK", None)
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -874,6 +874,9 @@ def run_golden(args) -> int:
 
     if settings.RESUME_LLM_PARSE_FALLBACK:
         print("ERROR: RESUME_LLM_PARSE_FALLBACK must be false for golden runs", file=sys.stderr)
+        return 2
+    if settings.RESUME_LLM_LINE_EXTRACT:
+        print("ERROR: RESUME_LLM_LINE_EXTRACT must be false for golden runs", file=sys.stderr)
         return 2
     manifest = json.loads((GOLDEN_DIR / "manifest.json").read_text(encoding="utf-8"))
     lax = ambiguous_status_problems(manifest)

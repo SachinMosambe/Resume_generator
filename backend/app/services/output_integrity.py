@@ -240,12 +240,6 @@ def list_missing_hard_source_lines(
     return list(dict.fromkeys(missing))
 
 
-def _source_lines_missing(source_text: str, hay: str, *, min_words: int = 6, min_share: float = 0.3) -> int:
-    """Count substantial source lines whose wording is mostly absent from the output."""
-    r = _classify_source_lines(source_text, hay, [], min_words=min_words, min_share=min_share)
-    return r["hard"] + r["soft"]
-
-
 def _find_all(padded: str, needle: str) -> list[int]:
     if not needle:
         return []

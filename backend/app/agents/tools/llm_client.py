@@ -37,17 +37,6 @@ def is_rate_limit_error(exc: BaseException) -> bool:
     )
 
 
-def is_auth_error(exc: BaseException) -> bool:
-    """True when Bedrock rejected the call due to invalid/missing credentials."""
-    message = str(exc).lower()
-    return (
-        "401" in message
-        or "unauthorized" in message
-        or "authentication" in message
-        or "bearer" in message and "not configured" in message
-    )
-
-
 def _messages_to_dicts(messages: list) -> list[dict[str, str]]:
     out: list[dict[str, str]] = []
     for msg in messages:
@@ -309,14 +298,3 @@ def llm_call_json_with_metrics(
     return LLMJsonCallResult(data=data, metrics=metrics)
 
 
-def llm_call_json(
-    system_prompt: str,
-    user_prompt: str,
-    *,
-    model: str | None = None,
-    provider: str | None = None,
-) -> dict:
-    """Make a Bedrock LLM call and parse/repair the response as JSON."""
-    return llm_call_json_with_metrics(
-        system_prompt, user_prompt, model=model, provider=provider
-    ).data

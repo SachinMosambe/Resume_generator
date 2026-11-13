@@ -52,10 +52,6 @@ def get_aptino_company_footer_lines() -> list[str]:
 
 
 # Backward-compatible alias (older code referred to these as "company header").
-def get_aptino_company_header_lines() -> list[str]:
-    return get_aptino_company_footer_lines()
-
-
 def get_aptino_default_metadata() -> dict[str, Any]:
     """Return format metadata used as the default Aptino resume template."""
     from app.models.format_schema import normalize_format_metadata

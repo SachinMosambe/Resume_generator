@@ -24,8 +24,6 @@ services:
         value: "true"
       - key: APP_BUILD_ID
         value: "render"
-      - key: RESUME_LLM_POLISH
-        value: "false"
       - key: RESUME_AGENT_PIPELINE
         value: "false"
       - key: AGENT_MAX_ROUNDS

@@ -387,8 +387,7 @@ class FormatExtractionService:
             import pdfplumber
             import base64
             from io import BytesIO
-            from PIL import Image
-            
+
             logger.info("Attempting pdfplumber image extraction...")
             with pdfplumber.open(str(path)) as pdf:
                 if len(pdf.pages) > 0:
@@ -432,7 +431,6 @@ class FormatExtractionService:
             from pdf2image import convert_from_path
             import base64
             from io import BytesIO
-            from PIL import Image
             
             logger.info("Attempting pdf2image screenshot extraction...")
             pil_images = convert_from_path(str(path), first_page=1, last_page=1, dpi=200)
@@ -989,14 +987,6 @@ class FormatExtractionService:
             deduped.append(logo)
         return deduped
 
-    def _extract_docx_header_logos(self, document: Any) -> list[dict]:
-        """Backward-compatible wrapper."""
-        return self._extract_docx_container_images(document, region="header")
-
-    def _extract_docx_footer_logos(self, document: Any) -> list[dict]:
-        """Backward-compatible wrapper."""
-        return self._extract_docx_container_images(document, region="footer")
-
     def _extract_docx_top_body_logos(self, document: Any) -> list[dict]:
         """Fallback: extract images in top body content (header-like area)."""
         logos: list[dict] = []
@@ -1038,10 +1028,6 @@ class FormatExtractionService:
         except Exception as exc:
             logger.warning("DOCX top-body logo extraction failed: %s", exc)
         return logos
-
-    def _infer_sections(self, text: str) -> list[str]:
-        sections, _labels = self._infer_sections_with_labels(text)
-        return sections
 
     def _infer_sections_with_labels(self, text: str) -> tuple[list[str], dict[str, str]]:
         """Detect section order and the exact heading labels used in the template."""

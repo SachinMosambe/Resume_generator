@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import json
-import re
 import shutil
 import uuid
 from datetime import datetime, timezone
@@ -252,6 +251,3 @@ def load_client_format(format_id: str, client_id: str = "") -> ClientFormat:
     )
 
 
-def slugify_name(name: str) -> str:
-    slug = re.sub(r"[^a-zA-Z0-9]+", "-", (name or "").strip()).strip("-").lower()
-    return slug or "format"

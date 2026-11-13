@@ -33,11 +33,6 @@ def polish_store_for_readability(store: dict[str, Any], *, target_pages: float =
     return _run_grounded_store_llm(store, mode="readable", target_pages=target_pages)
 
 
-def condense_store_with_llm(store: dict[str, Any], *, target_pages: float = 5.0) -> dict[str, Any] | None:
-    """Alias — readable polish (not aggressive compression)."""
-    return polish_store_for_readability(store, target_pages=target_pages)
-
-
 def polish_store_with_llm(store: dict[str, Any]) -> dict[str, Any] | None:
     """Professional rewrite for normal-sized / mashed resumes."""
     return _run_grounded_store_llm(store, mode="polish", target_pages=5.0)

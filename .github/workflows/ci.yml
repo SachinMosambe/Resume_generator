@@ -43,8 +43,8 @@ jobs:
         env:
           RESUME_LLM_CONDENSE: "false"
           RESUME_AGENT_PIPELINE: "false"
-          RESUME_LLM_POLISH: "false"
           RESUME_LLM_PARSE_FALLBACK: "false"
+          RESUME_LLM_LINE_EXTRACT: "false"
 
   golden:
     runs-on: ubuntu-latest
@@ -66,6 +66,6 @@ jobs:
         env:
           RESUME_LLM_CONDENSE: "false"
           RESUME_AGENT_PIPELINE: "false"
-          RESUME_LLM_POLISH: "false"
           RESUME_LLM_PARSE_FALLBACK: "false"
+          RESUME_LLM_LINE_EXTRACT: "false"
           RESUME_OCR_ENABLED: "true"

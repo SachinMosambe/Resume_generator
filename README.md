@@ -23,7 +23,9 @@ cp .env.example .env
 uvicorn app.main:app --reload --port 8000
 ```
 
-No API keys are needed: the default faithful mode makes no LLM calls.
+With `AWS_BEARER_TOKEN_BEDROCK` set, work history is read by the LLM on every resume
+(see "Work history reading" below). Without a token the app still runs, using the
+rule-based parser only.
 
 Tests and fidelity checks (synthetic fixtures only; no real resumes are committed):
 
@@ -79,6 +81,21 @@ the client format does not list (Publications, Volunteering, Patents, …) under
 original titles. The document grows to as many pages as the content needs. Text is not
 rewritten; spellings such as `CapitalOne` stay as the candidate wrote them.
 
+**Work history reading.** Job titles, employers and dates are found by the Bedrock
+model (`BEDROCK_MODEL`) on every resume, so unusual layouts and headings still produce
+roles. The model only points at numbered source lines; it never writes resume text:
+
+1. It marks where each section starts (any heading wording, or none).
+2. For each job it names the header lines and the exact title / company / dates it read.
+   Each value must appear verbatim on the line it cites, or it is dropped.
+3. Every other experience line is attached to the job whose header is above it. Lines
+   above the first job header are kept as "Role details need review".
+4. The result replaces the rule-based parse only when it explains more of the source and
+   does not merge several jobs into one. On any Bedrock error the rule-based parse is used.
+
+Cost: 2–4 model calls and roughly 5–20 seconds per resume. `parse_meta.line_extract`
+records which parse was used and why. Set `RESUME_LLM_LINE_EXTRACT=false` to turn it off.
+
 **Review status** comes from a mechanical check that compares normalized text of the
 parsed source fields against the generated DOCX. It is a text-presence check, not a
 semantic verification, and never a guarantee of 100% accuracy.
@@ -106,6 +123,7 @@ reported as a warning rather than happening silently.
 | Variable | Default | Purpose |
 |----------|---------|---------|
 | `RESUME_OUTPUT_MODE` | `faithful` | `condensed` restores the legacy page-fit behaviour. |
+| `RESUME_LLM_LINE_EXTRACT` | `true` | LLM reads work history on every resume (needs `AWS_BEARER_TOKEN_BEDROCK`). Forced off in tests and golden CI. |
 | `RESUME_LLM_CONDENSE` | `false` | Condensed mode only: optional Bedrock polish. Requires `AWS_BEARER_TOKEN_BEDROCK`. |
 | `RESUME_AGENT_PIPELINE` | `false` | Experimental agent pipeline. |
 | `RESUME_OCR_ENABLED` | `true` | Use Tesseract for image-only pages when it is installed. |

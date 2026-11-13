@@ -8,14 +8,12 @@ class Settings(BaseSettings):
 
     model_config = SettingsConfigDict(env_file=".env", extra="ignore")
 
-    APP_ENV: str = "development"
-
     # LLM — AWS Bedrock
     BEDROCK_MODEL: str = "google.gemma-3-27b-it"
     LLM_MAX_TOKENS: int = 2048
     # Full multi-role resumes need large JSON output; 4096/8192 truncates mid-word.
     RESUME_GENERATION_MAX_TOKENS: int = 16384
-    # faithful (default): every source fact is kept; page count grows as needed; no LLM calls.
+    # faithful (default): every source fact is kept, text is never rewritten; page count grows as needed.
     # condensed: legacy page-fit + optional LLM polish (RESUME_LLM_CONDENSE). Never edits the source store.
     RESUME_OUTPUT_MODE: str = "faithful"
     # Page target used only in condensed mode.
@@ -29,13 +27,18 @@ class Settings(BaseSettings):
     RESUME_OCR_LANG: str = "eng"
     # Optional deploy stamp so /api/health can prove which build is live.
     APP_BUILD_ID: str = "dev"
-    # When false (default), skip slow full-document LLM polish loops.
-    RESUME_LLM_POLISH: bool = False
-    # Optional one-shot, source-checked LLM structure repair when the deterministic parse is
-    # weak. Golden/scored CI forces it off (deterministic). Rejected output is discarded.
-    # Accuracy-first: eligible weak parses may call Bedrock once (source-checked). Golden CI forces off.
+    # One-shot, source-checked LLM repair of a weak rule parse, used when line extraction
+    # (below) is off or was not chosen. Rejected output is discarded. Golden CI forces it off.
     RESUME_LLM_PARSE_FALLBACK: bool = True
     RESUME_LLM_PARSE_TIMEOUT_SECONDS: float = 45.0
+    # Grounded line-number extraction of work history on every resume (Bedrock). The model
+    # answers with line numbers; text is copied from the source and checked. The rule parse
+    # is kept whenever it explains the source as well, or when Bedrock is unavailable.
+    # Golden CI and the test suite force it off (deterministic).
+    RESUME_LLM_LINE_EXTRACT: bool = True
+    # Reads that fail the quality gate (low coverage, a dated line outside every job
+    # heading, merged jobs, many rejected fields) are retried once with those lines named.
+    RESUME_LLM_LINE_EXTRACT_MAX_ATTEMPTS: int = 2
     # Post-integrity Bedrock recovery is enabled only when a Bedrock token is configured.
     RESUME_INTEGRITY_RECOVERY: bool = True
     RESUME_INTEGRITY_RECOVERY_MAX_CALLS: int = 4

@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-from io import BytesIO
 from pathlib import Path
 from typing import Any
 from xml.sax.saxutils import escape
@@ -25,7 +24,7 @@ from app.agents.prompts.templates import (
     CLIENT_RESUME_REWRITER_PROMPT,
     CLIENT_RESUME_REWRITER_SYSTEM,
 )
-from app.agents.resume_generation_agent import build_resume_document, normalize_resume_document
+from app.agents.resume_generation_agent import normalize_resume_document
 from app.agents.tools.llm_client import llm_call_json_with_metrics
 from app.models.candidate import Candidate
 from app.models.client_format import ClientFormat
@@ -408,7 +407,19 @@ class ResumeGenerationService:
                 logger.error("detailed_parse_failed", candidate_id=str(candidate.id), error=str(e))
             # Gated by RESUME_LLM_PARSE_FALLBACK (default on; golden CI forces it off): at most
             # one source-checked LLM structure repair per generation, only for weak parses.
-            if detailed_data and getattr(settings, "RESUME_LLM_PARSE_FALLBACK", False):
+            from app.services import llm_line_extractor
+
+            line_extract_used = False
+            if detailed_data and llm_line_extractor.enabled():
+                detailed_data = llm_line_extractor.apply_line_extraction(resume_text, detailed_data)
+                line_extract_used = bool(
+                    (detailed_data.get("parse_meta") or {}).get("line_extract", {}).get("used")
+                )
+            if (
+                detailed_data
+                and not line_extract_used
+                and getattr(settings, "RESUME_LLM_PARSE_FALLBACK", False)
+            ):
                 try:
                     from app.services.llm_structure_repair import maybe_repair_parse
 
@@ -1141,31 +1152,6 @@ class ResumeGenerationService:
             llm_compose_used=llm_used,
         )
         return best_document
-
-    def _polish_summary_only(self, candidate_data: dict[str, Any], summary: str) -> str:
-        """Optional light polish for summary text only — never touches experience/skills."""
-        text = str(summary or "").strip()
-        if len(text) < 80:
-            return text
-        try:
-            from app.agents.tools.llm_client import llm_call
-
-            polished = llm_call(
-                "You polish professional resume summaries. Preserve all facts, technologies, "
-                "domains, and years of experience. Do not invent content. Return plain text only.",
-                (
-                    "Polish this professional summary for clarity and impact while keeping EVERY fact:\n\n"
-                    f"{text[:5000]}\n\n"
-                    f"Target role: {candidate_data.get('job_role') or candidate_data.get('job_title') or ''}"
-                ),
-                max_tokens=1200,
-            )
-            cleaned = re.sub(r"\s+", " ", str(polished or "").strip())
-            if cleaned and len(cleaned) >= max(120, int(len(text) * 0.55)):
-                return cleaned
-        except Exception as exc:
-            logger.warning("summary_polish_failed", error=str(exc))
-        return text
 
     def _experience_bullet_count(self, document: dict[str, Any]) -> int:
         total = 0
@@ -1983,20 +1969,6 @@ class ResumeGenerationService:
         if not cleaned:
             return self._group_skills_for_resume(candidate_data.get("skills"))
         return self._compact_skill_groups(cleaned)
-
-    def _normalize_summary_text(self, value: Any) -> str:
-        text = str(value or "")
-        if not text.strip():
-            return ""
-        parts = [self._clean_inline_text(p) for p in re.split(r"[•\n]+", text)]
-        parts = [p for p in parts if p and not self._is_resume_noise_line(p)]
-        parts = self._dedupe_text(parts)
-        if not parts:
-            return ""
-        # Preserve substantive summaries; polish happens optionally, not by hard clipping.
-        joined = " ".join(parts)
-        joined = re.sub(r"\s+", " ", joined).strip()
-        return joined
 
     def _repair_bullet_sentences(self, values: list[Any], header_contact: str = "") -> list[str]:
         """Repair parser-split bullet lines into clean sentence bullets."""
@@ -3419,174 +3391,6 @@ class ResumeGenerationService:
             result.append(clean)
         return result
 
-    def _candidate_to_data(self, candidate: Candidate) -> dict[str, Any]:
-        """Legacy method - kept for backward compatibility."""
-        extracted = candidate.extracted_data or {}
-        return {
-            "name": candidate.name or extracted.get("name"),
-            "email": candidate.email or extracted.get("email"),
-            "phone": candidate.phone or extracted.get("phone"),
-            "location": candidate.location or extracted.get("location"),
-            "job_applied": candidate.job_applied,
-            "job_role": candidate.job_role,
-            "client_name": candidate.client_name,
-            "summary": extracted.get("summary", ""),
-            "skills": candidate.skills_matched or extracted.get("skills", []),
-            "experience": extracted.get("experience") or [],
-            "education": extracted.get("education") or [],
-            "projects": extracted.get("projects", []),
-            "certifications": extracted.get("certifications", []),
-            "extracted_data": extracted,
-        }
-
-    def _render_pdf(self, document: dict[str, Any], metadata: dict[str, Any] | None) -> bytes:
-        try:
-            from reportlab.lib import colors
-            from reportlab.lib.pagesizes import A4
-            from reportlab.lib.styles import ParagraphStyle, getSampleStyleSheet
-            from reportlab.lib.units import mm
-            from reportlab.platypus import Paragraph, SimpleDocTemplate, Spacer, Image
-            from reportlab.platypus.frames import Frame
-            from reportlab.platypus.doctemplate import PageTemplate
-        except ImportError as exc:  # pragma: no cover - depends on runtime deps
-            raise ResumeGenerationError("reportlab is required to generate client resumes") from exc
-
-        styling = (metadata or {}).get("styling") or {}
-        body_size = int(styling.get("font_size_body") or 10)
-        header_size = int(styling.get("font_size_header") or 10)
-        
-        # Get client info for footer
-        client_name = document.get("client_name") or ""
-        from datetime import datetime
-        footer_text = f"{client_name} - Generated on {datetime.now().strftime('%B %d, %Y')}" if client_name else f"Generated on {datetime.now().strftime('%B %d, %Y')}"
-        
-        # Logo URL from metadata
-        logo_url = metadata.get("logo_url") if metadata else None
-
-        buffer = BytesIO()
-        doc = SimpleDocTemplate(
-            buffer,
-            pagesize=A4,
-            rightMargin=16 * mm,
-            leftMargin=16 * mm,
-            topMargin=20 * mm if logo_url else 14 * mm,
-            bottomMargin=18 * mm,
-        )
-        
-        # Define header/footer callback
-        def header_footer(canvas, doc):
-            canvas.saveState()
-            
-            # Add logo at top right if available
-            if logo_url:
-                try:
-                    # Logo size: max 30mm width, 15mm height
-                    logo = Image(logo_url, width=30*mm, height=15*mm)
-                    logo.drawOn(canvas, doc.width + doc.leftMargin - 30*mm, doc.height + doc.topMargin - 10*mm)
-                except Exception:
-                    # If logo fails to load, skip it
-                    pass
-            
-            # Add footer at bottom
-            canvas.setFont("Helvetica", 8)
-            canvas.setFillColor(colors.HexColor("#6b7280"))
-            canvas.drawCentredString(
-                doc.width / 2 + doc.leftMargin,
-                10 * mm,
-                footer_text
-            )
-            
-            # Add line above footer
-            canvas.setStrokeColor(colors.HexColor("#e5e7eb"))
-            canvas.setLineWidth(0.5)
-            canvas.line(doc.leftMargin, 14 * mm, doc.width + doc.leftMargin, 14 * mm)
-            
-            canvas.restoreState()
-        
-        # Add page template with header/footer
-        frame = Frame(doc.leftMargin, doc.bottomMargin, doc.width, doc.height, id='normal')
-        template = PageTemplate(id='resume_template', frames=frame, onPage=header_footer)
-        doc.addPageTemplates([template])
-        
-        base_styles = getSampleStyleSheet()
-        title_style = ParagraphStyle(
-            "ClientResumeTitle",
-            parent=base_styles["Title"],
-            fontName="Helvetica-Bold",
-            fontSize=header_size + 4,
-            leading=header_size + 8,
-            textColor=colors.HexColor("#111827"),
-            spaceAfter=4,
-        )
-        role_style = ParagraphStyle(
-            "ClientResumeRole",
-            parent=base_styles["Normal"],
-            fontName="Helvetica",
-            fontSize=body_size + 1,
-            leading=body_size + 5,
-            textColor=colors.HexColor("#374151"),
-            spaceAfter=2,
-        )
-        contact_style = ParagraphStyle(
-            "ClientResumeContact",
-            parent=base_styles["Normal"],
-            fontName="Helvetica",
-            fontSize=max(9, body_size - 1),
-            leading=body_size + 3,
-            textColor=colors.HexColor("#4b5563"),
-            spaceAfter=12,
-        )
-        section_style = ParagraphStyle(
-            "ClientResumeSection",
-            parent=base_styles["Heading2"],
-            fontName="Helvetica-Bold",
-            fontSize=header_size,
-            leading=header_size + 4,
-            textColor=colors.HexColor("#111827"),
-            borderColor=colors.HexColor("#d1d5db"),
-            borderWidth=0,
-            borderPadding=0,
-            spaceBefore=10,
-            spaceAfter=6,
-        )
-        body_style = ParagraphStyle(
-            "ClientResumeBody",
-            parent=base_styles["BodyText"],
-            fontName="Helvetica",
-            fontSize=body_size,
-            leading=body_size + 4,
-            textColor=colors.HexColor("#1f2937"),
-            spaceAfter=5,
-        )
-        item_title_style = ParagraphStyle(
-            "ClientResumeItemTitle",
-            parent=body_style,
-            fontName="Helvetica-Bold",
-            spaceAfter=2,
-        )
-        bullet_style = ParagraphStyle(
-            "ClientResumeBullet",
-            parent=body_style,
-            leftIndent=10,
-            firstLineIndent=-7,
-            spaceAfter=3,
-        )
-
-        story: list[Any] = []
-        header = document.get("header") or {}
-        story.append(Paragraph(escape(str(header.get("name") or "Candidate")), title_style))
-        if header.get("role"):
-            story.append(Paragraph(escape(str(header["role"])), role_style))
-        # Client policy: name only — never email/phone/address on generated resumes.
-
-        for section in document.get("sections") or []:
-            story.append(Paragraph(escape(str(section["title"])), section_style))
-            self._append_section(story, section, body_style, item_title_style, bullet_style, Paragraph, Spacer)
-
-        doc.build(story)
-        buffer.seek(0)
-        return buffer.read()
-
     def _soften_missing_section_findings(
         self,
         findings: list[dict[str, str]],
@@ -3719,7 +3523,7 @@ class ResumeGenerationService:
         """Render resume as DOCX with Aptino-style single-column ATS layout."""
         try:
             from docx import Document
-            from docx.shared import Inches, Pt, RGBColor
+            from docx.shared import Inches, Pt
             from docx.oxml.ns import qn
             from io import BytesIO
         except ImportError as exc:
@@ -3736,7 +3540,6 @@ class ResumeGenerationService:
         name_size = float(styling.get("font_size_name") or body_size or 10)
         font_family = styling.get("font_family") or "Arial"
         margin_inches = float(styling.get("margin_inches") or 0.65)
-        space_after = self._theme_space_after()
         line_spacing = float(styling.get("line_spacing") or 1.0)
 
         style = doc.styles["Normal"]
@@ -3850,7 +3653,7 @@ class ResumeGenerationService:
         Candidate name is rendered once in the document body to avoid a
         double-name look (header + body) on page 1 when a client logo is present.
         """
-        from docx.shared import Inches, Pt, RGBColor
+        from docx.shared import Inches, Pt
         from docx.enum.text import WD_ALIGN_PARAGRAPH
         from io import BytesIO
 
@@ -3917,7 +3720,7 @@ class ResumeGenerationService:
         stamp_bytes: bytes | None = None,
     ) -> None:
         """Put company stamp/sign in the Word section footer (repeats on every page)."""
-        from docx.shared import Inches, Pt, RGBColor
+        from docx.shared import Inches, Pt
         from docx.enum.text import WD_ALIGN_PARAGRAPH
         from io import BytesIO
 
@@ -4017,65 +3820,6 @@ class ResumeGenerationService:
             tbl_pr.remove(existing)
         tbl_pr.append(borders)
 
-    def _add_horizontal_line(self, doc: Any) -> None:
-        from docx.shared import Pt
-
-        para = doc.add_paragraph()
-        para.paragraph_format.space_before = Pt(2)
-        para.paragraph_format.space_after = Pt(10)
-        self._apply_bottom_border(para)
-
-    def _apply_bottom_border(self, paragraph: Any) -> None:
-        from docx.oxml.ns import qn
-        from docx.oxml import OxmlElement
-
-        p = paragraph._p
-        p_pr = p.get_or_add_pPr()
-        existing = p_pr.find(qn("w:pBdr"))
-        if existing is not None:
-            p_pr.remove(existing)
-        p_bdr = OxmlElement("w:pBdr")
-        bottom = OxmlElement("w:bottom")
-        bottom.set(qn("w:val"), "single")
-        bottom.set(qn("w:sz"), "6")
-        bottom.set(qn("w:space"), "1")
-        bottom.set(qn("w:color"), "000000")
-        p_bdr.append(bottom)
-        p_pr.append(p_bdr)
-
-    def _add_simple_header(
-        self,
-        doc: Any,
-        header: dict,
-        header_size: int,
-        body_size: int,
-        font_family: str = "Arial",
-    ) -> None:
-        """Add simple header without logo."""
-        from docx.shared import Pt, RGBColor
-
-        name_para = doc.add_paragraph()
-        name_para.paragraph_format.space_after = Pt(2)
-        name_run = name_para.add_run(str(header.get("name") or "Candidate"))
-        name_run.bold = True
-        name_run.italic = False
-        name_run.underline = False
-        name_run.font.name = font_family
-        name_run.font.size = Pt(header_size)
-        name_run.font.color.rgb = self._theme_text()
-
-        if header.get("role"):
-            role_para = doc.add_paragraph()
-            role_para.paragraph_format.space_before = Pt(0)
-            role_para.paragraph_format.space_after = Pt(0)
-            role_run = role_para.add_run(str(header["role"]))
-            role_run.bold = True
-            role_run.italic = False
-            role_run.underline = False
-            role_run.font.name = font_family
-            role_run.font.size = Pt(body_size)
-            role_run.font.color.rgb = self._theme_muted()
-
     def _add_docx_section(
         self,
         doc: Any,
@@ -4086,7 +3830,7 @@ class ResumeGenerationService:
         usable_width: Any = None,
     ) -> None:
         """Add a section to the DOCX document."""
-        from docx.shared import Pt, RGBColor, Inches
+        from docx.shared import Pt
 
         section_type = section.get("type")
         title = section.get("title", "")
@@ -4590,51 +4334,6 @@ class ResumeGenerationService:
             value.font.size = Pt(body_size)
             value.font.color.rgb = self._theme_text()
 
-    def _append_section(
-        self,
-        story: list[Any],
-        section: dict[str, Any],
-        body_style: Any,
-        item_title_style: Any,
-        bullet_style: Any,
-        paragraph_cls: Any,
-        spacer_cls: Any,
-    ) -> None:
-        section_type = section.get("type")
-        content = section.get("content")
-
-        if section_type == "text":
-            story.append(paragraph_cls(self._paragraph_text(str(content)), body_style))
-            return
-
-        if section_type == "skills":
-            from app.services.docx_layout import skills_render_as_bullets
-
-            if isinstance(content, dict):
-                for category, values in content.items():
-                    skills = [str(item) for item in self._as_list(values) if str(item).strip()]
-                    if not skills:
-                        continue
-                    if skills_render_as_bullets(str(category), skills):
-                        story.append(paragraph_cls(escape(str(category)), item_title_style))
-                        for skill in skills:
-                            story.append(paragraph_cls(f"- {escape(skill)}", bullet_style))
-                    else:
-                        story.append(paragraph_cls(escape(f"{category}: {', '.join(skills)}"), body_style))
-            else:
-                skills = [str(item) for item in self._as_list(content) if str(item).strip()]
-                story.append(paragraph_cls(escape(", ".join(skills)), body_style))
-            return
-
-        if section_type in {"experience", "education", "projects"}:
-            for item in self._as_list(content):
-                self._append_record(story, item, item_title_style, bullet_style, paragraph_cls)
-                story.append(spacer_cls(1, 3))
-            return
-
-        for item in self._as_list(content):
-            story.append(paragraph_cls(f"- {escape(str(item))}", bullet_style))
-
     def _append_record(
         self,
         story: list[Any],
@@ -4696,8 +4395,3 @@ class ResumeGenerationService:
     def _paragraph_text(self, value: str) -> str:
         return escape(value).replace("\n", "<br/>")
 
-    def _safe_int(self, value: Any, default: int) -> int:
-        try:
-            return int(float(value))
-        except (TypeError, ValueError):
-            return default

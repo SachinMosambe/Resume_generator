@@ -193,7 +193,6 @@ def _find_all_sections(text: str, target_keys: list[str]) -> list[str]:
 
     for raw_line in (text or "").splitlines():
         line = raw_line.strip()
-        normalized = _normalize_heading(line)
         if not line:
             if in_section:
                 captured.append("")
@@ -222,7 +221,6 @@ def _find_section(text: str, target_keys: list[str]) -> list[str]:
 
     for raw_line in text.splitlines():
         line = raw_line.strip()
-        normalized = _normalize_heading(line)
         if not line:
             if in_section:
                 captured.append("")
@@ -3401,30 +3399,6 @@ def _is_non_cert_item(text: str) -> bool:
     if re.fullmatch(r"(?i)specialization(?:\s*\([^)]*\))?", t):
         return True
     return False
-
-
-def _infer_technologies(text: str) -> set[str]:
-    """Infer technologies mentioned in a bullet point."""
-    tech_keywords = {
-        "python", "java", "javascript", "typescript", "go", "golang", "rust", "c++", "c#",
-        "ruby", "scala", "kotlin", "swift", "php", "shell", "bash", "sql",
-        "html", "css", "react", "angular", "vue", "svelte", "next.js", "nuxt",
-        "fastapi", "flask", "django", "spring boot", "express", "node.js", "nodejs",
-        "postgresql", "mysql", "mongodb", "redis", "elasticsearch", "cassandra",
-        "dynamodb", "snowflake", "bigquery", "sqlite", "oracle", "mssql",
-        "aws", "azure", "gcp", "google cloud", "kubernetes", "k8s", "docker",
-        "terraform", "ansible", "jenkins", "ci/cd", "devops",
-        "machine learning", "deep learning", "nlp", "computer vision", "pytorch",
-        "tensorflow", "scikit-learn", "pandas", "numpy", "spark", "hadoop",
-        "git", "github", "gitlab", "jira", "confluence", "linux", "unix",
-        "figma", "adobe xd", "sketch", "prototyping", "wireframing",
-    }
-    found = set()
-    text_lower = text.lower()
-    for tech in tech_keywords:
-        if tech in text_lower:
-            found.add(tech.title() if tech not in {"aws", "gcp", "sql", "api", "ci/cd", "k8s", "nlp", "html", "css"} else tech.upper() if tech != "ci/cd" else "CI/CD")
-    return found
 
 
 def _is_bullet(line: str) -> bool:

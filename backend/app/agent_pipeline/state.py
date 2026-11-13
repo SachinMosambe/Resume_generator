@@ -96,9 +96,6 @@ class ResumeKB:
             return
         self.facts[fact_id] = Fact(id=fact_id, section=section, text=text, meta=meta)
 
-    def facts_for(self, section: str) -> list[Fact]:
-        return [f for f in self.facts.values() if f.section == section]
-
     def role_identities(self) -> list[tuple[str, str, str]]:
         """(company, title, duration) for every role — never removal candidates."""
         out: list[tuple[str, str, str]] = []

@@ -269,12 +269,3 @@ def _convert_with_word(source: Path, output_dir: Path) -> Path | None:
     return dest
 
 
-def ensure_docx(path: Path) -> Path:
-    """Return a .docx path, converting from .doc when needed."""
-    path = Path(path)
-    ext = path.suffix.lower()
-    if ext == ".docx":
-        return path
-    if ext == ".doc":
-        return convert_doc_to_docx(path, output_dir=path.parent)
-    raise DocConversionError(f"Unsupported Word extension: {ext}")

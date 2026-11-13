@@ -9,7 +9,6 @@ Never rewrites the whole resume; only failed sections.
 from __future__ import annotations
 
 import json
-import re
 from typing import Any
 
 from app.agents.tools.llm_client import llm_call_json_with_metrics
