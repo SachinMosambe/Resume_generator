@@ -25,7 +25,7 @@ import prod_hard_resume_retest as base  # noqa: E402  (loads .env, prod settings
 
 from app.models.candidate import Candidate  # noqa: E402
 from app.services.aptino_template import build_aptino_client_format  # noqa: E402
-from app.services.pdf_parser import extract_document  # noqa: E402
+from app.services.extraction_adapters import extract_with_adapter  # noqa: E402
 from app.services.resume_generation_service import ResumeGenerationService  # noqa: E402
 import app.services.resume_generation_service as rgs  # noqa: E402
 
@@ -34,8 +34,8 @@ rgs.upload_bytes_to_key = lambda **kwargs: None  # type: ignore[assignment]  # n
 RESUME_DIR = base.RESUME_DIR
 OUT_DIR = base.ROOT / "eval_reports"
 SKIP_NAME = re.compile(
-    r"(?i)(travel history|i94|passport|ssn|w2|offer letter|aptino - executive|"
-    r"capgemini-format|format\.docx|format\.doc$|\.exe$|zoom_|install)"
+    r"(?i)(travel\s*hist(?:ory|roy)|i[-\s]?94|i[-\s]?797|notice\s*of\s*action|passport|ssn|w[-\s]?2|"
+    r"offer letter|aptino - executive|capgemini-format|format\.docx|format\.doc$|\.exe$|zoom_|install)"
 )
 RESUME_EXT = {".pdf", ".docx", ".doc"}
 
@@ -102,7 +102,10 @@ def main() -> int:
         raise SystemExit("ABORT: production line extract is not enabled (token/flag missing)")
     print(
         f"PRODUCTION: token={bool(settings.AWS_BEARER_TOKEN_BEDROCK)} "
-        f"line_extract={settings.RESUME_LLM_LINE_EXTRACT} recovery={settings.RESUME_INTEGRITY_RECOVERY}"
+        f"line_extract={settings.RESUME_LLM_LINE_EXTRACT} recovery={settings.RESUME_INTEGRITY_RECOVERY} "
+        f"ledger={getattr(settings, 'RESUME_SOURCE_LEDGER', None)} "
+        f"manifest={getattr(settings, 'RESUME_RENDER_MANIFEST', None)} "
+        f"grounded={getattr(settings, 'RESUME_GROUNDED_GROUPING', None)}"
     )
 
     files = pick_resumes(args.limit)
@@ -142,8 +145,18 @@ def main() -> int:
         print(f"[{i}/{len(files)}] {path.name[:70]}", flush=True)
         t0 = time.perf_counter()
         try:
-            text, meta = extract_document(str(path))
-            text = text or ""
+            extraction = extract_with_adapter(str(path))
+            text = extraction.text or ""
+            meta = dict(extraction.meta or {})
+            meta["extraction_adapter"] = {
+                "method": extraction.method,
+                "status": extraction.status,
+                "limits_ok": extraction.limits_ok,
+                "diagnostics": extraction.diagnostics,
+            }
+            if extraction.ledger is not None:
+                meta["source_ledger"] = extraction.ledger.to_dict()
+                meta["source_revision"] = extraction.ledger.source_revision
             if not text.strip():
                 row.update({"stage": "extract", "error": "no_text", "meets_bar": False})
                 print("  extract=no_text", flush=True)

@@ -14,7 +14,23 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
 REPO = ROOT.parent
-RESUME_DIR = REPO / "Sachin resume AI" / "Sachin resume AI"
+
+
+def _resolve_resume_dir() -> Path:
+    """Private corpus may sit next to the nested repo or one level up (Downloads layout)."""
+    candidates = [
+        REPO / "Sachin resume AI" / "Sachin resume AI",
+        REPO.parent / "Sachin resume AI" / "Sachin resume AI",
+        REPO / "Sachin resume AI",
+        REPO.parent / "Sachin resume AI",
+    ]
+    for path in candidates:
+        if path.is_dir():
+            return path
+    return candidates[0]
+
+
+RESUME_DIR = _resolve_resume_dir()
 OUT = ROOT / "eval_reports" / "prod_hard_resume_retest.json"
 PRIOR = ROOT / "eval_reports" / "hard_resume_retest.json"
 
@@ -29,6 +45,12 @@ os.environ["RESUME_AGENT_PIPELINE"] = os.environ.get("RESUME_AGENT_PIPELINE") or
 os.environ["RESUME_LLM_CONDENSE"] = os.environ.get("RESUME_LLM_CONDENSE") or "false"
 os.environ["RESUME_LLM_LINE_EXTRACT"] = "true"
 os.environ["RESUME_LLM_PARSE_FALLBACK"] = "true"
+# Wave 2 path on for production measurement.
+os.environ["RESUME_SOURCE_LEDGER"] = "true"
+os.environ["RESUME_RENDER_MANIFEST"] = "true"
+os.environ["RESUME_GROUNDED_GROUPING"] = "true"
+os.environ["RESUME_CANONICAL_STORE"] = "true"
+os.environ["RESUME_ARTIFACT_CACHE"] = "true"
 
 from app.core.config import get_settings  # noqa: E402
 
@@ -38,7 +60,7 @@ settings = get_settings()
 from app.models.candidate import Candidate  # noqa: E402
 from app.services.aptino_template import build_aptino_client_format  # noqa: E402
 from app.services.llm_line_extractor import enabled as line_extract_enabled  # noqa: E402
-from app.services.pdf_parser import extract_document  # noqa: E402
+from app.services.extraction_adapters import extract_with_adapter  # noqa: E402
 from app.services.resume_generation_service import ResumeGenerationService  # noqa: E402
 
 
@@ -49,11 +71,31 @@ def hard_files() -> list[str]:
 
 
 def resolve(name: str) -> Path | None:
+    """Resolve a hard-list filename, including Windows 'Copy (1)' duplicate names.
+
+    The hard corpus list often keeps ``Foo (1).pdf`` while disk has ``Foo.pdf``.
+    """
     direct = RESUME_DIR / name
     if direct.exists():
         return direct
     hits = list(RESUME_DIR.rglob(name))
-    return hits[0] if hits else None
+    if hits:
+        return hits[0]
+    # Strip trailing " (N)" before the extension: "Resume (1).pdf" → "Resume.pdf"
+    stem = Path(name).stem
+    suffix = Path(name).suffix
+    import re
+
+    alt_stem = re.sub(r"\s*\(\d+\)$", "", stem).strip()
+    if alt_stem and alt_stem != stem:
+        alt_name = f"{alt_stem}{suffix}"
+        alt_direct = RESUME_DIR / alt_name
+        if alt_direct.exists():
+            return alt_direct
+        alt_hits = list(RESUME_DIR.rglob(alt_name))
+        if alt_hits:
+            return alt_hits[0]
+    return None
 
 
 WRONG_ROLE_CODES = {"bullet_wrong_role", "role_assignment"}
@@ -119,6 +161,9 @@ def main() -> int:
     print(f"  BEDROCK_MODEL={settings.BEDROCK_MODEL}")
     print(f"  AWS_BEARER_TOKEN_BEDROCK present={token_present}")
     print(f"  line_extract_enabled()={line_extract_enabled()}")
+    print(f"  RESUME_SOURCE_LEDGER={getattr(settings, 'RESUME_SOURCE_LEDGER', None)}")
+    print(f"  RESUME_RENDER_MANIFEST={getattr(settings, 'RESUME_RENDER_MANIFEST', None)}")
+    print(f"  RESUME_GROUNDED_GROUPING={getattr(settings, 'RESUME_GROUNDED_GROUPING', None)}")
     if not line_extract_enabled():
         raise SystemExit("ABORT: production line extract is not enabled (token/flag missing)")
 
@@ -136,8 +181,18 @@ def main() -> int:
         print(f"[{i}/{len(files)}] {path.name[:70]}")
         t0 = time.perf_counter()
         try:
-            text, meta = extract_document(str(path))
-            text = text or ""
+            extraction = extract_with_adapter(str(path))
+            text = extraction.text or ""
+            meta = dict(extraction.meta or {})
+            meta["extraction_adapter"] = {
+                "method": extraction.method,
+                "status": extraction.status,
+                "limits_ok": extraction.limits_ok,
+                "diagnostics": extraction.diagnostics,
+            }
+            if extraction.ledger is not None:
+                meta["source_ledger"] = extraction.ledger.to_dict()
+                meta["source_revision"] = extraction.ledger.source_revision
             if not text.strip():
                 row.update({"stage": "extract", "error": "no_text", "elapsed_s": round(time.perf_counter() - t0, 2)})
                 print("  extract=no_text")

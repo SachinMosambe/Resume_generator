@@ -23,9 +23,9 @@ from app.services.format_profile_store import FormatProfileError, load_client_fo
 from app.services.docx_reader import DocxLimitError
 from app.services.output_integrity import warning_messages, warning_payload
 from app.services.doc_converter import DocConversionError
-from app.services.intake_gate import assess_resume_intake
+from app.services.intake_gate import assess_resume_filename, assess_resume_intake
 from app.services.pdf_ocr import OcrUnavailableError, format_page_refs
-from app.services.pdf_parser import extract_document
+from app.services.extraction_adapters import extract_with_adapter
 from app.services.resume_generation_service import ResumeGenerationError, ResumeGenerationService
 from app.services.s3_service import sanitize_filename
 
@@ -106,9 +106,55 @@ async def generate_resume(
     resume_path.write_bytes(resume_bytes)
     template_tmp_path: Path | None = None
 
+    # Filename quarantine first — scanned I-797 / I-94 must not look like OCR failures.
+    named = assess_resume_filename(resume.filename)
+    if named is not None and not named.is_resume:
+        resume_path.unlink(missing_ok=True)
+        try:
+            tmp_dir.rmdir()
+        except OSError:
+            pass
+        raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail=named.message)
+
     try:
-        resume_text, extraction_meta = extract_document(str(resume_path))
-        resume_text = resume_text or ""
+        extraction = extract_with_adapter(str(resume_path))
+        resume_text = extraction.text or ""
+        extraction_meta = dict(extraction.meta or {})
+        extraction_meta["extraction_adapter"] = {
+            "method": extraction.method,
+            "status": extraction.status,
+            "limits_ok": extraction.limits_ok,
+            "diagnostics": extraction.diagnostics,
+        }
+        if extraction.status in {"failed", "unsupported"} or not resume_text.strip():
+            reason = (extraction.diagnostics or {}).get("reason")
+            if reason == "ocr_unavailable":
+                pages = (extraction.diagnostics or {}).get("pages") or []
+                where = format_page_refs(pages) if pages else ""
+                detail = (
+                    f"This PDF is scanned (image only{f' {where}' if where else ''}) and OCR is not "
+                    "available on this server, so no text could be read. "
+                    "Upload the original DOCX or a text-based PDF, or enable OCR (see README)."
+                )
+            elif reason == "doc_conversion":
+                detail = (
+                    "This legacy .doc file could not be converted on this server. "
+                    "Re-save it as .docx (or PDF) in Word and upload it again."
+                )
+            elif reason == "docx_limit":
+                detail = "This DOCX is too large or complex to process safely. Save a simpler copy and retry."
+            elif not resume_text.strip():
+                detail = "No readable text was found in this resume. Upload a text-based PDF, DOC, or DOCX."
+            else:
+                detail = "Could not read this resume. Upload a text-based PDF, DOC, or DOCX."
+            raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail=detail)
+    except HTTPException:
+        resume_path.unlink(missing_ok=True)
+        try:
+            tmp_dir.rmdir()
+        except OSError:
+            pass
+        raise
     except Exception as exc:
         logger.warning("resume_text_extract_failed", error_type=type(exc).__name__)
         resume_path.unlink(missing_ok=True)
@@ -119,7 +165,7 @@ async def generate_resume(
         if isinstance(exc, OcrUnavailableError):
             where = format_page_refs(exc.pages)
             detail = (
-                f"This PDF is scanned (image only{f'; {where}' if where else ''}) and OCR is not "
+                f"This PDF is scanned (image only{f' {where}' if where else ''}) and OCR is not "
                 "available on this server, so no text could be read. "
                 "Upload the original DOCX or a text-based PDF, or enable OCR (see README)."
             )
@@ -133,18 +179,8 @@ async def generate_resume(
         else:
             detail = "Could not read this resume. Upload a text-based PDF, DOC, or DOCX."
         raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail=detail) from exc
-    if not resume_text.strip():
-        resume_path.unlink(missing_ok=True)
-        try:
-            tmp_dir.rmdir()
-        except OSError:
-            pass
-        raise HTTPException(
-            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
-            detail="No readable text was found in this resume. Upload a text-based PDF, DOC, or DOCX.",
-        )
 
-    assessment = assess_resume_intake(resume_text)
+    assessment = assess_resume_intake(resume_text, filename=resume.filename)
     if not assessment.is_resume:
         extraction_meta["quarantine_reason"] = assessment.reason_code
         logger.warning("resume_quarantined", reason=assessment.reason_code, signals=assessment.resume_signals)

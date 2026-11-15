@@ -131,6 +131,292 @@ class ResumeGenerationService:
         )
         return report
 
+    def _maybe_apply_grounded_grouping(
+        self,
+        candidate: Candidate,
+        resume_text: str,
+        detailed_data: dict[str, Any],
+    ) -> dict[str, Any]:
+        """Attach source_ids via ledger mapping / optional grounded Gemma call."""
+        from app.core.config import get_settings
+        from app.services import grounded_grouping
+
+        if not getattr(get_settings(), "RESUME_GROUNDED_GROUPING", False):
+            return detailed_data
+        meta = (candidate.extracted_data or {}).get("extraction_meta") or {}
+        ledger_data = meta.get("source_ledger")
+        if not isinstance(ledger_data, dict):
+            parse_meta = dict(detailed_data.get("parse_meta") or {})
+            parse_meta["grounded_grouping"] = {"skipped": True, "reason": "no_source_ledger"}
+            return {**detailed_data, "parse_meta": parse_meta}
+        try:
+            from app.services.source_ledger import SourceLedger
+            from app.services.llm_line_extractor import source_lines
+
+            ledger = SourceLedger.from_dict(ledger_data)
+            # Prefer mapping existing roles (line extract / rule parse) onto ledger IDs
+            # so we do not invent text. Full Gemma ID-only call is used when no roles yet.
+            prior_roles = list(detailed_data.get("experience") or [])
+            prior_unassigned = list(detailed_data.get("unassigned_experience_bullets") or [])
+            if prior_roles:
+                result = grounded_grouping.map_line_roles_to_ledger(
+                    prior_roles,
+                    prior_unassigned,
+                    source_lines(resume_text),
+                    ledger,
+                )
+            elif grounded_grouping.enabled():
+                result = grounded_grouping.apply_grounded_grouping(ledger)
+            else:
+                result = grounded_grouping.GroupingResult(error="no_roles_no_bedrock")
+
+            out = dict(detailed_data)
+            if result.roles:
+                out["experience"] = result.roles
+            # Prefer line-extract joined unassigned texts. Rematerializing from ledger
+            # IDs via fuzzy match often keeps only a wrap-line fragment and drops the
+            # bullet head — which then fails source_lines hard (Shanley-class).
+            if prior_unassigned:
+                out["unassigned_experience_bullets"] = list(dict.fromkeys(prior_unassigned))[:50]
+            elif result.unassigned_source_ids:
+                out["unassigned_experience_bullets"] = [
+                    ledger.item_by_id(sid).raw_text
+                    for sid in result.unassigned_source_ids
+                    if sid in {i.id for i in ledger.items}
+                ][:50]
+            # Persist updated ledger dispositions back onto candidate meta.
+            meta = dict(meta)
+            meta["source_ledger"] = ledger.to_dict()
+            candidate.extracted_data = {**(candidate.extracted_data or {}), "extraction_meta": meta}
+            parse_meta = dict(out.get("parse_meta") or {})
+            parse_meta["grounded_grouping"] = {
+                "used": bool(result.roles),
+                "prompt_version": result.prompt_version,
+                "issue_count": len(result.issues),
+                "unassigned": len(result.unassigned_source_ids),
+                "error": result.error or None,
+            }
+            out["parse_meta"] = parse_meta
+            return out
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("grounded_grouping_failed", error_type=type(exc).__name__)
+            parse_meta = dict(detailed_data.get("parse_meta") or {})
+            parse_meta["grounded_grouping"] = {"error": type(exc).__name__}
+            return {**detailed_data, "parse_meta": parse_meta}
+
+    def _maybe_apply_render_manifest(
+        self,
+        candidate: Candidate,
+        store: dict[str, Any],
+        docx_bytes: bytes,
+        report: IntegrityReport | None,
+    ) -> tuple[dict[str, Any], IntegrityReport | None]:
+        """When enabled, verify required source spans against the reopened DOCX.
+
+        Additive only: existing integrity thresholds are unchanged. Manifest issues are
+        recorded on parse_meta and, when unresolved required content remains, force
+        status to needs_review if it would otherwise be passed.
+        """
+        from app.core.config import get_settings
+
+        if not getattr(get_settings(), "RESUME_RENDER_MANIFEST", False):
+            return store, report
+        try:
+            from app.services.render_manifest import build_render_manifest, verify_render_manifest
+            from app.services.source_ledger import SourceLedger
+
+            meta = (candidate.extracted_data or {}).get("extraction_meta") or {}
+            ledger_data = meta.get("source_ledger")
+            if not isinstance(ledger_data, dict):
+                store["parse_meta"] = {
+                    **(store.get("parse_meta") or {}),
+                    "render_manifest": {"skipped": True, "reason": "no_source_ledger"},
+                }
+                return store, report
+            ledger = SourceLedger.from_dict(ledger_data)
+            # Carry ledger revision on the store for later canonical / cache keys.
+            store.setdefault("source_refs", {})
+            store["source_refs"]["source_revision"] = ledger.source_revision
+            manifest = build_render_manifest(store, ledger)
+            # Persist disposition updates from store-text matching.
+            meta = {**meta, "source_ledger": ledger.to_dict()}
+            extracted = dict(candidate.extracted_data or {})
+            extracted["extraction_meta"] = {
+                **(extracted.get("extraction_meta") or {}),
+                "source_ledger": ledger.to_dict(),
+            }
+            candidate.extracted_data = extracted
+            issues = verify_render_manifest(docx_bytes, manifest)
+            from app.services.review_validation import build_validation_bundle, merge_outcome_with_integrity
+
+            bundle = build_validation_bundle(
+                extraction_meta=meta,
+                ledger=ledger,
+                manifest=manifest,
+                docx_bytes=docx_bytes,
+                integrity=report,
+            )
+            store["parse_meta"] = {
+                **(store.get("parse_meta") or {}),
+                "render_manifest": {
+                    "entry_count": len(manifest.entries),
+                    "unresolved_ids": list(manifest.unresolved_ids),
+                    "issue_count": len(issues),
+                    "issues": [i.to_dict() for i in issues[:50]],
+                },
+                "validation_bundle": bundle.to_dict(),
+            }
+            report = merge_outcome_with_integrity(report, bundle)
+            missing_text = [
+                i for i in issues if getattr(i, "issue_type", None) == "missing_required_text"
+            ]
+            # Wave 3 gate: required store text absent from DOCX is always blocking.
+            if report is not None and (missing_text or manifest.unresolved_ids or issues):
+                from app.services.output_integrity import IntegrityReport as IR
+
+                warnings = list(report.warnings or [])
+                codes = {str(w.get("code")) for w in warnings if isinstance(w, dict)}
+                if missing_text and "render_manifest_missing" not in codes:
+                    warnings.append(
+                        {
+                            "severity": "blocking",
+                            "code": "render_manifest_missing",
+                            "message": (
+                                f"{len(missing_text)} required experience/certification line(s) "
+                                "are missing from the generated document; compare before sending."
+                            ),
+                        }
+                    )
+                elif issues and "render_manifest" not in codes:
+                    warnings.append(
+                        {
+                            "severity": "blocking",
+                            "code": "render_manifest",
+                            "message": f"{len(issues)} render-manifest issue(s) need review.",
+                        }
+                    )
+                if manifest.unresolved_ids and "source_unresolved" not in codes:
+                    warnings.append(
+                        {
+                            "severity": "blocking",
+                            "code": "source_unresolved",
+                            "message": f"{len(manifest.unresolved_ids)} source item(s) remain unresolved.",
+                        }
+                    )
+                if report.status == "passed":
+                    report = IR("needs_review", dict(report.checks or {}), warnings)
+                elif missing_text or issues or manifest.unresolved_ids:
+                    # Keep failed/needs_review, but ensure blocking codes are present.
+                    report = IR(report.status, dict(report.checks or {}), warnings)
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("render_manifest_failed", error_type=type(exc).__name__)
+            store["parse_meta"] = {
+                **(store.get("parse_meta") or {}),
+                "render_manifest": {"error": type(exc).__name__},
+            }
+        return store, report
+
+    def _maybe_publish_canonical_and_cache(
+        self,
+        candidate: Candidate,
+        client_format: ClientFormat,
+        store: dict[str, Any],
+        docx_bytes: bytes,
+        report: IntegrityReport | None,
+    ) -> bytes:
+        """Phase 4/6: freeze canonical revision and optionally return cached identical artifact."""
+        from app.core.config import get_settings
+
+        cfg = get_settings()
+        tenant_id = str(getattr(candidate, "recruiter_id", None) or "local")
+        meta = (candidate.extracted_data or {}).get("extraction_meta") or {}
+        source_revision = str(
+            (store.get("source_refs") or {}).get("source_revision")
+            or meta.get("source_revision")
+            or ""
+        )
+        try:
+            if getattr(cfg, "RESUME_CANONICAL_STORE", False) and source_revision:
+                from app.services.canonical_resume import accept_canonical_resume, persist_canonical
+
+                issues = list(((store.get("parse_meta") or {}).get("validation_bundle") or {}).get("issues") or [])
+                canonical = accept_canonical_resume(
+                    store,
+                    source_revision=source_revision,
+                    unresolved_issues=issues,
+                    prompt_version=str(
+                        ((store.get("parse_meta") or {}).get("grounded_grouping") or {}).get("prompt_version") or ""
+                    ),
+                )
+                persist_canonical(canonical, tenant_id=tenant_id)
+                store.setdefault("source_refs", {})
+                store["source_refs"]["canonical_revision"] = canonical.revision
+                candidate.extracted_data = {
+                    **(candidate.extracted_data or {}),
+                    "canonical_revision": canonical.revision,
+                    "structured_resume": store,
+                }
+
+            if getattr(cfg, "RESUME_ARTIFACT_CACHE", False) and source_revision:
+                from app.services.artifact_cache import (
+                    RENDERER_VERSION,
+                    build_idempotency_key,
+                    get_cached_artifact,
+                    publish_artifact,
+                )
+                from app.services.canonical_resume import get_template_contract
+
+                template_key = "aptino"
+                fmt_meta = getattr(client_format, "format_metadata", None) or {}
+                tid = str((fmt_meta or {}).get("template_id") or "").lower()
+                if "capgemini" in tid:
+                    template_key = "capgemini"
+                elif "suresh" in tid:
+                    template_key = "suresh"
+                contract = get_template_contract(template_key)
+                key = build_idempotency_key(
+                    tenant_id=tenant_id,
+                    source_file_hash=str(meta.get("source_revision") or source_revision).split(":")[0],
+                    canonical_revision=str((store.get("source_refs") or {}).get("canonical_revision") or ""),
+                    extraction_version="extract_adapter@1",
+                    schema_version="structured_resume@1",
+                    parser_version="detailed_resume_parser@1",
+                    model_id=str(cfg.bedrock_model),
+                    prompt_version=str(
+                        ((store.get("parse_meta") or {}).get("grounded_grouping") or {}).get("prompt_version")
+                        or "line_extract"
+                    ),
+                    template_version=str(contract.get("version") or template_key),
+                    renderer_version=RENDERER_VERSION,
+                    formatting_options={"output_mode": cfg.RESUME_OUTPUT_MODE},
+                )
+                cached = get_cached_artifact(tenant_id, key)
+                if cached is not None:
+                    cached_bytes, entry = cached
+                    store["parse_meta"] = {
+                        **(store.get("parse_meta") or {}),
+                        "artifact_cache": {"hit": True, "key": key[:16], "docx_sha256": entry.docx_sha256},
+                    }
+                    return cached_bytes
+                report_dict = {
+                    "status": getattr(report, "status", None),
+                    "checks": getattr(report, "checks", {}) if report else {},
+                }
+                entry = publish_artifact(
+                    tenant_id=tenant_id,
+                    key=key,
+                    docx_bytes=docx_bytes,
+                    report=report_dict,
+                    meta={"template": template_key},
+                )
+                store["parse_meta"] = {
+                    **(store.get("parse_meta") or {}),
+                    "artifact_cache": {"hit": False, "key": key[:16], "docx_sha256": entry.docx_sha256},
+                }
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("canonical_or_cache_failed", error_type=type(exc).__name__)
+        return docx_bytes
+
     def _maybe_integrity_recover(
         self,
         candidate: Candidate,
@@ -155,19 +441,64 @@ class ResumeGenerationService:
             if report is not None and integrity_recovery.should_recover(report, store, source_text):
                 from app.services.output_integrity import _docx_text
 
+                from app.services.output_integrity import list_missing_hard_source_lines
+
+                hay0 = _docx_text(docx_bytes)
                 new_store, meta = integrity_recovery.recover_store(
-                    source_text, store, report, _docx_text(docx_bytes)
+                    source_text, store, report, hay0
                 )
                 meta = dict(meta)
-                if meta.get("used"):
-                    new_doc = self._generate_professional_document(
-                        apply_store_to_candidate_data(detailed_data, new_store), format_metadata
+                # Wrong-role repair: move mis-rendered bullets to unassigned so the
+                # next DOCX no longer shows them under the wrong employer.
+                if integrity_recovery.has_wrong_role(report):
+                    fixed, wr_meta = integrity_recovery.repair_wrong_role_assignments(
+                        new_store, hay0
                     )
-                    new_doc = attach_unassigned_experience(new_doc, new_store, format_metadata)
-                    for key in ("company_footer_lines", "company_header_lines",
-                                "client_header_text", "client_footer_text"):
-                        if key in document:
-                            new_doc[key] = document[key]
+                    if wr_meta.get("used"):
+                        new_store = fixed
+                        meta["used"] = True
+                        meta["wrong_role_repair"] = wr_meta.get("moved", 0)
+                # Render-complete: fold remaining hard misses + store bullets missing
+                # from DOCX into unassigned with exact wording.
+                still_missing = list_missing_hard_source_lines(source_text, hay0, new_store)
+                store_miss = integrity_recovery.list_missing_store_bullets(new_store, hay0)
+                to_fold = list(dict.fromkeys([*(still_missing or []), *(store_miss or [])]))
+                if to_fold:
+                    completed = integrity_recovery.ensure_missing_lines_in_unassigned(
+                        new_store, to_fold
+                    )
+                    added = len(completed.get("unassigned_experience_bullets") or []) - len(
+                        new_store.get("unassigned_experience_bullets") or []
+                    )
+                    if added > 0:
+                        new_store = completed
+                        meta["used"] = True
+                        meta["render_complete"] = True
+                        meta["stitched"] = int(meta.get("stitched") or 0) + added
+                        meta["store_bullet_stitched"] = len(store_miss)
+                    elif not meta.get("used"):
+                        meta["used"] = True
+                        meta["render_complete"] = True
+                        meta["force_rerender"] = True
+                elif still_missing and not meta.get("used"):
+                    meta["used"] = True
+                    meta["render_complete"] = True
+                    meta["force_rerender"] = True
+                if meta.get("used"):
+                    # Faithful recovery render: store → document → attach unassigned.
+                    # Skip the quality/LLM pipeline so recovery lines are not re-trimmed.
+                    from app.services.structured_resume_store import document_from_store
+
+                    def _recovery_document(s: dict[str, Any]) -> dict[str, Any]:
+                        doc = document_from_store(s, format_metadata)
+                        doc = attach_unassigned_experience(doc, s, format_metadata)
+                        for key in ("company_footer_lines", "company_header_lines",
+                                    "client_header_text", "client_footer_text"):
+                            if key in document:
+                                doc[key] = document[key]
+                        return doc
+
+                    new_doc = _recovery_document(new_store)
                     findings = self._soften_missing_section_findings(
                         validate_format_document(new_doc, format_metadata, kb=None), new_store, new_doc
                     )
@@ -178,11 +509,28 @@ class ResumeGenerationService:
                         new_docx = self._render_with_format_strategy(
                             new_doc, format_metadata, header_logos, footer_logos, client_format=client_format
                         )
+                        # Wrong-role may appear only after the recovery layout — repair once more.
+                        wr_probe = self._integrity_report(
+                            new_store, new_docx, new_doc, format_metadata, client_format, candidate
+                        )
+                        if wr_probe is not None and integrity_recovery.has_wrong_role(wr_probe):
+                            fixed2, wr2 = integrity_recovery.repair_wrong_role_assignments(
+                                new_store, _docx_text(new_docx)
+                            )
+                            if wr2.get("used"):
+                                new_store = fixed2
+                                new_doc = _recovery_document(new_store)
+                                new_docx = self._render_with_format_strategy(
+                                    new_doc, format_metadata, header_logos, footer_logos,
+                                    client_format=client_format,
+                                )
+                                meta["wrong_role_repair_pass2"] = wr2.get("moved", 0)
                         new_report = self._integrity_report(
                             new_store, new_docx, new_doc, format_metadata, client_format, candidate
                         )
                         meta["preferred"] = bool(
-                            new_report is not None and integrity_recovery.prefer_recovered(report, new_report)
+                            new_report is not None
+                            and integrity_recovery.prefer_recovered(report, new_report)
                         )
                         if meta["preferred"]:
                             store, docx_bytes, report, document = new_store, new_docx, new_report, new_doc
@@ -190,6 +538,35 @@ class ResumeGenerationService:
                                 **(candidate.extracted_data or {}),
                                 "structured_resume": store,
                             }
+                            # Second pass only when ensure actually adds more lines.
+                            hay1 = _docx_text(docx_bytes)
+                            left = list_missing_hard_source_lines(source_text, hay1, store)
+                            if left:
+                                store2 = integrity_recovery.ensure_missing_lines_in_unassigned(
+                                    store, left
+                                )
+                                added2 = len(store2.get("unassigned_experience_bullets") or []) - len(
+                                    store.get("unassigned_experience_bullets") or []
+                                )
+                                if added2 > 0:
+                                    doc2 = _recovery_document(store2)
+                                    docx2 = self._render_with_format_strategy(
+                                        doc2, format_metadata, header_logos, footer_logos,
+                                        client_format=client_format,
+                                    )
+                                    rep2 = self._integrity_report(
+                                        store2, docx2, doc2, format_metadata, client_format, candidate
+                                    )
+                                    if (
+                                        rep2 is not None
+                                        and integrity_recovery.prefer_recovered(report, rep2)
+                                    ):
+                                        store, docx_bytes, report, document = store2, docx2, rep2, doc2
+                                        meta["render_complete_pass2"] = True
+                                        candidate.extracted_data = {
+                                            **(candidate.extracted_data or {}),
+                                            "structured_resume": store,
+                                        }
         except Exception as exc:  # noqa: BLE001 - recovery must never fail generation
             logger.warning("integrity_recovery_failed", error_type=type(exc).__name__)
             meta = {**meta, "preferred": False, "error": type(exc).__name__}
@@ -338,6 +715,10 @@ class ResumeGenerationService:
             candidate, client_format, store, detailed_data, document, format_metadata,
             header_logos, footer_logos, docx_bytes, report,
         )
+        store, report = self._maybe_apply_render_manifest(candidate, store, docx_bytes, report)
+        docx_bytes = self._maybe_publish_canonical_and_cache(
+            candidate, client_format, store, docx_bytes, report
+        )
         self.last_report = report
 
         safe_client = sanitize_filename(getattr(client_format, "client_id", None) or "client")
@@ -426,6 +807,8 @@ class ResumeGenerationService:
                     detailed_data = maybe_repair_parse(resume_text, detailed_data)
                 except Exception as e:
                     logger.warning("llm_structure_repair_failed", error_type=type(e).__name__)
+            # Phase 3: attach source_ids from ledger when grounded grouping is enabled.
+            detailed_data = self._maybe_apply_grounded_grouping(candidate, resume_text, detailed_data)
         else:
             logger.warning("no_resume_text_available", candidate_id=str(candidate.id))
         
@@ -3419,6 +3802,11 @@ class ResumeGenerationService:
                     softened.append({**finding, "severity": "warn"})
                     continue
                 if name:
+                    softened.append({**finding, "severity": "warn"})
+                    continue
+            if finding.get("severity") == "critical" and "Section order mismatch" in issue:
+                # Faithful fidelity prefers complete content over exact Aptino section order.
+                if "experience" in present_types:
                     softened.append({**finding, "severity": "warn"})
                     continue
             if (

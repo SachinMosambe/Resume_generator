@@ -67,7 +67,20 @@ import app.services.resume_generation_service as rgs  # noqa: E402
 
 rgs.upload_bytes_to_key = lambda **kwargs: None  # type: ignore[assignment]
 
-RESUME_DIR = REPO / "Sachin resume AI" / "Sachin resume AI"
+def _resolve_resume_dir() -> Path:
+    candidates = [
+        REPO / "Sachin resume AI" / "Sachin resume AI",
+        REPO.parent / "Sachin resume AI" / "Sachin resume AI",
+        REPO / "Sachin resume AI",
+        REPO.parent / "Sachin resume AI",
+    ]
+    for path in candidates:
+        if path.is_dir():
+            return path
+    return candidates[0]
+
+
+RESUME_DIR = _resolve_resume_dir()
 FORMAT_DIR = REPO / "test" / "format"
 OUT_DIR = ROOT / "eval_reports"
 

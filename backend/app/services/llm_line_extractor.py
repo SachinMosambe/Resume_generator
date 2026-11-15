@@ -52,6 +52,7 @@ _END_START_RE = re.compile(rf"(?i)^\s*({_END})\b")
 class ExtractResult:
     roles: list[dict[str, Any]] = field(default_factory=list)
     unassigned: list[str] = field(default_factory=list)
+    certifications: list[str] = field(default_factory=list)
     sections: list[dict[str, Any]] = field(default_factory=list)
     experience_lines: int = 0
     claimed_lines: int = 0
@@ -236,6 +237,126 @@ def _clean_identity(value: str, dates: str, location: str) -> str:
     return v
 
 
+def _scoop_non_experience_sections(
+    result: ExtractResult, lines: list[str], elsewhere: set[int]
+) -> None:
+    """Conservatively keep project bullets + cert lines without inventing employers.
+
+    Wave 3: role-chunking ``projects`` created phantom roles and hurt corpus bar.
+    Scoop bullet-like project lines into ``unassigned`` and cert catalog into
+    ``certifications`` so source_lines can still pass.
+    """
+    from app.core.config import get_settings
+
+    settings = get_settings()
+    claimed = {_key(x) for x in result.unassigned if _key(x)}
+    for role in result.roles:
+        for value in (
+            role.get("title"),
+            role.get("company"),
+            role.get("duration"),
+            *(role.get("description") or []),
+        ):
+            k = _key(value)
+            if k:
+                claimed.add(k)
+
+    if bool(getattr(settings, "RESUME_SCOOP_PROJECT_BULLETS", True)):
+        scoop_types = {"projects", "other", "achievements"}
+        scooped_nums: list[int] = []
+        for sec in result.sections:
+            if sec["type"] not in scoop_types:
+                continue
+            n = sec["start"]
+            while n <= sec["end"]:
+                if n in elsewhere:
+                    n += 1
+                    continue
+                raw = lines[n - 1]
+                if n == sec["start"] and len(raw.split()) <= 4 and not _BULLET_RE.match(raw):
+                    n += 1
+                    continue
+                if raw.strip().lower().startswith(("http://", "https://", "www.")):
+                    n += 1
+                    continue
+                if not (_BULLET_RE.match(raw) or len(raw.split()) >= 10):
+                    n += 1
+                    continue
+                text = _BULLET_RE.sub("", raw).strip()
+                k = _key(text)
+                if len(k) < 12 or k in claimed:
+                    n += 1
+                    continue
+                # Keep wrap lines with the bullet so source_lines 4-grams still match.
+                group = [n]
+                claimed.add(k)
+                j = n + 1
+                while j <= sec["end"]:
+                    nxt = lines[j - 1]
+                    if _BULLET_RE.match(nxt) or j in elsewhere:
+                        break
+                    if nxt.strip().lower().startswith(("http://", "https://", "www.")):
+                        break
+                    if len(nxt.split()) <= 2 and not nxt.strip():
+                        break
+                    # Stop at a new heading-like line.
+                    if len(nxt.split()) <= 4 and nxt.rstrip().endswith(":"):
+                        break
+                    group.append(j)
+                    claimed.add(_key(_BULLET_RE.sub("", nxt)))
+                    j += 1
+                scooped_nums.extend(group)
+                n = j
+        if scooped_nums:
+            # Preserve source order; lines_to_bullets rejoins wraps.
+            ordered = sorted(set(scooped_nums))
+            result.unassigned = list(
+                dict.fromkeys(
+                    [
+                        *result.unassigned,
+                        *lines_to_bullets([lines[i - 1] for i in ordered]),
+                    ]
+                )
+            )
+
+    if bool(getattr(settings, "RESUME_SCOOP_CERTIFICATIONS", True)):
+        cert_texts: list[str] = []
+        for sec in result.sections:
+            if sec["type"] != "certifications":
+                continue
+            for n in range(sec["start"], sec["end"] + 1):
+                raw = lines[n - 1]
+                if n == sec["start"] and len(raw.split()) <= 4 and not _BULLET_RE.match(raw):
+                    continue
+                # Skip tiny chrome; keep catalog rows (Matt Zscaler-style lines).
+                if len(raw.split()) < 3:
+                    continue
+                cert_texts.append(raw)
+        result.certifications = lines_to_bullets(cert_texts)
+
+
+def _narrative_header_texts(role: dict[str, Any], lines: list[str]) -> list[str]:
+    """Return substantial prose header lines that exceed bare title/company/date fields."""
+    title_k = _key(role.get("title"))
+    company_k = _key(role.get("company"))
+    dates_k = _key(role.get("dates"))
+    out: list[str] = []
+    for n in role.get("header") or []:
+        if not isinstance(n, int) or not 1 <= n <= len(lines):
+            continue
+        text = _BULLET_RE.sub("", lines[n - 1]).strip()
+        if len(text.split()) < 8:
+            continue
+        remainder = _key(text)
+        for part in (title_k, company_k, dates_k):
+            if part:
+                remainder = remainder.replace(part, "", 1)
+        if len(remainder) < 12:
+            continue
+        out.append(text)
+    return out
+
+
 def lines_to_bullets(texts: list[str]) -> list[str]:
     """Join wrapped lines back into bullets; text is copied from the source unchanged."""
     bullets: list[str] = []
@@ -341,8 +462,12 @@ def extract_experience(
         result.error = f"sections:{type(exc).__name__}"
         return result
     result.llm_calls += 1
+    # Role-chunk experience only. Projects are scooped as bullets afterward so we
+    # do not invent phantom employers (corpus regression from projects-as-roles).
     exp = [s for s in result.sections if s["type"] == "experience"]
     if not exp:
+        # Still scoop projects/certs when there is no experience section.
+        _scoop_non_experience_sections(result, lines, elsewhere)
         return result
 
     jobs = [chunk for s in exp for chunk in _chunks(s["start"], s["end"])]
@@ -404,13 +529,28 @@ def extract_experience(
             content[idx].append(n)
 
     result.roles = []
+    from app.core.config import get_settings as _gs
+
+    preserve_narrative = bool(getattr(_gs(), "RESUME_PRESERVE_NARRATIVE_HEADERS", True))
     for i, (_anchor, role) in enumerate(anchored):
+        body = lines_to_bullets([lines[n - 1] for n in content[i]])
+        title = role["title"]
+        company = role["company"]
+        extra: list[str] = []
+        if preserve_narrative:
+            # Prefer expanding title to the full header sentence (avoids wrong-role
+            # false positives from narrative bullets floating between employers).
+            for nav in _narrative_header_texts(role, lines):
+                if title and _key(title) in _key(nav) and len(nav.split()) > len(str(title).split()):
+                    title = nav
+                else:
+                    extra.append(nav)
         result.roles.append({
-            "title": role["title"],
-            "company": role["company"],
+            "title": title,
+            "company": company,
             "location": role["location"],
             "duration": role["dates"],
-            "description": lines_to_bullets([lines[n - 1] for n in content[i]]),
+            "description": [*extra, *body],
             "technologies": [],
         })
     result.experience_lines = len(exp_lines)
@@ -421,6 +561,7 @@ def extract_experience(
         for n in exp_lines
         if n not in header_lines and _RANGE_RE.search(lines[n - 1]) and not _BULLET_RE.match(lines[n - 1])
     ]
+    _scoop_non_experience_sections(result, lines, elsewhere)
     return result
 
 
@@ -594,6 +735,12 @@ def apply_line_extraction(text: str, parsed: dict, *, client: LineClient | None 
         else:
             out.pop("unassigned_experience_bullets", None)
         info["used"] = True
+    # Cert lines are independent of the experience gate: keep them whenever mapped.
+    if result.certifications:
+        prior = [str(c) for c in (out.get("certifications") or []) if str(c).strip()]
+        if len(result.certifications) >= len(prior):
+            out["certifications"] = result.certifications
+            info["certifications"] = len(result.certifications)
     info["disagree"] = bool(rule_roles) and abs(len(result.roles) - len(rule_roles)) > max(1, len(rule_roles) // 4)
     meta["line_extract"] = info
     out["parse_meta"] = meta

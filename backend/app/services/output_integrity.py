@@ -128,7 +128,9 @@ _SKIP_SOURCE_LINE = re.compile(
     r"(?i)(@|https?://|www\.|linkedin|\d{3}[-.\s)]+\d{3}[-.\s]\d{4}|references available|"
     r"preferred|desired work|willing to relocate|work authorization|employment type|profile source|"
     r"profile downloaded|total experience|visa sponsorship|authorized to work|contract\s*-\s*corp|"
-    r"gap\s*period|on-site or hybrid|contract to hire)"
+    r"gap\s*period|on-site or hybrid|contract to hire|"
+    # Tooling/environment dumps are re-punctuated by renderers; token presence is checked via skills.
+    r"^\s*environment\s*:)"
 )
 _SOURCE_DATE = re.compile(
     r"(?i)\b(?:jan|feb|mar|apr|may|jun|jul|aug|sep|oct|nov|dec)[a-z]*\.?\s*\d{4}|\b\d{1,2}/\d{4}\b|\b(?:19|20)\d{2}\s*[-–—]"
@@ -213,6 +215,7 @@ def _classify_source_lines(
 def _source_line_facts(store: dict[str, Any]) -> list[str]:
     roles = [r for r in store.get("experience") or [] if isinstance(r, dict)]
     bullets = [b for r in roles for b in (r.get("description") or []) if isinstance(b, str)]
+    unassigned = [b for b in (store.get("unassigned_experience_bullets") or []) if isinstance(b, str)]
     return list(
         dict.fromkeys(
             n
@@ -220,6 +223,7 @@ def _source_line_facts(store: dict[str, Any]) -> list[str]:
                 *(_norm(r.get("company")) for r in roles),
                 *(_norm(r.get("title")) for r in roles),
                 *(_norm(b) for b in bullets),
+                *(_norm(b) for b in unassigned),
             )
             if len(n) >= 4
         )
@@ -264,14 +268,14 @@ def _heading_position(company: str, title: str, padded: str) -> int | None:
     return None
 
 
-def _misassigned_bullets(roles: list[dict], hay: str) -> int:
-    """Count uniquely owned bullets that appear only under a different role's heading.
+def list_misassigned_bullet_texts(roles: list[dict], hay: str) -> list[str]:
+    """Return normalized texts of uniquely owned bullets under the wrong employer heading.
 
     Conservative rules to avoid false fails on real resumes:
     - Skip bullets whose normalized text appears under more than one store role (shared boilerplate).
     - A bullet is wrong only if it is missing from its own role window AND present in another
       located role's window. Hits in summary/skills/footer outside all role windows are ignored.
-    - If fewer than two role headings can be located, skip the check (return 0).
+    - If fewer than two role headings can be located, skip the check (return []).
     """
     padded = f" {hay} "
     owned_counts: dict[str, int] = {}
@@ -290,17 +294,18 @@ def _misassigned_bullets(roles: list[dict], hay: str) -> int:
         if pos is not None:
             located.append((pos, role))
     if len(located) < 2:
-        return 0
+        return []
     located.sort(key=lambda x: x[0])
     starts = [p for p, _ in located]
     if len(set(starts)) != len(starts):
-        return 0
+        return []
     windows = []
     for idx, start in enumerate(starts):
         end = starts[idx + 1] if idx + 1 < len(starts) else len(padded) + 1
         windows.append((start, end))
 
-    wrong = 0
+    wrong: list[str] = []
+    seen_wrong: set[str] = set()
     for idx, (start, role) in enumerate(located):
         end = windows[idx][1]
         for bullet in role.get("description") or []:
@@ -318,9 +323,15 @@ def _misassigned_bullets(roles: list[dict], hay: str) -> int:
                 if j != idx
                 for h in hits
             )
-            if in_other_role:
-                wrong += 1
+            if in_other_role and needle not in seen_wrong:
+                seen_wrong.add(needle)
+                wrong.append(needle)
     return wrong
+
+
+def _misassigned_bullets(roles: list[dict], hay: str) -> int:
+    """Count uniquely owned bullets that appear only under a different role's heading."""
+    return len(list_misassigned_bullet_texts(roles, hay))
 
 
 def _experience_gap(store: dict, parse_meta: dict, roles: list[dict], hay: str) -> bool:

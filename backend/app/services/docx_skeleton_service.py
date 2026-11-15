@@ -297,6 +297,9 @@ def _looks_like_sample_headline(text: str) -> bool:
 
 
 def _set_paragraph_text(paragraph: Any, text: str) -> None:
+    from app.services.docx_layout import xml_safe_text
+
+    text = xml_safe_text(text)
     if paragraph.runs:
         paragraph.runs[0].text = text
         for run in paragraph.runs[1:]:

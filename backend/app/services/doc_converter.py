@@ -59,12 +59,14 @@ def find_libreoffice() -> str | None:
     preferred = (
         "/usr/bin/soffice",
         "/usr/bin/libreoffice",
+        r"C:\Program Files\LibreOffice\program\soffice.exe",
+        r"C:\Program Files (x86)\LibreOffice\program\soffice.exe",
     )
     for path in preferred:
         if Path(path).exists():
             return path
 
-    for candidate in ("soffice", "libreoffice"):
+    for candidate in ("soffice", "libreoffice", "soffice.exe"):
         found = shutil.which(candidate, path=path_env)
         if found:
             return found

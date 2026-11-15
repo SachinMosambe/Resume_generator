@@ -16,7 +16,7 @@ from fastapi.testclient import TestClient
 from app.api.routes import generate as generate_route
 from app.main import app
 from app.services import doc_converter, pdf_ocr
-from app.services.intake_gate import assess_resume_intake
+from app.services.intake_gate import assess_resume_filename, assess_resume_intake
 from app.services.output_integrity import check_output_integrity
 from app.services.pdf_ocr import OcrUnavailableError, format_page_refs
 from app.services.pdf_parser import extract_document
@@ -226,7 +226,13 @@ def test_non_resume_quarantine_reasons(text, reason):
 
 
 def test_non_resume_quarantine_422(monkeypatch):
-    monkeypatch.setattr(generate_route, "extract_document", lambda path, **kw: (REALISTIC_I94, {}))
+    from app.services.extraction_adapters import ExtractionResult
+
+    monkeypatch.setattr(
+        generate_route,
+        "extract_with_adapter",
+        lambda path, **kw: ExtractionResult(text=REALISTIC_I94, method="pdf_native", meta={}, status="ok"),
+    )
     resp = _post("i94.pdf", b"%PDF-1.4 stub")
     assert resp.status_code == 422
     detail = resp.json()["detail"]
@@ -234,7 +240,13 @@ def test_non_resume_quarantine_422(monkeypatch):
 
 
 def test_non_resume_certificate_422_via_api(monkeypatch):
-    monkeypatch.setattr(generate_route, "extract_document", lambda path, **kw: (REALISTIC_CERTIFICATE, {}))
+    from app.services.extraction_adapters import ExtractionResult
+
+    monkeypatch.setattr(
+        generate_route,
+        "extract_with_adapter",
+        lambda path, **kw: ExtractionResult(text=REALISTIC_CERTIFICATE, method="pdf_native", meta={}, status="ok"),
+    )
     resp = _post("cert.pdf", b"%PDF-1.4 stub")
     assert resp.status_code == 422 and "certificate" in resp.json()["detail"]
 
@@ -270,3 +282,25 @@ def test_resume_mentioning_i94_or_certificate_is_not_quarantined():
 def test_minimal_resume_without_markers_is_never_quarantined():
     assert assess_resume_intake("Casey Example\nAnalyst at Litware since 2021").is_resume is True
     assert assess_resume_intake("").is_resume is True
+
+
+def test_i797_filename_quarantined_even_without_text():
+    """Scanned I-797 notices have empty text layers; filename must still quarantine."""
+    named = assess_resume_filename("I797 A_INFINITY GRP_MANAV KAPOOR_Exp 04182026.pdf")
+    assert named is not None and named.is_resume is False
+    assert named.reason_code == "travel_record"
+    gated = assess_resume_intake("", filename="I797_notice.pdf")
+    assert gated.is_resume is False and gated.reason_code == "travel_record"
+
+
+def test_i797_filename_api_422_before_ocr(monkeypatch):
+    # Must not reach extract — immigration scans are not OCR failures.
+    monkeypatch.setattr(
+        generate_route,
+        "extract_with_adapter",
+        lambda path, **kw: (_ for _ in ()).throw(AssertionError("extract should not run")),
+    )
+    resp = _post("I797 A_INFINITY GRP_MANAV KAPOOR.pdf", b"%PDF-1.4 stub")
+    assert resp.status_code == 422
+    assert "not a resume" in resp.json()["detail"]
+    assert "I-797" in resp.json()["detail"] or "immigration" in resp.json()["detail"]

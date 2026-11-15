@@ -24,14 +24,19 @@ _MARKERS: dict[str, tuple[str, ...]] = {
     "travel_record": (
         r"\bi[-\s]?94\b",
         r"\bi[-\s]?797[a-z]?\b",
-        r"travel\s+history",
+        r"notice\s+of\s+action",
+        r"petition\s+for\s+a\s+nonimmigrant\s+worker",
+        r"form\s+i[-\s]?129\b",
+        r"travel\s+hist(?:ory|roy)",
         r"(?:arrival|departure)\s*(?:/|and)?\s*(?:arrival|departure)?\s+record",
         r"admit\s+until\s+date",
         r"class\s+of\s+admission",
         r"customs\s+and\s+border\s+protection",
         r"department\s+of\s+homeland\s+security",
+        r"u\.?s\.?\s+citizenship\s+and\s+immigration",
         r"boarding\s+pass",
         r"passport\s+(?:number|no\.?)\b",
+        r"\bh[-\s]?1b\b.*\bvalid\s+from\b",
     ),
     "financial": (
         r"\binvoice\s*(?:#|no\.?|number)",
@@ -45,8 +50,23 @@ _MARKERS: dict[str, tuple[str, ...]] = {
 
 _KIND_LABEL = {
     "certificate": "a certificate",
-    "travel_record": "an immigration or travel record (for example an I-94)",
+    "travel_record": "an immigration or travel record (for example an I-94 or I-797)",
     "financial": "a financial document",
+}
+
+# Filename-only markers for image scans where OCR is not yet available.
+_FILENAME_MARKERS: dict[str, tuple[str, ...]] = {
+    "travel_record": (
+        r"i[-\s]?797",
+        r"i[-\s]?94",
+        r"travel\s*hist",
+        r"passport",
+        r"visa\s*stamp",
+        r"notice\s*of\s*action",
+        r"\bi129\b",
+    ),
+    "financial": (r"\bw[-\s]?2\b", r"pay\s*stub", r"\binvoice\b"),
+    "certificate": (r"certificate\s+of\s+completion",),
 }
 
 # A heading is a short line that is (almost) only the section name.
@@ -124,15 +144,39 @@ def _marker_hits(text: str) -> tuple[dict[str, int], dict[str, bool]]:
     return counts, in_title
 
 
-def assess_resume_intake(text: str) -> IntakeAssessment:
+def assess_resume_filename(filename: str | None) -> IntakeAssessment | None:
+    """Quarantine obvious non-resumes from the filename alone (scanned I-797, etc.)."""
+    name = str(filename or "")
+    if not name.strip():
+        return None
+    for kind, patterns in _FILENAME_MARKERS.items():
+        for pat in patterns:
+            if re.search(pat, name, re.IGNORECASE):
+                message = (
+                    f"This file looks like {_KIND_LABEL[kind]}, not a resume, so no document was generated. "
+                    "Upload the candidate's resume (PDF, DOC, or DOCX) instead."
+                )
+                return IntakeAssessment(False, reason_code=kind, message=message, resume_signals=0)
+    return None
+
+
+def assess_resume_intake(text: str, filename: str | None = None) -> IntakeAssessment:
     """Decide whether extracted text may proceed to resume generation.
 
     Quarantine requires BOTH: a non-resume marker (near the top of the document, or at
     least two marker hits) and weak resume structure (fewer than two resume signals).
+    Empty image scans of I-797 / I-94 are also quarantined by filename.
     """
+    by_name = assess_resume_filename(filename)
+    if by_name is not None and not by_name.is_resume and not (text or "").strip():
+        return by_name
+
     counts, in_title = _marker_hits(text)
     signals = _resume_signals(text)
     if not counts:
+        # Filename said immigration doc but OCR recovered resume-like text — trust text.
+        if by_name is not None and not by_name.is_resume and signals < 2:
+            return by_name
         return IntakeAssessment(True, resume_signals=signals)
 
     kind = max(counts, key=lambda k: (in_title.get(k, False), counts[k]))

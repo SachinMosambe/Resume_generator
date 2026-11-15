@@ -299,3 +299,153 @@ def test_lone_bullet_glyph_starts_a_new_bullet():
         "First item",
         "Second item wraps here",
     ]
+
+
+def test_certification_section_lines_are_kept_on_apply():
+    """Certification catalog lines must land in certifications, not be dropped.
+
+    Integrity source_lines treats long cert lines as hard when they share tokens with
+    experience facts; leaving them out of the store fails the bar.
+    """
+    text = "\n".join(
+        [
+            "Name",  # 1
+            "Acme Corp",  # 2
+            "Engineer 2020 - Present",  # 3
+            "• Built platforms",  # 4
+            "Certifications",  # 5
+            "2023 Zscaler Cloud Zscaler Internet Access (ZIA) Administrator",  # 6
+            "AWS Solutions Architect Associate",  # 7
+        ]
+    )
+    sections = {
+        "sections": [
+            {"line": 1, "type": "header"},
+            {"line": 2, "type": "experience"},
+            {"line": 5, "type": "certifications"},
+        ]
+    }
+    roles = {
+        "roles": [
+            _role(
+                {"line": 3, "text": "Engineer"},
+                {"line": 2, "text": "Acme Corp"},
+                {"line": 3, "text": "2020 - Present"},
+                [2, 3],
+                [[4, 4]],
+            )
+        ]
+    }
+
+    def call(system_prompt, user_prompt):
+        return sections if "label the sections" in system_prompt else roles
+
+    out = apply_line_extraction(text, {"experience": [], "parse_meta": {}}, client=call)
+    certs = " ".join(out.get("certifications") or []).lower()
+    assert "zscaler internet access" in certs
+    assert "aws solutions architect" in certs
+
+
+def test_narrative_role_header_lines_are_preserved_in_description():
+
+    """Prose intro lines used as role headers must still appear in output text.
+
+    Models often cite a sentence like 'Previously, as senior editor ...' as the
+    title/company header; dropping the full line then fails source_lines hard.
+    """
+    text = "\n".join(
+        [
+            "Name",  # 1
+            "Previously, as senior editor for key industry publications, efforts focused on:",  # 2
+            "• Best use of AI for remote inspections with consultants",  # 3
+            "Education",  # 4
+            "B.A. English",  # 5
+        ]
+    )
+    sections = {
+        "sections": [
+            {"line": 1, "type": "header"},
+            {"line": 2, "type": "experience"},
+            {"line": 4, "type": "education"},
+        ]
+    }
+    roles = {
+        "roles": [
+            _role(
+                {"line": 2, "text": "senior editor"},
+                {"line": 2, "text": "key industry publications"},
+                None,
+                [2],
+                [[3, 3]],
+            )
+        ]
+    }
+
+    def call(system_prompt, user_prompt):
+        return sections if "label the sections" in system_prompt else roles
+
+    result = extract_experience(text, call)
+    title = str(result.roles[0].get("title") or "").lower()
+    kept = " ".join(result.roles[0]["description"]).lower()
+    # Full header prose is preserved on the title (avoids wrong-role bullet drift).
+    assert "previously, as senior editor for key industry publications" in title or (
+        "previously, as senior editor for key industry publications" in kept
+    )
+    assert "best use of ai for remote inspections" in kept
+
+
+def test_projects_section_bullets_are_not_dropped():
+
+    """Work bullets mapped as 'projects' must still be kept (roles or unassigned).
+
+    Real resumes (and consulting write-ups) often label client/project work as projects;
+    ignoring that section drops source lines and fails integrity source_lines.
+    """
+    text = "\n".join(
+        [
+            "Agnes Writer",  # 1
+            "Some relevant projects at Veeva:",  # 2
+            "• A white paper on optimizing software updates",  # 3
+            "• Thought leadership content including case studies",  # 4
+            "Previously, as senior editor:",  # 5
+            "• Best use of AI for remote inspections",  # 6
+            "Education",  # 7
+            "B.A. English",  # 8
+        ]
+    )
+    sections = {
+        "sections": [
+            {"line": 1, "type": "header"},
+            {"line": 2, "type": "projects"},
+            {"line": 5, "type": "experience"},
+            {"line": 7, "type": "education"},
+        ]
+    }
+    roles = {
+        "roles": [
+            _role(
+                {"line": 5, "text": "senior editor"},
+                {"line": 5, "text": "industry publications"},
+                None,
+                [5],
+                [[6, 6]],
+            )
+        ]
+    }
+
+    def call(system_prompt, user_prompt):
+        return sections if "label the sections" in system_prompt else roles
+
+    result = extract_experience(text, call)
+    kept = " ".join(
+        [
+            *(b for r in result.roles for b in (r.get("description") or [])),
+            *result.unassigned,
+        ]
+    ).lower()
+
+    # Project bullets are scooped into unassigned (not phantom employers).
+    assert "white paper on optimizing software updates" in kept
+    assert "thought leadership content including case studies" in kept
+    assert "best use of ai for remote inspections" in kept
+    assert any("white paper" in u.lower() for u in result.unassigned)

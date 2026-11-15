@@ -98,7 +98,11 @@ def test_unassigned_bullets_render_under_review_placeholder_role():
     exp = next(s for s in doc["sections"] if s["type"] == "experience")
     assert [r["title"] for r in exp["content"]] == ["Analyst", UNASSIGNED_ROLE_TITLE]
     assert exp["content"][-1]["company"] == "" and exp["content"][-1]["description"] == ["Closed the monthly books."]
-    attach_unassigned_experience(doc, store, {})  # idempotent
+    attach_unassigned_experience(doc, store, {})  # idempotent (same bullets)
+    assert len(exp["content"]) == 2
+    store_more = {**store, "unassigned_experience_bullets": ["Closed the monthly books.", "Filed Q3 taxes."]}
+    attach_unassigned_experience(doc, store_more, {})  # refresh bullets on existing placeholder
+    assert exp["content"][-1]["description"] == ["Closed the monthly books.", "Filed Q3 taxes."]
     assert len(exp["content"]) == 2
 
 

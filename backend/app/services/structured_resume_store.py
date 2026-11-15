@@ -451,8 +451,14 @@ def attach_unassigned_experience(
         if not isinstance(section, dict) or _canonical(section.get("title") or section.get("type")) != "experience":
             continue
         content = [r for r in (section.get("content") or []) if isinstance(r, dict)]
-        if any(r.get("title") == UNASSIGNED_ROLE_TITLE for r in content):
-            return document
+        # Refresh bullets when the review role already exists (stitch may have added more).
+        for idx, role in enumerate(content):
+            if isinstance(role, dict) and role.get("title") == UNASSIGNED_ROLE_TITLE:
+                updated = dict(role)
+                updated["description"] = bullets
+                content[idx] = updated
+                section["content"] = content
+                return document
         section["content"] = [*content, placeholder]
         return document
     labels = (format_metadata or {}).get("section_labels")
@@ -627,6 +633,10 @@ def _normalize_experience(item: Any) -> dict[str, Any]:
     project = str(item.get("project") or item.get("project_name") or "").strip()
     if project:
         normalized["project"] = project
+    if item.get("role_id"):
+        normalized["role_id"] = str(item.get("role_id"))
+    if isinstance(item.get("source_ids"), dict):
+        normalized["source_ids"] = dict(item["source_ids"])
     return normalized
 
 
@@ -763,10 +773,12 @@ def _as_list(value: Any) -> list[Any]:
 
 
 def _as_str_list(value: Any) -> list[str]:
+    from app.services.docx_layout import xml_safe_text
+
     out: list[str] = []
     seen: set[str] = set()
     for item in _as_list(value):
-        text = str(item or "").strip()
+        text = xml_safe_text(item).strip()
         if not text:
             continue
         key = text.casefold()

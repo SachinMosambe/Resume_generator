@@ -5,6 +5,20 @@ from __future__ import annotations
 import re
 from typing import Any
 
+# python-docx rejects NULL / most C0 controls in run text.
+_XML_UNSAFE = re.compile(r"[\x00-\x08\x0b\x0c\x0e-\x1f]")
+
+
+def xml_safe_text(value: Any) -> str:
+    """Strip characters that make python-docx raise on paragraph/run assignment."""
+    if value is None:
+        return ""
+    text = str(value)
+    if not text:
+        return ""
+    return _XML_UNSAFE.sub("", text)
+
+
 # Trailing date ranges / years pulled to the right edge.
 _DATE_RIGHT_RE = re.compile(
     r"(?P<left>.*?)\s+"
@@ -163,7 +177,7 @@ def add_bullet_paragraph(
     """Add a bullet line even when the company template has no 'List Bullet' style."""
     from docx.shared import Pt, Inches
 
-    text = str(text or "").strip()
+    text = xml_safe_text(text).strip()
     if not text:
         return None
 

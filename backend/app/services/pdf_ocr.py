@@ -1,14 +1,17 @@
-"""Optional OCR for image-only PDF pages via PyMuPDF's Tesseract bridge.
+"""Optional OCR for image-only PDF pages.
 
-Tesseract (Apache-2.0) is a system package, not a Python dependency. When it is
-missing, callers keep native text and report which pages could not be read.
+Primary path: PyMuPDF + system Tesseract.
+Fallback: RapidOCR (onnxruntime) when Tesseract is not installed — required so
+scanned resumes still extract on developer Windows machines without apt packages.
 """
 
 from __future__ import annotations
 
 import shutil
+from functools import lru_cache
 
 from app.core.config import settings
+from app.core.logging import logger
 
 
 class OcrUnavailableError(RuntimeError):
@@ -37,8 +40,8 @@ def format_page_refs(pages: list[int] | tuple[int, ...]) -> str:
     return f"pages {joined}"
 
 
-def ocr_available() -> bool:
-    if not settings.RESUME_OCR_ENABLED or shutil.which("tesseract") is None:
+def _tesseract_available() -> bool:
+    if shutil.which("tesseract") is None:
         return False
     try:
         import pymupdf as fitz
@@ -46,6 +49,23 @@ def ocr_available() -> bool:
         return bool(fitz.get_tessdata())
     except Exception:
         return False
+
+
+@lru_cache(maxsize=1)
+def _rapidocr_engine():
+    try:
+        from rapidocr_onnxruntime import RapidOCR
+
+        return RapidOCR()
+    except Exception as exc:  # noqa: BLE001
+        logger.info("rapidocr_unavailable", error_type=type(exc).__name__)
+        return None
+
+
+def ocr_available() -> bool:
+    if not settings.RESUME_OCR_ENABLED:
+        return False
+    return _tesseract_available() or _rapidocr_engine() is not None
 
 
 def page_needs_ocr(page) -> bool:
@@ -67,11 +87,35 @@ def page_needs_ocr(page) -> bool:
     return image_cover > 0.6 and letters < 200
 
 
+def _ocr_page_rapidocr(page, dpi: int) -> str:
+    import numpy as np
+    import pymupdf as fitz
+
+    engine = _rapidocr_engine()
+    if engine is None:
+        return ""
+    zoom = max(1.0, float(dpi) / 72.0)
+    pix = page.get_pixmap(matrix=fitz.Matrix(zoom, zoom), alpha=False)
+    # RapidOCR expects HWC uint8 BGR/RGB ndarray.
+    img = np.frombuffer(pix.samples, dtype=np.uint8).reshape(pix.height, pix.width, pix.n)
+    if pix.n == 4:
+        img = img[:, :, :3]
+    result, _ = engine(img)
+    if not result:
+        return ""
+    # Each item: [box, text, score]
+    lines = [str(item[1]).strip() for item in result if item and len(item) > 1 and str(item[1]).strip()]
+    return "\n".join(lines)
+
+
 def ocr_page_text(page, dpi: int | None = None) -> str:
-    """OCR only the image regions; native text on the page is kept as-is."""
-    tp = page.get_textpage_ocr(
-        language=settings.RESUME_OCR_LANG,
-        dpi=int(dpi or settings.RESUME_OCR_DPI),
-        full=False,
-    )
-    return page.get_text("text", textpage=tp) or ""
+    """OCR a page; prefer Tesseract, fall back to RapidOCR."""
+    dpi_i = int(dpi or settings.RESUME_OCR_DPI)
+    if _tesseract_available():
+        tp = page.get_textpage_ocr(
+            language=settings.RESUME_OCR_LANG,
+            dpi=dpi_i,
+            full=False,
+        )
+        return page.get_text("text", textpage=tp) or ""
+    return _ocr_page_rapidocr(page, dpi_i)

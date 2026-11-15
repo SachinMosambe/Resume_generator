@@ -17,7 +17,13 @@ from typing import Any
 from app.core.config import settings
 from app.core.logging import logger
 from app.services import llm_line_extractor as lle
-from app.services.output_integrity import BLOCKING, IntegrityReport, list_missing_hard_source_lines
+from app.services.output_integrity import (
+    BLOCKING,
+    IntegrityReport,
+    list_misassigned_bullet_texts,
+    list_missing_hard_source_lines,
+)
+from app.services.output_integrity import _norm as _oi_norm
 from app.services.source_evidence import detect_employment_evidence
 
 _WRONG_ROLE_CODES = {"bullet_wrong_role", "role_assignment"}
@@ -42,14 +48,28 @@ def has_wrong_role(report: IntegrityReport) -> bool:
     )
 
 
+def _bullets_missing(report: IntegrityReport) -> bool:
+    check = (report.checks or {}).get("bullets") or {}
+    if check.get("ok") is False:
+        return True
+    return any(
+        isinstance(w, dict) and w.get("severity") == BLOCKING and w.get("code") == "bullets_missing"
+        for w in (report.warnings or [])
+    )
+
+
 def should_recover(report: IntegrityReport, store: dict, source_text: str) -> bool:
     if not recovery_enabled():
         return False
-    if hard_source_miss_count(report) > 0 or has_wrong_role(report):
+    if hard_source_miss_count(report) > 0 or has_wrong_role(report) or _bullets_missing(report):
         return True
     if not (store.get("experience") or []) and detect_employment_evidence(source_text).has_work_history:
         return True
     return False
+
+
+def _bullets_found(report: IntegrityReport) -> int:
+    return int(((report.checks or {}).get("bullets") or {}).get("found") or 0)
 
 
 def prefer_recovered(before: IntegrityReport, after: IntegrityReport) -> bool:
@@ -59,7 +79,12 @@ def prefer_recovered(before: IntegrityReport, after: IntegrityReport) -> bool:
     before_hard, after_hard = hard_source_miss_count(before), hard_source_miss_count(after)
     if after_hard < before_hard:
         return True
-    return has_wrong_role(before) and not has_wrong_role(after) and after_hard <= before_hard
+    if has_wrong_role(before) and not has_wrong_role(after) and after_hard <= before_hard:
+        return True
+    # More store bullets landed in the DOCX without raising hard misses / wrong-role.
+    if after_hard <= before_hard and _bullets_found(after) > _bullets_found(before):
+        return True
+    return False
 
 
 # ---------------------------------------------------------------------------
@@ -109,6 +134,159 @@ class _Budget:
 def _line_numbers(lines: list[str], missing: list[str]) -> list[int]:
     wanted = {m.strip() for m in missing}
     return [n for n, line in enumerate(lines, 1) if line in wanted]
+
+
+def _experience_corpus(store: dict) -> str:
+    """Text that must carry experience/cert content — not skills (false matches)."""
+    parts: list[str] = []
+    for role in store.get("experience") or []:
+        if not isinstance(role, dict):
+            continue
+        for key in ("company", "title", "duration", "location"):
+            if role.get(key):
+                parts.append(str(role.get(key)))
+        for bullet in role.get("description") or []:
+            parts.append(str(bullet))
+    for bullet in store.get("unassigned_experience_bullets") or []:
+        parts.append(str(bullet))
+    for cert in store.get("certifications") or []:
+        parts.append(str(cert))
+    return "\n".join(parts)
+
+
+def _already_in_store(store: dict, line: str) -> bool:
+    needle = lle._key(lle._BULLET_RE.sub("", line))
+    if len(needle) < 12:
+        return True
+    hay = lle._key(_experience_corpus(store))
+    return needle in hay
+
+
+def list_missing_store_bullets(store: dict, output_text: str) -> list[str]:
+    """Store experience bullets whose normalized text is absent from the DOCX haystack."""
+    from app.services.output_integrity import _norm
+
+    hay = _norm(output_text or "")
+    missing: list[str] = []
+    for role in store.get("experience") or []:
+        if not isinstance(role, dict):
+            continue
+        for bullet in role.get("description") or []:
+            if not isinstance(bullet, str) or not bullet.strip():
+                continue
+            n = _norm(bullet)
+            if len(n.split()) < 5:
+                continue
+            if n not in hay:
+                missing.append(bullet.strip())
+    return list(dict.fromkeys(missing))
+
+
+def ensure_missing_lines_in_unassigned(store: dict, missing_lines: list[str]) -> dict:
+    """Copy missing source lines into unassigned verbatim (render-complete path).
+
+    Uses exact source wording so integrity ``source_lines`` 4-grams can match the DOCX.
+    Always copies DOCX-hard-miss lines even when a role already holds a shortened or
+    re-punctuated form — store presence does not guarantee DOCX 4-gram coverage
+    (common for ``Environment:`` tool rows). Only skips URLs and unassigned dupes.
+    """
+    prior = [str(x) for x in (store.get("unassigned_experience_bullets") or []) if str(x).strip()]
+    prior_keys = {lle._key(x) for x in prior if lle._key(x)}
+    cleaned = lle.lines_to_bullets(list(missing_lines or []))
+    to_add: list[str] = []
+    for text in cleaned:
+        if not text:
+            continue
+        low = text.strip().lower()
+        if low.startswith(("http://", "https://", "www.", "mailto:")):
+            continue
+        k = lle._key(text)
+        if len(k) < 12 or k in prior_keys:
+            continue
+        # Unassigned already has a longer/shorter form of this line.
+        if any(k in pk or pk in k for pk in prior_keys if len(pk) >= 12):
+            continue
+        to_add.append(text)
+        prior_keys.add(k)
+    if not to_add:
+        return store
+    candidate = dict(store)
+    candidate["unassigned_experience_bullets"] = list(dict.fromkeys([*prior, *to_add]))
+    return candidate
+
+
+def repair_wrong_role_assignments(store: dict, output_text: str) -> tuple[dict, dict]:
+    """Move bullets that appear under the wrong employer in the DOCX into unassigned.
+
+    Deterministic: copies existing bullet text only. Clearing ownership under the
+    mis-rendered role removes the ``bullet_wrong_role`` integrity finding so a
+    re-render can place them under the review placeholder instead.
+    """
+    meta: dict[str, Any] = {"used": False, "moved": 0, "method": "wrong_role_repair", "error": ""}
+    roles = [r for r in (store.get("experience") or []) if isinstance(r, dict)]
+    if len(roles) < 2 or not (output_text or "").strip():
+        return store, meta
+    # Integrity compares against normalized DOCX hay; match that here.
+    wrong = set(list_misassigned_bullet_texts(roles, _oi_norm(output_text)))
+    if not wrong:
+        return store, meta
+
+    moved: list[str] = []
+    new_roles: list[dict] = []
+    for role in roles:
+        keep: list[str] = []
+        for bullet in role.get("description") or []:
+            if not isinstance(bullet, str):
+                continue
+            if _oi_norm(bullet) in wrong:
+                moved.append(bullet)
+            else:
+                keep.append(bullet)
+        new_roles.append({**role, "description": keep})
+    if not moved:
+        return store, meta
+
+    candidate = dict(store)
+    candidate["experience"] = new_roles
+    prior = [str(x) for x in (candidate.get("unassigned_experience_bullets") or []) if str(x).strip()]
+    candidate["unassigned_experience_bullets"] = list(dict.fromkeys([*prior, *moved]))
+    meta["used"] = True
+    meta["moved"] = len(moved)
+    return candidate, meta
+
+
+def stitch_missing_hard_lines(
+    source_text: str, store: dict, output_text: str
+) -> tuple[dict, dict]:
+    """Deterministic recovery: append missing hard source lines into unassigned.
+
+    No LLM. Copies source text only. Used when Gemma recovery cannot cover the miss
+    (common ``no_improvement`` path) so a re-render can put the lines in the DOCX.
+    """
+    meta: dict[str, Any] = {"used": False, "stitched": 0, "method": "stitch", "error": ""}
+    missing = list_missing_hard_source_lines(source_text, output_text or "", store)
+    if not missing:
+        return store, meta
+
+    candidate = ensure_missing_lines_in_unassigned(store, missing)
+    added = len(candidate.get("unassigned_experience_bullets") or []) - len(
+        store.get("unassigned_experience_bullets") or []
+    )
+    if added > 0:
+        meta["used"] = True
+        meta["stitched"] = added
+        return candidate, meta
+
+    # Exact lines already in the store (or unassigned) but missing from DOCX → re-render.
+    if missing:
+        meta["used"] = True
+        meta["method"] = "rerender"
+        meta["stitched"] = 0
+        meta["force_rerender"] = True
+        return dict(store), meta
+
+    meta["error"] = "nothing_to_stitch"
+    return store, meta
 
 
 def _carry_extras(recovered: list[dict], existing: list[dict]) -> list[dict]:
@@ -212,6 +390,12 @@ def recover_store(
             not existing and detect_employment_evidence(source_text).has_work_history
         )
         if not text_unmeasurable and after >= before:
+            # LLM did not cover more source text — stitch missing lines into unassigned.
+            stitched, stitch_meta = stitch_missing_hard_lines(source_text, store, baseline_text)
+            if stitch_meta.get("used"):
+                out = {**meta, **stitch_meta, "llm_error": "no_improvement"}
+                out["error"] = ""
+                return stitched, out
             meta["error"] = "no_improvement"
             return store, meta
 

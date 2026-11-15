@@ -1,0 +1,22 @@
+{
+  "id": "golden:clean_one_role",
+  "required_content": ["Example Employer", "Software Engineer"],
+  "role_ownership": [
+    {
+      "owner": "Example Employer|Software Engineer",
+      "bullets": ["Built the billing API."]
+    }
+  ],
+  "dates_names_metrics": {
+    "dates": ["2020-2022"],
+    "names": ["Casey Example"],
+    "metrics": ["35%"]
+  },
+  "intentional_exclusions": [
+    {"text": "Page 1 of 2", "reason": "repeated_page_furniture"}
+  ],
+  "expected_sections": ["experience", "education", "skills"],
+  "split": "dev",
+  "holdout": false,
+  "notes": "Human-authored. Do not generate ground truth solely with the parser/model under test."
+}

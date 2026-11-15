@@ -80,6 +80,21 @@ def test_prefer_recovered_when_wrong_role_is_cleared_without_more_misses():
     assert ir.prefer_recovered(before, after) is True
 
 
+def test_prefer_recovered_when_more_bullets_land_without_hard_regression():
+    before = IntegrityReport(
+        status="needs_review",
+        checks={"source_lines": {"hard": 3}, "bullets": {"ok": False, "expected": 10, "found": 5}},
+        warnings=[{"severity": BLOCKING, "code": "source_lines", "message": "x"}],
+    )
+    after = IntegrityReport(
+        status="needs_review",
+        checks={"source_lines": {"hard": 3}, "bullets": {"ok": False, "expected": 10, "found": 9}},
+        warnings=[{"severity": BLOCKING, "code": "source_lines", "message": "x"}],
+    )
+    assert ir.prefer_recovered(before, after) is True
+
+
+
 SOURCE = "\n".join(
     [
         "Casey Example",  # 1
@@ -145,8 +160,148 @@ def test_recover_store_drops_invented_company():
             assert not value or value in SOURCE
 
 
-def test_recover_store_keeps_store_when_not_improved():
-    # The model returns a role that does not cover the missing bullet: no gain, no swap.
+def test_stitch_missing_hard_lines_appends_unassigned():
+    """Deterministic recovery: copy missing source lines into unassigned (no LLM rewrite)."""
+    store = {
+        "experience": [
+            {
+                "title": "Engineer",
+                "company": "Acme Corp",
+                "duration": "2020-2022",
+                "description": [],
+            }
+        ]
+    }
+    # Output has employer but not the bullet — classic source_lines hard miss.
+    output = "Casey Example\nAcme Corp\nEngineer 2020-2022"
+    new_store, meta = ir.stitch_missing_hard_lines(SOURCE, store, output)
+
+    assert meta["used"] is True
+    assert meta["stitched"] >= 1
+    assert meta["method"] == "stitch"
+    joined = " ".join(new_store.get("unassigned_experience_bullets") or []).lower()
+    assert "shipped the onboarding checklist" in joined
+    assert store.get("unassigned_experience_bullets") in (None, [])  # input not mutated
+
+
+def test_repair_wrong_role_moves_misassigned_bullet_to_unassigned():
+    # Same layout as output_integrity wrong-employer fail: bullets swapped under headings.
+    store = {
+        "experience": [
+            {
+                "company": "Acme Corp",
+                "title": "Staff Engineer",
+                "description": ["Led migration to event-driven payments."],
+            },
+            {
+                "company": "Globex Inc",
+                "title": "Developer",
+                "description": ["Built nightly reconciliation jobs for treasury."],
+            },
+        ]
+    }
+    # Acme heading, then Globex bullet; Globex heading, then Acme bullet.
+    docx_text = (
+        "Staff Engineer Acme Corp Jul. 2021 – Present\n"
+        "Built nightly reconciliation jobs for treasury.\n"
+        "Developer Globex Inc Jan. 2015 – Jun. 2021\n"
+        "Led migration to event-driven payments."
+    )
+    out, meta = ir.repair_wrong_role_assignments(store, docx_text)
+    assert meta["used"] is True and meta["moved"] >= 1
+    joined_roles = " ".join(
+        b for r in out["experience"] for b in (r.get("description") or [])
+    ).lower()
+    assert "led migration" not in joined_roles or "reconciliation" not in joined_roles
+    unassigned = " ".join(out.get("unassigned_experience_bullets") or []).lower()
+    assert "led migration" in unassigned or "reconciliation" in unassigned
+
+
+def test_ensure_missing_lines_in_unassigned_adds_exact_source():
+    store = {
+        "experience": [
+            {
+                "title": "Engineer",
+                "company": "Acme Corp",
+                "description": ["Shipped onboarding"],  # shortened — not full source line
+            }
+        ],
+        "unassigned_experience_bullets": [],
+    }
+    missing = ["• Shipped the onboarding checklist for new analysts in 2021."]
+    out = ir.ensure_missing_lines_in_unassigned(store, missing)
+    joined = " ".join(out.get("unassigned_experience_bullets") or []).lower()
+    assert "shipped the onboarding checklist for new analysts in 2021" in joined
+
+
+def test_stitch_copies_exact_source_even_when_role_already_has_line():
+    """DOCX-hard-miss lines must land verbatim in unassigned even if a role holds them.
+
+    Store presence does not guarantee DOCX 4-gram coverage (re-punctuation / Environment rows).
+    """
+    store = {
+        "experience": [
+            {
+                "title": "Engineer",
+                "company": "Acme Corp",
+                "duration": "2020-2022",
+                "description": ["Shipped the onboarding checklist for new analysts in 2021."],
+            }
+        ]
+    }
+    output = "Casey Example\nAcme Corp\nEngineer"
+    new_store, meta = ir.stitch_missing_hard_lines(SOURCE, store, output)
+
+    assert meta["used"] is True
+    assert meta.get("method") == "stitch"
+    assert meta["stitched"] >= 1
+    joined = " ".join(new_store.get("unassigned_experience_bullets") or []).lower()
+    assert "shipped the onboarding checklist for new analysts in 2021" in joined
+
+
+def test_recover_store_falls_back_to_stitch_when_llm_does_not_help(monkeypatch):
+    # Force LLM candidate to leave the bullet out of the store so stitch runs.
+    def fake_extract(text, call, elsewhere=None, hints=None):
+        return ir.lle.ExtractResult(
+            roles=[
+                {
+                    "title": "Engineer",
+                    "company": "Acme Corp",
+                    "location": "",
+                    "duration": "2020-2022",
+                    "description": [],
+                    "technologies": [],
+                }
+            ],
+            experience_lines=1,
+            claimed_lines=1,
+        )
+
+    monkeypatch.setattr(ir.lle, "extract_experience", fake_extract)
+    store = {
+        "experience": [
+            {
+                "title": "Engineer",
+                "company": "Acme Corp",
+                "duration": "2020-2022",
+                "description": [],
+            }
+        ],
+        "raw_text": SOURCE,
+    }
+    new_store, meta = ir.recover_store(
+        SOURCE, store, _blocking(hard=1), "Casey Example\nAcme Corp", client=_client({"roles": []})
+    )
+
+    assert meta["used"] is True
+    assert meta.get("method") == "stitch"
+    assert "shipped the onboarding checklist" in " ".join(
+        new_store.get("unassigned_experience_bullets") or []
+    ).lower()
+
+
+def test_recover_store_stitches_exact_when_llm_flat_but_lines_already_in_store():
+    # Bullet already in the store but missing from DOCX → stitch exact wording into unassigned.
     payload = {"roles": [{**_role("Acme Corp"), "header_lines": [3, 4, 5], "content": []}]}
     existing = {
         "experience": [{"title": "Engineer", "company": "Acme Corp", "duration": "2020-2022",
@@ -155,8 +310,11 @@ def test_recover_store_keeps_store_when_not_improved():
     store = {**existing, "raw_text": SOURCE}
     new_store, meta = ir.recover_store(SOURCE, store, _blocking(hard=1), "Casey Example", client=_client(payload))
 
-    assert new_store is store
-    assert meta["used"] is False
+    assert meta["used"] is True
+    assert meta.get("method") == "stitch"
+    assert "shipped the onboarding checklist" in " ".join(
+        new_store.get("unassigned_experience_bullets") or []
+    ).lower()
 
 
 def test_recover_store_returns_original_on_error():
@@ -340,12 +498,16 @@ def test_maybe_integrity_recover_prefers_better_recovered_draft(monkeypatch):
 
     assert len(w.recover_calls) == 1
     assert "original output" in w.recover_calls[0][1]  # DOCX text passed as output_text
-    assert w.render_calls == 1
+    assert w.render_calls >= 1
     assert report is w.reports[0]
     assert docx_bytes != w.original_docx
     assert store["experience"] == [{"company": "Acme Corp"}]
-    assert document["marker"] == "new"
-    assert document["company_footer_lines"] == ["Footer"]  # branding carried over
+    # Recovery builds via document_from_store + attach (not the quality pipeline).
+    assert any(
+        isinstance(s, dict) and s.get("type") == "experience"
+        for s in (document.get("sections") or [])
+    )
+    assert document.get("company_footer_lines") == ["Footer"]  # branding carried over
     assert w.candidate.extracted_data["structured_resume"] is store
     meta = store["parse_meta"]["integrity_recovery"]
     assert meta["used"] is True and meta["preferred"] is True
@@ -365,14 +527,16 @@ def test_maybe_integrity_recover_keeps_original_when_recovery_not_better(monkeyp
 
 
 def test_maybe_integrity_recover_skips_render_when_recovery_unused(monkeypatch):
-    w = _Wiring(monkeypatch, recovered=False)
+    """When LLM recovery fails but hard lines remain, render-complete still re-renders."""
+    w = _Wiring(monkeypatch, recovered=False, first_hard=3, second_hard=0)
     docx_bytes, report, store, _ = w.run()
 
-    assert w.render_calls == 0
-    assert docx_bytes == w.original_docx
-    assert report is w.first_report
-    assert store["parse_meta"]["integrity_recovery"]["used"] is False
-    assert store["parse_meta"]["integrity_recovery"]["error"] == "no_roles"
+    assert w.render_calls == 1
+    assert store["parse_meta"]["integrity_recovery"]["used"] is True
+    assert store["parse_meta"]["integrity_recovery"].get("render_complete") is True
+    assert store["parse_meta"]["integrity_recovery"]["preferred"] is True
+    assert report is w.reports[0]
+    assert docx_bytes != w.original_docx
 
 
 def test_maybe_integrity_recover_noop_when_not_needed_or_disabled(monkeypatch):

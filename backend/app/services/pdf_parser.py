@@ -259,14 +259,20 @@ def extract_text_from_document(
                 text = _extract_pymupdf(path, max_pages=max_pdf_pages).strip()
                 if not text:
                     text = _extract_pdfplumber(path, max_pages=max_pdf_pages).strip()
+                meta["truncated"] = True
+                meta["truncate_max_pages"] = max_pdf_pages
             else:
                 text = _extract_pdf(path, meta).strip()
             text = finalize_pdf_text(text)
+            _maybe_attach_pdf_line_ledger(meta, text, path=path)
         elif ext == ".docx":
             text = _extract_docx(path, max_chars=max_chars if lightweight else None).strip()
         elif ext == ".doc":
             text = _extract_doc(path, max_chars=max_chars if lightweight else None).strip()
             meta["doc_converted"] = True
+            _maybe_attach_pdf_line_ledger(
+                meta, text, path=path, extraction_method="doc_converted", extractor_version="doc_converter@1"
+            )
         elif ext in (".html", ".htm"):
             text = _extract_html(path).strip()
         else:
@@ -1112,6 +1118,25 @@ def _extract_pdfplumber(path: str, *, max_pages: int | None = None) -> str:
                 if page_text:
                     pages.append(page_text)
             pages = _strip_repeated_header_footer(pages)
+            meta = _LAST_META.get()
+            if isinstance(meta, dict) and pages:
+                preview: list[dict] = []
+                n = 0
+                for page_idx, page_text in enumerate(pages, start=1):
+                    for raw in page_text.splitlines():
+                        if not raw.strip():
+                            continue
+                        n += 1
+                        preview.append(
+                            {
+                                "id": f"b{n:05d}",
+                                "text": raw,
+                                "origin": "body",
+                                "page": page_idx,
+                            }
+                        )
+                meta["source_blocks_preview"] = preview
+                meta["page_count"] = len(pages)
             return "\n\n".join(pages)
     except Exception as exc:
         logger.warning("pdfplumber_extract_failed", path=path, error=str(exc))
@@ -1134,6 +1159,95 @@ def _extract_pymupdf(path: str, *, max_pages: int | None = None) -> str:
         return ""
 
 
+def _file_sha256(path: str) -> str:
+    import hashlib
+
+    h = hashlib.sha256()
+    with open(path, "rb") as fh:
+        for chunk in iter(lambda: fh.read(1024 * 1024), b""):
+            h.update(chunk)
+    return h.hexdigest()
+
+
+def _maybe_attach_pdf_line_ledger(
+    meta: dict,
+    text: str,
+    *,
+    path: str,
+    extraction_method: str = "pdf_native",
+    extractor_version: str = "pdf_parser@1",
+) -> None:
+    """Build line-level ledger items from flattened PDF/DOC text (page breaks = blank lines)."""
+    try:
+        from app.core.config import get_settings
+
+        if not getattr(get_settings(), "RESUME_SOURCE_LEDGER", False):
+            return
+        from app.services.source_blocks import SourceBlock
+
+        # Flattened PDF text loses reliable page breaks when blank lines also separate
+        # paragraphs. Prefer page-indexed blocks already stored on meta; else page=None.
+        prebuilt = meta.get("source_blocks_preview")
+        if isinstance(prebuilt, list) and prebuilt:
+            blocks = [
+                SourceBlock(
+                    str(b.get("id") or f"b{i+1:05d}"),
+                    str(b.get("text") or ""),
+                    str(b.get("origin") or "body"),
+                    page=b.get("page"),
+                    bbox=tuple(b["bbox"]) if isinstance(b.get("bbox"), (list, tuple)) and len(b["bbox"]) == 4 else None,
+                )
+                for i, b in enumerate(prebuilt)
+                if isinstance(b, dict) and str(b.get("text") or "").strip()
+            ]
+        else:
+            blocks = []
+            for n, raw in enumerate((text or "").splitlines(), start=1):
+                if not raw.strip():
+                    continue
+                # page unknown from flattened text alone (prefer source_blocks_preview)
+                blocks.append(SourceBlock(f"b{n:05d}", raw, "body", page=None))
+        _maybe_attach_ledger(
+            meta,
+            blocks,
+            path=path,
+            extraction_method=extraction_method,
+            extractor_version=extractor_version,
+        )
+        # Stamp OCR uncertainty onto OCR-origin items.
+        ledger = meta.get("source_ledger")
+        if isinstance(ledger, dict):
+            for item in ledger.get("items") or []:
+                if isinstance(item, dict) and (item.get("location") or {}).get("origin") == "ocr":
+                    item["uncertainty"] = max(float(item.get("uncertainty") or 0.0), 0.4)
+                    item["extraction_method"] = "ocr"
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("pdf_line_ledger_attach_failed", error_type=type(exc).__name__)
+        meta["source_ledger_error"] = type(exc).__name__
+
+
+def _maybe_attach_ledger(meta: dict, blocks: list, *, path: str, extraction_method: str, extractor_version: str) -> None:
+    """Serialize a source ledger into extraction meta when RESUME_SOURCE_LEDGER is on."""
+    try:
+        from app.core.config import get_settings
+
+        if not getattr(get_settings(), "RESUME_SOURCE_LEDGER", False):
+            return
+        from app.services.source_ledger import build_ledger_from_blocks
+
+        ledger = build_ledger_from_blocks(
+            blocks,
+            file_hash=_file_sha256(path),
+            extractor_version=extractor_version,
+            extraction_method=extraction_method,
+        )
+        meta["source_ledger"] = ledger.to_dict()
+        meta["source_revision"] = ledger.source_revision
+    except Exception as exc:  # noqa: BLE001 - ledger must not break extraction
+        logger.warning("source_ledger_attach_failed", error_type=type(exc).__name__)
+        meta["source_ledger_error"] = type(exc).__name__
+
+
 def _extract_docx(path: str, *, max_chars: int | None = None) -> str:
     if docx is None:
         logger.warning("python_docx_unavailable", path=path)
@@ -1142,12 +1256,28 @@ def _extract_docx(path: str, *, max_chars: int | None = None) -> str:
     from app.services.source_blocks import blocks_to_text
 
     try:
-        text = blocks_to_text(read_docx_blocks(path))
+        blocks = read_docx_blocks(path)
+        text = blocks_to_text(blocks)
+        meta = _LAST_META.get()
+        if isinstance(meta, dict):
+            _maybe_attach_ledger(
+                meta,
+                blocks,
+                path=path,
+                extraction_method="docx_native",
+                extractor_version="docx_reader@1",
+            )
     except DocxLimitError:
         raise
     except Exception as exc:
         logger.warning("docx_extract_failed", error_type=type(exc).__name__)
         return ""
     if max_chars is not None and len(text) > max_chars:
+        # Lightweight / preview paths only. Full generate uses max_chars=None.
+        # Record the cap so callers cannot mistake a truncated extract for complete intake.
+        meta = _LAST_META.get()
+        if isinstance(meta, dict):
+            meta["truncated"] = True
+            meta["truncate_max_chars"] = max_chars
         text = text[:max_chars]
     return text

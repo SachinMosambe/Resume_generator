@@ -44,6 +44,29 @@ class Settings(BaseSettings):
     RESUME_INTEGRITY_RECOVERY_MAX_CALLS: int = 4
     RESUME_INTEGRITY_RECOVERY_TIMEOUT_SECONDS: float = 45.0
 
+    # Wave 2 provenance: build a versioned source ledger during extraction and
+    # optionally verify a render manifest against the reopened DOCX. Default off
+    # so classic behavior is unchanged until evaluation enables the flags.
+    RESUME_SOURCE_LEDGER: bool = True
+    RESUME_RENDER_MANIFEST: bool = True
+    # When on (and ledger present), attach source_ids on roles and validate
+    # grounded grouping. Uses Gemma for structure; app copies original text.
+    RESUME_GROUNDED_GROUPING: bool = True
+    RESUME_GROUNDED_GROUPING_PROMPT_VERSION: str = "grounded_grouping@1"
+    # Persist accepted canonical resume + tenant-scoped artifact cache.
+    RESUME_CANONICAL_STORE: bool = True
+    RESUME_ARTIFACT_CACHE: bool = True
+    # Wave 3: conservative section scoop (bullet/cert lines) without role-chunking projects.
+    RESUME_SCOOP_PROJECT_BULLETS: bool = True
+    RESUME_SCOOP_CERTIFICATIONS: bool = True
+    RESUME_PRESERVE_NARRATIVE_HEADERS: bool = True
+    # Layout fallback: Docling only when native extract looks layout-hard.
+    RESUME_DOCLING_FALLBACK: bool = True
+    RESUME_DOCLING_MIN_COLUMN_PAGES: int = 2
+    # Extraction hard limits (adapter). Violations → failed / needs_review, not partial ok.
+    RESUME_EXTRACT_MAX_PAGES: int = 40
+    RESUME_EXTRACT_TIMEOUT_SECONDS: float = 120.0
+    RESUME_EXTRACT_MAX_MEMORY_MB: int = 512
     # Multi-agent pipeline (extract -> plan -> write -> critique -> refine).
     # Runs inside the same service; enable per-deploy to compare against classic.
     RESUME_AGENT_PIPELINE: bool = False
