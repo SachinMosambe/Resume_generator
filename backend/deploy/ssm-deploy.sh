@@ -29,7 +29,7 @@ COMMAND_ID="$(aws ssm send-command \
 \"git checkout -f ${BRANCH}\",
 \"git reset --hard origin/${BRANCH}\",
 \"git clean -fd -e backend/.env -e backend/.venv -e .venv\",
-\"bash backend/deploy/ensure-env-from-ssm.sh\",
+\"bash backend/deploy/ensure-env-from-ssm.sh || echo 'WARN: SSM env sync skipped (aws CLI missing or param unavailable)'\",
 \"bash backend/deploy/update-ec2.sh\"
 ]" \
   --query 'Command.CommandId' \
