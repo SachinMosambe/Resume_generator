@@ -1,6 +1,6 @@
 name: Deploy EC2 (SSM)
 
-# CI/CD: every push to main runs tests, then deploys the API to EC2 via SSM.
+# CI/CD: every push to main (backend/workflow changes) runs tests, then deploys via SSM.
 # Manual re-deploy: Actions → "Deploy EC2 (SSM)" → Run workflow.
 on:
   push:
