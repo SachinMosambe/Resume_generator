@@ -79,36 +79,33 @@ jobs:
           aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
           aws-region: ap-south-1
 
-      - name: Require deploy secrets
+      - name: Resolve deploy targets
         run: |
-          missing=0
-          if [ -z "${{ secrets.AWS_ACCESS_KEY_ID }}" ]; then echo "Missing secret: AWS_ACCESS_KEY_ID"; missing=1; fi
-          if [ -z "${{ secrets.AWS_SECRET_ACCESS_KEY }}" ]; then echo "Missing secret: AWS_SECRET_ACCESS_KEY"; missing=1; fi
-          if [ -z "${EC2_INSTANCE_ID}" ]; then echo "Missing secret: EC2_INSTANCE_ID"; missing=1; fi
-          if [ "$missing" -ne 0 ]; then
-            echo "Add the secrets above under Repo → Settings → Secrets and variables → Actions"
+          # AWS keys are required (configure-aws-credentials already ran).
+          # Instance/host/repo fall back to the known resume-api box if secrets are unset.
+          if [ -z "${{ secrets.AWS_ACCESS_KEY_ID }}" ] || [ -z "${{ secrets.AWS_SECRET_ACCESS_KEY }}" ]; then
+            echo "Missing AWS_ACCESS_KEY_ID or AWS_SECRET_ACCESS_KEY"
             exit 1
           fi
+          echo "EC2_INSTANCE_ID=${EC2_INSTANCE_ID:-i-0fee3dafe7eab0f6c}" >> "$GITHUB_ENV"
           echo "EC2_REPO_DIR=${EC2_REPO_DIR:-/home/ubuntu/Resume_generator}" >> "$GITHUB_ENV"
+          echo "EC2_PUBLIC_HOST=${EC2_PUBLIC_HOST:-13.203.78.62}" >> "$GITHUB_ENV"
 
       - name: Deploy via SSM
         run: |
           chmod +x backend/deploy/ssm-deploy.sh backend/deploy/ensure-env-from-ssm.sh backend/deploy/update-ec2.sh
-          EC2_REPO_DIR="${EC2_REPO_DIR:-/home/ubuntu/Resume_generator}" bash backend/deploy/ssm-deploy.sh
+          echo "Deploying to ${EC2_INSTANCE_ID} repo=${EC2_REPO_DIR}"
+          bash backend/deploy/ssm-deploy.sh
 
       - name: Health check
         run: |
           HOST="${EC2_PUBLIC_HOST}"
-          if [ -z "$HOST" ]; then
+          if [ -z "$HOST" ] || [ "$HOST" = "None" ]; then
             HOST="$(aws ec2 describe-instances \
               --region ap-south-1 \
               --instance-ids "$EC2_INSTANCE_ID" \
               --query 'Reservations[0].Instances[0].PublicIpAddress' \
               --output text)"
-          fi
-          if [ -z "$HOST" ] || [ "$HOST" = "None" ]; then
-            echo "Could not resolve EC2 public IP; set secret EC2_PUBLIC_HOST"
-            exit 1
           fi
           echo "Checking http://${HOST}:8000/api/health"
           for i in 1 2 3 4 5 6 7 8; do
