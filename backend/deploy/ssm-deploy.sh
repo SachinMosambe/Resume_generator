@@ -22,10 +22,13 @@ COMMAND_ID="$(aws ssm send-command \
 \"set -euo pipefail\",
 \"export AWS_REGION=${REGION}\",
 \"export RESUME_ENV_SSM_PARAM=${PARAM_NAME}\",
+\"export HOME=/home/ubuntu\",
 \"cd ${REPO_DIR}\",
+\"git config --global --add safe.directory '*'\",
 \"git fetch origin\",
-\"git checkout ${BRANCH}\",
-\"git pull --ff-only origin ${BRANCH}\",
+\"git checkout -f ${BRANCH}\",
+\"git reset --hard origin/${BRANCH}\",
+\"git clean -fd -e backend/.env -e backend/.venv -e .venv\",
 \"bash backend/deploy/ensure-env-from-ssm.sh\",
 \"bash backend/deploy/update-ec2.sh\"
 ]" \

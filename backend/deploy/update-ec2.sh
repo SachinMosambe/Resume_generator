@@ -10,9 +10,13 @@ BUILD_ID="$(date -u +%Y%m%d%H%M%S)"
 
 echo "==> Updating repo at ${ROOT}"
 cd "$ROOT"
+export HOME="${HOME:-/home/ubuntu}"
+git config --global --add safe.directory '*' || true
 git fetch origin
-git checkout main
-git pull --ff-only origin main
+git checkout -f main
+git reset --hard origin/main
+# Keep runtime secrets and venv; drop stray untracked files that block deploy.
+git clean -fd -e backend/.env -e backend/.venv -e .venv
 
 echo "==> Installing Python deps"
 cd "$APP_DIR"
