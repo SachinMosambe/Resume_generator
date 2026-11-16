@@ -1,5 +1,7 @@
 """Regressions for profile-cover sheets, numeric dates, and header columns."""
 
+import pytest
+
 from app.services.detailed_resume_parser import parse_resume_detailed
 from app.services.pdf_parser import extract_text_from_document
 
