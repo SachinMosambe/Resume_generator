@@ -65,9 +65,10 @@ jobs:
     runs-on: ubuntu-latest
     env:
       AWS_REGION: ap-south-1
-      EC2_INSTANCE_ID: ${{ secrets.EC2_INSTANCE_ID }}
-      EC2_REPO_DIR: ${{ secrets.EC2_REPO_DIR }}
-      EC2_PUBLIC_HOST: ${{ secrets.EC2_PUBLIC_HOST }}
+      # Hardcoded resume-api targets (override later via repo Variables if needed).
+      EC2_INSTANCE_ID: i-0fee3dafe7eab0f6c
+      EC2_REPO_DIR: /home/ubuntu/Resume_generator
+      EC2_PUBLIC_HOST: 13.203.78.62
       RESUME_ENV_SSM_PARAM: /resume-generator/prod/env
     steps:
       - uses: actions/checkout@v4
@@ -79,15 +80,6 @@ jobs:
           aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
           aws-region: ap-south-1
 
-      - name: Resolve deploy targets
-        run: |
-          # AWS keys already validated by configure-aws-credentials.
-          # Do not interpolate secret values into shell conditionals (special chars break bash).
-          # Instance/host/repo fall back to the known resume-api box if secrets are unset.
-          echo "EC2_INSTANCE_ID=${EC2_INSTANCE_ID:-i-0fee3dafe7eab0f6c}" >> "$GITHUB_ENV"
-          echo "EC2_REPO_DIR=${EC2_REPO_DIR:-/home/ubuntu/Resume_generator}" >> "$GITHUB_ENV"
-          echo "EC2_PUBLIC_HOST=${EC2_PUBLIC_HOST:-13.203.78.62}" >> "$GITHUB_ENV"
-
       - name: Deploy via SSM
         run: |
           chmod +x backend/deploy/ssm-deploy.sh backend/deploy/ensure-env-from-ssm.sh backend/deploy/update-ec2.sh
@@ -96,17 +88,9 @@ jobs:
 
       - name: Health check
         run: |
-          HOST="${EC2_PUBLIC_HOST}"
-          if [ -z "$HOST" ] || [ "$HOST" = "None" ]; then
-            HOST="$(aws ec2 describe-instances \
-              --region ap-south-1 \
-              --instance-ids "$EC2_INSTANCE_ID" \
-              --query 'Reservations[0].Instances[0].PublicIpAddress' \
-              --output text)"
-          fi
-          echo "Checking http://${HOST}:8000/api/health"
+          echo "Checking http://${EC2_PUBLIC_HOST}:8000/api/health"
           for i in 1 2 3 4 5 6 7 8; do
-            if curl -fsS "http://${HOST}:8000/api/health"; then
+            if curl -fsS "http://${EC2_PUBLIC_HOST}:8000/api/health"; then
               echo
               exit 0
             fi
