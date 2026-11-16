@@ -81,12 +81,9 @@ jobs:
 
       - name: Resolve deploy targets
         run: |
-          # AWS keys are required (configure-aws-credentials already ran).
+          # AWS keys already validated by configure-aws-credentials.
+          # Do not interpolate secret values into shell conditionals (special chars break bash).
           # Instance/host/repo fall back to the known resume-api box if secrets are unset.
-          if [ -z "${{ secrets.AWS_ACCESS_KEY_ID }}" ] || [ -z "${{ secrets.AWS_SECRET_ACCESS_KEY }}" ]; then
-            echo "Missing AWS_ACCESS_KEY_ID or AWS_SECRET_ACCESS_KEY"
-            exit 1
-          fi
           echo "EC2_INSTANCE_ID=${EC2_INSTANCE_ID:-i-0fee3dafe7eab0f6c}" >> "$GITHUB_ENV"
           echo "EC2_REPO_DIR=${EC2_REPO_DIR:-/home/ubuntu/Resume_generator}" >> "$GITHUB_ENV"
           echo "EC2_PUBLIC_HOST=${EC2_PUBLIC_HOST:-13.203.78.62}" >> "$GITHUB_ENV"
