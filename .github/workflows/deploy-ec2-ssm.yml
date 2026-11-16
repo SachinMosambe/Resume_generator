@@ -1,8 +1,13 @@
 name: Deploy EC2 (SSM)
 
+# CI/CD: every push to main runs tests, then deploys the API to EC2 via SSM.
+# Manual re-deploy: Actions → "Deploy EC2 (SSM)" → Run workflow.
 on:
   push:
     branches: [main]
+    paths:
+      - "backend/**"
+      - ".github/workflows/deploy-ec2-ssm.yml"
   workflow_dispatch:
 
 concurrency:
@@ -12,6 +17,9 @@ concurrency:
 jobs:
   gate:
     runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: backend
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
@@ -19,21 +27,21 @@ jobs:
           python-version: "3.11"
           cache: pip
           cache-dependency-path: backend/requirements.txt
-      - name: Install + unit tests
-        working-directory: backend
-        run: |
-          pip install -r requirements.txt pytest
-          python -m compileall app
-          pytest -q
+      - name: Install dependencies
+        run: pip install -r requirements.txt pytest
+      - name: Compile
+        run: python -m compileall app
+      - name: Unit tests
+        run: python -m pytest -q
         env:
           RESUME_LLM_CONDENSE: "false"
           RESUME_AGENT_PIPELINE: "false"
           RESUME_LLM_PARSE_FALLBACK: "false"
           RESUME_LLM_LINE_EXTRACT: "false"
       - name: Golden fidelity gate
-        working-directory: backend
         run: |
-          sudo apt-get update && sudo apt-get install -y tesseract-ocr libreoffice-writer
+          sudo apt-get update
+          sudo apt-get install -y tesseract-ocr libreoffice-writer
           python scripts/corpus_quality_eval.py --golden --formats aptino,capgemini,suresh
         env:
           RESUME_LLM_CONDENSE: "false"
@@ -45,13 +53,11 @@ jobs:
   deploy:
     needs: gate
     runs-on: ubuntu-latest
-    permissions:
-      id-token: write
-      contents: read
     env:
       AWS_REGION: ap-south-1
       EC2_INSTANCE_ID: ${{ secrets.EC2_INSTANCE_ID }}
       EC2_REPO_DIR: ${{ secrets.EC2_REPO_DIR }}
+      EC2_PUBLIC_HOST: ${{ secrets.EC2_PUBLIC_HOST }}
       RESUME_ENV_SSM_PARAM: /resume-generator/prod/env
     steps:
       - uses: actions/checkout@v4
@@ -63,9 +69,16 @@ jobs:
           aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
           aws-region: ap-south-1
 
-      - name: Require instance id
+      - name: Require deploy secrets
         run: |
-          test -n "${EC2_INSTANCE_ID}" || { echo "Missing secret EC2_INSTANCE_ID"; exit 1; }
+          missing=0
+          if [ -z "${{ secrets.AWS_ACCESS_KEY_ID }}" ]; then echo "Missing secret: AWS_ACCESS_KEY_ID"; missing=1; fi
+          if [ -z "${{ secrets.AWS_SECRET_ACCESS_KEY }}" ]; then echo "Missing secret: AWS_SECRET_ACCESS_KEY"; missing=1; fi
+          if [ -z "${EC2_INSTANCE_ID}" ]; then echo "Missing secret: EC2_INSTANCE_ID"; missing=1; fi
+          if [ "$missing" -ne 0 ]; then
+            echo "Add the secrets above under Repo → Settings → Secrets and variables → Actions"
+            exit 1
+          fi
           echo "EC2_REPO_DIR=${EC2_REPO_DIR:-/home/ubuntu/Resume_generator}" >> "$GITHUB_ENV"
 
       - name: Deploy via SSM
@@ -75,8 +88,7 @@ jobs:
 
       - name: Health check
         run: |
-          # Prefer public IP secret; otherwise resolve from EC2 API.
-          HOST="${{ secrets.EC2_PUBLIC_HOST }}"
+          HOST="${EC2_PUBLIC_HOST}"
           if [ -z "$HOST" ]; then
             HOST="$(aws ec2 describe-instances \
               --region ap-south-1 \
@@ -84,8 +96,12 @@ jobs:
               --query 'Reservations[0].Instances[0].PublicIpAddress' \
               --output text)"
           fi
+          if [ -z "$HOST" ] || [ "$HOST" = "None" ]; then
+            echo "Could not resolve EC2 public IP; set secret EC2_PUBLIC_HOST"
+            exit 1
+          fi
           echo "Checking http://${HOST}:8000/api/health"
-          for i in 1 2 3 4 5; do
+          for i in 1 2 3 4 5 6 7 8; do
             if curl -fsS "http://${HOST}:8000/api/health"; then
               echo
               exit 0

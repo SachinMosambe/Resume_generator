@@ -39,7 +39,7 @@ jobs:
       - run: pip install -r requirements.txt pytest
       - run: python -m compileall app
       - run: python -c "from app.main import app; print(app.title)"
-      - run: pytest -q
+      - run: python -m pytest -q
         env:
           RESUME_LLM_CONDENSE: "false"
           RESUME_AGENT_PIPELINE: "false"

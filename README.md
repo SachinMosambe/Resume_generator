@@ -168,16 +168,36 @@ reported as a warning rather than happening silently.
 
 ## Deploy (EC2 backend + Vercel frontend)
 
-**Important:** pushing to GitHub does **not** update the live site by itself.
-The Vercel UI only changes when Vercel redeploys; the API changes only after you
-pull + restart on **EC2** (see below). Until EC2 is updated, uploads keep using
-the old behavior.
+### CI/CD (recommended)
+
+Pushing to `main` runs:
+
+1. **CI** (`.github/workflows/ci.yml`) — frontend build, backend unit tests, golden fixtures  
+2. **Deploy EC2 (SSM)** (`.github/workflows/deploy-ec2-ssm.yml`) — same gates, then `git pull` + restart `resume-api` on the instance via AWS Systems Manager
+
+One-time GitHub → **Settings → Secrets and variables → Actions**:
+
+| Secret | Purpose |
+|--------|---------|
+| `AWS_ACCESS_KEY_ID` / `AWS_SECRET_ACCESS_KEY` | IAM user that can `ssm:SendCommand`, `ec2:DescribeInstances`, and read `/resume-generator/prod/env` |
+| `EC2_INSTANCE_ID` | Target instance (e.g. `i-0fee3dafe7eab0f6c`) |
+| `EC2_REPO_DIR` | Optional; default `/home/ubuntu/Resume_generator` |
+| `EC2_PUBLIC_HOST` | Optional public IP/DNS for the post-deploy health check |
+
+On the EC2 box: SSM agent online, IAM instance profile with SSM + `ssm:GetParameter` on `/resume-generator/prod/env`, repo cloned at `EC2_REPO_DIR`, and `resume-api` systemd unit from `setup-ec2.sh`.
+
+Manual deploy: Actions → **Deploy EC2 (SSM)** → Run workflow.  
+Local equivalent (AWS CLI logged in):
+
+```bash
+AWS_REGION=ap-south-1 EC2_INSTANCE_ID=i-xxxxxxxx bash backend/deploy/ssm-deploy.sh
+```
 
 ### 1. Push to GitHub
 
 Repo: `https://github.com/SachinMosambe/Resume_generator`
 
-### 2. Backend on EC2
+### 2. Backend on EC2 (first-time bootstrap)
 
 1. Launch Ubuntu 22.04 `t2.micro` / `t3.micro`
 2. Security group inbound: **22** (SSH, your IP) and **8000** (HTTP, `0.0.0.0/0`)
@@ -193,7 +213,7 @@ sudo systemctl restart resume-api
 4. Test: `http://YOUR_EC2_IP:8000/api/health`  
    Healthy response includes `build_id` and `output_mode: faithful`.
 
-5. **After every code push**, update EC2:
+5. After CI/CD secrets are set, later pushes to `main` update EC2 automatically. Manual fallback:
 
 ```bash
 cd ~/Resume_generator
@@ -206,8 +226,4 @@ curl -s http://127.0.0.1:8000/api/health
 1. Import the GitHub repo
 2. Root directory: `frontend`
 3. Env: `NEXT_PUBLIC_API_URL` = `http://YOUR_EC2_IP:8000` (no trailing slash)
-4. Deploy, then set EC2 `CORS_ORIGINS` to the Vercel URL and restart `resume-api`
-
-### 4. CI
-
-GitHub Actions (`.github/workflows/ci.yml`) builds the Next.js app and compiles the Python package on every push/PR to `main`.
+4. Deploy, then set EC2 `CORS_ORIGINS` to the Vercel URL and restart `resume-api` (or rely on SSM env sync)
