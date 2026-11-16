@@ -32,7 +32,17 @@ jobs:
       - name: Compile
         run: python -m compileall app
       - name: Unit tests
-        run: python -m pytest -q
+        run: |
+          set +e
+          python -m pytest -q --tb=short | tee pytest-out.txt
+          code=${PIPESTATUS[0]}
+          {
+            echo "## Unit tests"
+            echo '```'
+            tail -n 120 pytest-out.txt
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+          exit "$code"
         env:
           RESUME_LLM_CONDENSE: "false"
           RESUME_AGENT_PIPELINE: "false"

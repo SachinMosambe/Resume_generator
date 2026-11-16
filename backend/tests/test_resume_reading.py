@@ -353,6 +353,8 @@ def test_brett_delivery_history_is_not_repeated():
         / "resume"
         / "Brett M Williams Resumes (1).docx"
     )
+    if not path.is_file():
+        pytest.skip("private corpus resume not checked in")
     data = parse_resume_detailed(None, extract_text_from_document(str(path)))
     assert "Blueprinted" not in data["summary"]
     bullets = " ".join(b for role in data["experience"] for b in role["description"])
@@ -542,6 +544,8 @@ def test_ravi_summary_stays_narrative_and_competencies_stay_separate():
     from app.services.resume_generation_service import ResumeGenerationService
 
     path = Path(__file__).resolve().parents[2] / "test" / "resume" / "Ravi_NiceOneCXResume.docx"
+    if not path.is_file():
+        pytest.skip("private corpus resume not checked in")
     text = extract_text_from_document(str(path))
     parsed = parse_resume_detailed(str(path), text)
     summary = parsed["summary"]
